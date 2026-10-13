@@ -1,0 +1,26 @@
+<?php
+
+return [
+    'required' => 'Weka :attribute.',
+    'email' => 'Weka barua pepe sahihi kwenye :attribute.',
+    'string' => ':attribute iwe maandishi.',
+    'numeric' => ':attribute iwe namba.',
+    'integer' => ':attribute iwe namba kamili.',
+    'in' => 'Chaguo la :attribute si sahihi.',
+    'prohibited' => 'Huruhusiwi kuweka :attribute.',
+    'confirmed' => ':attribute hazifanani.',
+    'unique' => ':attribute tayari inatumika.',
+    'exists' => 'Chaguo la :attribute halipo.',
+    'regex' => 'Muundo wa :attribute si sahihi.',
+    'digits' => ':attribute iwe tarakimu :digits.',
+    'date' => 'Weka tarehe sahihi kwenye :attribute.',
+    'date_format' => ':attribute iwe katika muundo :format.',
+    'boolean' => 'Chagua ndiyo au hapana kwenye :attribute.',
+    'image' => ':attribute iwe picha.',
+    'mimes' => ':attribute iwe faili la aina: :values.',
+    'mimetypes' => ':attribute iwe faili la aina: :values.',
+    'nullable' => ':attribute inaweza kuachwa wazi.',
+    'min' => ['string' => ':attribute iwe na angalau herufi :min.', 'numeric' => ':attribute iwe angalau :min.', 'array' => 'Chagua angalau :min kwenye :attribute.', 'file' => ':attribute iwe angalau KB :min.'],
+    'max' => ['string' => ':attribute isizidi herufi :max.', 'numeric' => ':attribute isizidi :max.', 'array' => ':attribute isizidi :max.', 'file' => ':attribute isizidi KB :max.'],
+    'attributes' => ['email' => 'barua pepe', 'password' => 'nenosiri', 'password_confirmation' => 'uthibitisho wa nenosiri', 'locale' => 'lugha', 'pin' => 'PIN', 'user_id' => 'mtumiaji mwingine', 'business_name' => 'jina la biashara', 'owner_email' => 'barua pepe ya mmiliki', 'owner_phone' => 'simu ya mmiliki', 'first_name' => 'jina la kwanza', 'last_name' => 'jina la mwisho', 'amount' => 'kiasi', 'quantity' => 'idadi'],
+];

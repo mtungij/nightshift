@@ -1,0 +1,32 @@
+[90m= [39m[34;4mIlluminate\Database\Eloquent\Collection[39;24m {#8008
+    [34mall[39m: [
+      [34;4mApp\Models\User[39;24m {#8116
+        [34mid[39m: [35m1[39m,
+        [34mname[39m: [32m"[39m[32mAlex Morgan[39m[32m"[39m,
+        [34memail[39m: [32m"[39m[32madmin@nightshift.test[39m[32m"[39m,
+        [34musername[39m: [32m"[39m[32madmin[39m[32m"[39m,
+        [34mcompany_id[39m: [35m1[39m,
+      },
+      [34;4mApp\Models\User[39;24m {#8166
+        [34mid[39m: [35m20[39m,
+        [34mname[39m: [32m"[39m[32mCashier[39m[32m"[39m,
+        [34memail[39m: [32m"[39m[32mcashier@gmail.com[39m[32m"[39m,
+        [34musername[39m: [32m"[39m[32mcashier[39m[32m"[39m,
+        [34mcompany_id[39m: [35m7[39m,
+      },
+      [34;4mApp\Models\User[39;24m {#8118
+        [34mid[39m: [35m18[39m,
+        [34mname[39m: [32m"[39m[32mjames james[39m[32m"[39m,
+        [34memail[39m: [32m"[39m[32mjames@gmail.com[39m[32m"[39m,
+        [34musername[39m: [32m"[39m[32mjames[39m[32m"[39m,
+        [34mcompany_id[39m: [35m7[39m,
+      },
+      [34;4mApp\Models\User[39;24m {#7952
+        [34mid[39m: [35m2[39m,
+        [34mname[39m: [32m"[39m[32mFatma Ali[39m[32m"[39m,
+        [34memail[39m: [32m"[39m[32mmanager@nightshift.test[39m[32m"[39m,
+        [34musername[39m: [32m"[39m[32mmanager[39m[32m"[39m,
+        [34mcompany_id[39m: [35m1[39m,
+      },
+    ],
+  }

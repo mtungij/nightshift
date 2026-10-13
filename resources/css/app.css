@@ -1,0 +1,192 @@
+@import "tailwindcss";
+@import "@fontsource/poppins/latin-500.css";
+@import "@fontsource/poppins/latin-600.css";
+@import "@fontsource/poppins/latin-700.css";
+@import "../../vendor/livewire/flux/dist/flux.css";
+@import "./nightshift.css";
+
+@source '../views';
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../vendor/livewire/flux-pro/stubs/**/*.blade.php';
+@source '../../vendor/livewire/flux/stubs/**/*.blade.php';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    --font-sans:
+        "Poppins", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+        "Segoe UI Symbol", "Noto Color Emoji";
+
+    --color-zinc-50: #fafafa;
+    --color-zinc-100: #f5f5f5;
+    --color-zinc-200: #e5e5e5;
+    --color-zinc-300: #d4d4d4;
+    --color-zinc-400: #a3a3a3;
+    --color-zinc-500: #737373;
+    --color-zinc-600: #525252;
+    --color-zinc-700: #404040;
+    --color-zinc-800: #262626;
+    --color-zinc-900: #171717;
+    --color-zinc-950: #0a0a0a;
+
+    --color-accent: #eab66a;
+    --color-accent-content: #956015;
+    --color-accent-foreground: #241d14;
+}
+
+@layer theme {
+    .dark {
+        --color-accent: #eab66a;
+        --color-accent-content: #eab66a;
+        --color-accent-foreground: #241d14;
+    }
+}
+
+@layer base {
+    body {
+        font-family: var(--font-sans);
+        font-size: 15px;
+        font-weight: 500;
+    }
+
+    *,
+    ::after,
+    ::before,
+    ::backdrop,
+    ::file-selector-button {
+        border-color: var(--color-gray-200, currentColor);
+    }
+}
+
+[data-flux-field]:not(ui-radio, ui-checkbox) {
+    @apply grid gap-2;
+}
+
+[data-flux-label] {
+    @apply !mb-0 !leading-tight;
+}
+
+input:focus[data-flux-control],
+textarea:focus[data-flux-control],
+select:focus[data-flux-control] {
+    @apply outline-hidden ring-2 ring-accent ring-offset-2 ring-offset-accent-foreground;
+}
+
+/* \[:where(&)\]:size-4 {
+    @apply size-4;
+} */
+
+.product-photo {
+    width: 100%;
+    height: 100%;
+    max-height: 150px;
+    object-fit: contain;
+    border-radius: 8px;
+}
+.product-photo[hidden],
+.product-photo-fallback[hidden] {
+    display: none;
+}
+.product-image-preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel2);
+}
+.product-image-preview img {
+    max-width: 100%;
+    max-height: 150px;
+    object-fit: contain;
+}
+.product-image-preview svg,
+.product-photo-fallback svg {
+    width: 36px;
+    height: 36px;
+    color: var(--muted);
+}
+
+.whatsapp-page {
+    max-width: 1180px;
+}
+.whatsapp-page fieldset {
+    border: 0;
+    padding: 0;
+    min-width: 0;
+}
+.whatsapp-tabs {
+    overflow-x: auto;
+    white-space: nowrap;
+}
+.whatsapp-page .whatsapp-section[hidden],
+.whatsapp-page [hidden] {
+    display: none;
+}
+.whatsapp-page .detail-row strong {
+    overflow-wrap: anywhere;
+    text-align: right;
+}
+.whatsapp-recipient {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 0;
+}
+.whatsapp-recipient summary {
+    cursor: pointer;
+    margin-bottom: 12px;
+    overflow-wrap: anywhere;
+}
+.whatsapp-branch-list {
+    display: grid;
+    gap: 10px;
+}
+.whatsapp-preview {
+    min-width: 180px;
+    max-width: 320px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+#whatsapp-link-result {
+    margin: 20px 0;
+    font-size: 24px;
+    letter-spacing: 2px;
+}
+#whatsapp-link-result img {
+    width: 260px;
+    max-width: 100%;
+    height: auto;
+}
+
+.whatsapp-tabs {
+    display: flex;
+    gap: 8px;
+    border-bottom: 1px solid var(--border);
+    margin: 20px 0 24px;
+    padding-bottom: 8px;
+}
+.whatsapp-tabs button {
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    flex-shrink: 0;
+    color: var(--muted);
+    cursor: pointer;
+}
+.whatsapp-tabs button.active {
+    background: var(--amber);
+    color: var(--bg);
+}
+.whatsapp-tabs button:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 2px;
+}
+
+.whatsapp-preview .whatsapp-message-preview {
+    max-height: 130px;
+    overflow: auto;
+}
+#whatsapp-logs .data-table td {
+    vertical-align: top;
+}
