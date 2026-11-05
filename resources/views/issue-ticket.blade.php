@@ -37,12 +37,12 @@
         page-break-inside: auto;
     }
     body.paper-58 .ticket + .ticket {
-        break-before: auto;
-        page-break-before: auto;
-        border-top: 1px dashed #000;
-        margin-top: 3mm;
-        padding-top: 3mm;
-    }
+    break-before: auto;
+    page-break-before: auto;
+    border-top: 1px dashed #000;
+    margin-top: 1mm;
+    padding-top: 1mm;
+}
     .controls {
         display: none;
     }
@@ -70,7 +70,18 @@
         .paper-58 .status>strong{display:block;text-align:left}
         .paper-58 .outstanding>span{display:block}
         .paper-58 .outstanding>.amount{font-size:14px;font-weight:bold}
-        @media print{body.paper-58{width:58mm;padding:0 5mm;margin:0}.paper-58 .ticket+.ticket{padding:2mm 0}}
+        @media print {
+    body.paper-58 {
+        width: 58mm;
+        padding: 0 5mm;
+        margin: 0;
+    }
+
+    .paper-58 .ticket + .ticket {
+        padding-top: 1mm;
+        padding-bottom: 0;
+    }
+}
     </style>
 </head>
 <body class="paper-{{ $paperWidth === '58mm' ? '58' : '80' }}" data-paper-width="{{ $paperWidth }}" data-committed-order="{{ $ticket['order_id'] }}" data-batch="{{ $batch?->token }}">
