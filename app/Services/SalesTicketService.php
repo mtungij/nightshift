@@ -87,7 +87,7 @@ class SalesTicketService
         $issue = WaiterLedgerEntry::where('order_id', $order->id)->where('entry_type', 'ISSUE')->first();
         $issuedTotal = $issue->debit ?? $order->total;
 
-        return ['order_id' => $order->id, 'business' => $company->trading_name ?: $company->name, 'branch' => Branch::findOrFail($order->branch_id)->name, 'invoice' => $order->invoice_number,
+        return ['order_id' => $order->id, 'business' => $company->trading_name ?: $company->name, 'branch' => Branch::findOrFail($order->branch_id)->name, 'invoice' => $order->invoice_number, 'order_note' => $order->order_note,
             'issued_at' => $order->issued_at?->copy()->timezone($company->timezone ?: 'Africa/Dar_es_Salaam')->format('d M Y H:i'),
             'waiter' => User::where('company_id', $order->company_id)->findOrFail($order->waiter_id)->name,
             'table' => ServiceTable::find($order->service_table_id)->name ?? '—', 'counter' => StockLocation::findOrFail($order->stock_location_id)->name,

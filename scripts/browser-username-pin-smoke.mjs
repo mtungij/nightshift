@@ -209,17 +209,6 @@ try {
                     !("pin" in data.user) &&
                     !("password" in data.user),
             );
-            await navigate("/quick-lock");
-            await wait(`!!document.querySelector('form[action$="/quick-lock/unlock"]')`);
-            await set("pin", "0123");
-            await run(
-                `document.querySelector('form[action$="/quick-lock/unlock"]').requestSubmit()`,
-            );
-            await wait('!!document.querySelector("#main h1")');
-            check(
-                `${width}/${slug}: same PIN unlocks Quick Lock`,
-                (await snap()).user.id === account.id,
-            );
         }
     }
     for (const width of [1440, 390]) {
@@ -277,7 +266,7 @@ try {
     const p = data.products.find((p) => p.sku === "BR-001");
     await click(`[data-action="add-cart"][data-id="${p.id}"]`);
     await click('[data-action="send-order"]');
-    await click(`[data-action="serving-waiter"][data-id="${data.user.id}"]`);
+    await set("waiter_id", data.user.id);
     await set("pin", "0987");
     await submit("serving-order");
     const committed = await snap();
@@ -286,14 +275,6 @@ try {
         committed.orders.some((o) => o.waiter === data.user.id && o.status === "Issued"),
     );
     check("POS PIN cleared after send", await run(`!document.querySelector('[name="pin"]')`));
-    await navigate("/quick-lock");
-    await set("pin", "0987");
-    await run(`document.querySelector('form[action$="/quick-lock/unlock"]').requestSubmit()`);
-    await wait('!!document.querySelector("#main h1")');
-    check(
-        "Reset PIN also unlocks Quick Lock",
-        (await snap()).user.id === fixtures.accounts.waiter.id,
-    );
     await c("Network.clearBrowserCookies");
     await navigate(`/companies/${fixtures.foreign.company_id}/login`);
     await set("username", fixtures.accounts.owner.username);

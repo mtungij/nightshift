@@ -51,8 +51,8 @@ class StaffCreationPinTest extends TestCase
             app(StaffPinService::class)->set($staff->id, '6543');
             $this->assertTrue(Hash::check('6543', $staff->fresh()->operational_pin));
             $this->actingAs($staff);
-            $this->post('/quick-lock')->assertRedirect('/quick-lock');
-            $this->post('/quick-lock/unlock', ['pin' => '6543'])->assertRedirect('/dashboard');
+            $this->assertSame($staff->id, app(StaffPinService::class)->verify($staff->id, '6543')->id);
+            $this->get('/settings/profile')->assertOk();
             $this->actingAs(User::where('email', 'admin@nightshift.test')->firstOrFail());
         }
     }

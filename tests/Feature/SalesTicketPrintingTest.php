@@ -370,4 +370,94 @@ class SalesTicketPrintingTest extends TestCase
             $this->command('print-settings', $this->settings($invalid))->assertUnprocessable();
         }
     }
+
+    public function test_note_is_persisted_without_a_table_and_returned_after_reload(): void
+    {
+        $note = 'Mteja karibu na TV <script>alert("note")</script>';
+        $response = $this->command('order-send', [...$this->payload(), 'order_note' => $note])->assertOk();
+        $order = Order::findOrFail($response->json('id'));
+        $this->assertSame($note, $order->fresh()->order_note);
+        $this->assertNull($order->service_table_id);
+        $this->assertSame('0.00', $order->discount);
+        $this->assertSame($order->subtotal, $order->total);
+        $snapshot = $this->getJson('/api/nightshift/bootstrap')->assertOk();
+        $saved = collect($snapshot->json('orders'))->firstWhere('id', $order->id);
+        $this->assertSame($note, $saved['order_note']);
+        $html = $this->get($response->json('print_url'))->assertOk()->assertDontSee($note, false)->assertSee(e($note), false)->getContent();
+        $this->assertSame(2, substr_count($html, e($note)));
+        $this->actingAs(User::factory()->create());
+        $this->get($response->json('print_url'))->assertNotFound()->assertDontSee($note);
+    }
+
+    public function test_notes_render_on_both_ticket_widths_in_both_languages_and_on_isolated_reprints(): void
+    {
+        $note = 'Customer near the entrance '.str_repeat('LongLocationReference', 18);
+        $response = $this->command('order-send', [...$this->payload(), 'order_note' => $note])->assertOk();
+        $before = $this->accounting();
+        foreach (['58mm', '80mm'] as $width) {
+            $this->command('print-settings', $this->settings(['paper_width' => $width]))->assertOk();
+            foreach (['en', 'sw'] as $locale) {
+                $this->owner->forceFill(['language_preference' => $locale])->save();
+                $this->actingAs($this->owner->fresh());
+                $reprint = $this->command('ticket-reprint', ['id' => $response->json('id')])->assertOk();
+                $html = $this->get($reprint->json('print_url'))->assertOk()->assertSee('data-paper-width="'.$width.'"', false)->assertSee($locale === 'en' ? 'Order Note' : 'Maelezo ya Oda')->assertSee('overflow-wrap:anywhere', false)->getContent();
+                $this->assertSame(2, substr_count($html, e($note)));
+                $this->assertSame(2, substr_count($html, 'class="reprint"'));
+                $this->assertSame(2, substr_count($html, '<article class="ticket"'));
+                $this->assertSame($before, $this->accounting());
+            }
+        }
+    }
+
+    public function test_optional_note_is_bounded_and_invalid_notes_have_no_business_or_print_side_effects(): void
+    {
+        $before = $this->accounting();
+        $batches = SalesTicketBatch::count();
+        foreach ([str_repeat('x', 501), ['not a string'], 123] as $note) {
+            $this->command('order-send', [...$this->payload(), 'order_note' => $note])->assertUnprocessable()->assertJsonValidationErrors('order_note');
+            $this->assertSame($before, $this->accounting());
+            $this->assertSame($batches, SalesTicketBatch::count());
+        }
+        $response = $this->command('order-send', [...$this->payload(), 'order_note' => str_repeat('x', 500)])->assertOk();
+        $this->assertSame(500, mb_strlen(Order::findOrFail($response->json('id'))->order_note));
+    }
+
+    public function test_wrong_selected_waiter_pin_with_note_creates_no_order_stock_ledger_payment_or_batch(): void
+    {
+        $other = User::where('email', 'james@nightshift.test')->firstOrFail();
+        app(StaffPinService::class)->set($other->id, '6789');
+        $before = $this->accounting();
+        $batches = SalesTicketBatch::count();
+        $this->command('order-send', [...$this->payload(), 'waiter_id' => $other->id, 'order_note' => 'Red shirt customer'])->assertUnprocessable()->assertJsonValidationErrors('pin');
+        $this->assertSame($before, $this->accounting());
+        $this->assertSame($batches, SalesTicketBatch::count());
+        $this->assertSame(1, $other->fresh()->pin_failed_attempts);
+    }
+
+    public function test_legacy_discounted_draft_keeps_discount_and_saved_note_when_sent(): void
+    {
+        $data = [...$this->payload(), 'discount' => '500', 'status' => 'DRAFT', 'order_note' => 'Last sofa in VIP'];
+        unset($data['pin']);
+        $draft = $this->command('order-create', $data)->assertOk();
+        $order = Order::findOrFail($draft->json('id'));
+        $this->assertSame('500.00', $order->discount);
+        $originalTotal = $order->total;
+        $snapshot = $this->getJson('/api/nightshift/bootstrap')->assertOk();
+        $this->assertSame('Last sofa in VIP', collect($snapshot->json('orders'))->firstWhere('id', $order->id)['order_note']);
+        $sent = $this->command('order-send', ['id' => $order->id, 'waiter_id' => $order->waiter_id, 'pin' => '0123'])->assertOk();
+        $this->assertSame($originalTotal, $order->fresh()->total);
+        $this->assertSame('500.00', $order->fresh()->discount);
+        $this->get($sent->json('print_url'))->assertOk()->assertSee('500.00')->assertSee('Last sofa in VIP');
+    }
+
+    public function test_missing_notes_and_legacy_batch_snapshots_do_not_print_empty_note_sections(): void
+    {
+        $sent = $this->command('order-send', $this->payload())->assertOk();
+        $this->get($sent->json('print_url'))->assertOk()->assertDontSee('class="order-note"', false);
+        $batch = SalesTicketBatch::firstOrFail();
+        $ticket = $batch->ticket;
+        unset($ticket['order_note']);
+        $batch->update(['ticket' => $ticket]);
+        $this->get($sent->json('print_url'))->assertOk()->assertDontSee('class="order-note"', false);
+    }
 }

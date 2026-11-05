@@ -34,10 +34,6 @@ if (page) {
             },
             body: JSON.stringify(payload),
         });
-        if (response.status === 423) {
-            location.href = "/quick-lock";
-            throw Error(t("Your workspace is locked."));
-        }
         if (response.status === 401 || response.status === 419) {
             location.href = "/login";
             throw Error(t("Your session expired. Please log in again."));

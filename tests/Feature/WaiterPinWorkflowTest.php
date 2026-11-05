@@ -268,25 +268,29 @@ class WaiterPinWorkflowTest extends TestCase
         $this->get($response->json('ticket_url'))->assertOk()->assertSee($order->invoice_number)->assertSee($this->waiter->name)->assertSee($this->counter->name)->assertSee('UNPAID')->assertSee('80mm')->assertSee('data-committed-order="'.$order->id.'"', false)->assertSee($order->total)->assertSee($order->items->first()->product_name);
     }
 
-    public function test_quick_lock_blocks_workspace_and_api_until_own_pin_unlock_and_does_not_flash_pin(): void
+    public function test_shared_cashier_requires_the_selected_waiters_pin_and_preserves_attribution(): void
     {
+        $other = User::where('email', 'james@nightshift.test')->firstOrFail();
+        app(StaffPinService::class)->set($other->id, '6789');
         $this->actingAs($this->cashier);
-        $this->post('/quick-lock')->assertRedirect('/quick-lock');
-        $this->get('/dashboard')->assertRedirect('/quick-lock');
-        $this->getJson('/api/nightshift/bootstrap')->assertStatus(423);
-        $this->post('/quick-lock/unlock', ['pin' => '0123'])->assertSessionHasErrors('pin')->assertSessionMissing('_old_input.pin');
-        $this->post('/quick-lock/unlock', ['pin' => '4567'])->assertRedirect('/dashboard');
-        $this->get('/dashboard')->assertOk();
-        $this->get('/quick-lock')->assertOk()->assertSee('Quick Lock');
-    }
-
-    public function test_server_inactivity_lock_preserves_authenticated_session_and_guests_remain_blocked(): void
-    {
-        $this->actingAs($this->cashier)->withSession(['staff_last_activity' => time() - 901]);
-        $this->getJson('/api/nightshift/bootstrap')->assertStatus(423);
+        $orders = Order::count();
+        $ledger = WaiterLedgerEntry::count();
+        $stock = $this->quantity();
+        $payments = PaymentAllocation::count();
+        $this->command('order-send', [...$this->payload(), 'waiter_id' => $other->id])->assertUnprocessable()->assertJsonValidationErrors('pin');
+        $this->assertSame($orders, Order::count());
+        $this->assertSame($ledger, WaiterLedgerEntry::count());
+        $this->assertSame($stock, $this->quantity());
+        $this->assertSame($payments, PaymentAllocation::count());
+        $response = $this->command('order-send', [...$this->payload(), 'waiter_id' => $other->id, 'pin' => '6789'])->assertOk();
+        $order = Order::findOrFail($response->json('id'));
+        $this->assertSame($other->id, $order->waiter_id);
+        $this->assertSame($orders + 1, Order::count());
+        $this->assertSame($ledger + 1, WaiterLedgerEntry::count());
+        $this->assertSame($payments, PaymentAllocation::count());
         $this->assertAuthenticatedAs($this->cashier);
-        $this->assertSame(960, config('session.lifetime'));
-        $this->post('/logout')->assertRedirect('/');
-        $this->get('/dashboard')->assertRedirect('/login');
+        $this->actingAs($this->waiter);
+        $this->command('order-send', [...$this->payload(), 'waiter_id' => $other->id])->assertForbidden();
+        $this->assertSame($orders + 1, Order::count());
     }
 }

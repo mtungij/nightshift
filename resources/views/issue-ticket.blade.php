@@ -9,8 +9,44 @@
     <title>{{ $ticket['invoice'] }} · {{ \App\Support\UiText::get('Sales tickets') }}</title>
     <style>
         :root{color-scheme:light}*{box-sizing:border-box}body{font:12px/1.35 monospace;color:#000;background:#fff;margin:0 auto}body.paper-80{width:80mm;padding:4mm}h1{font-size:17px;margin:4px 0;text-align:center;overflow-wrap:anywhere}.copy-label{font-size:20px;font-weight:900;text-align:center;margin:8px 0}.reprint{font-size:17px;font-weight:bold;text-align:center;border:2px solid #000;padding:4px}.center{text-align:center}.row{display:flex;justify-content:space-between;gap:8px;margin:4px 0}.row>*{overflow-wrap:anywhere;min-width:0}.row>:last-child{text-align:right}.row>.amount{flex-shrink:0;white-space:nowrap}.line{border-top:1px dashed #000;margin:7px 0}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{text-align:right;padding:3px 0;vertical-align:top;overflow-wrap:anywhere}th:first-child,td:first-child{text-align:left;width:48%}th{font-size:10px}td{font-size:11px}.total{font-size:16px;font-weight:bold}button{background:#fff;color:#000;border:1px solid #000;width:100%;padding:12px;margin:12px 0}.ticket+.ticket{border-top:2px dashed #000;margin-top:20px;padding-top:15px}
+        .order-note{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal}.order-note>strong{display:block}
         @page{size:{{ $paperWidth }} 200mm;margin:{{ $paperWidth === '58mm' ? '0' : '4mm' }}}
-        @media print{html,body{background:#fff!important;color:#000!important}body.paper-80{width:72mm;padding:0;margin:0}.ticket{break-inside:avoid}.ticket+.ticket{break-before:page;page-break-before:always;border:0;margin:0;padding:0}.controls{display:none}}
+        @media print {
+    html, body {
+        background: #fff !important;
+        color: #000 !important;
+    }
+    body.paper-80 {
+        width: 72mm;
+        padding: 0;
+        margin: 0;
+    }
+    .ticket {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+    .ticket + .ticket {
+        break-before: page;
+        page-break-before: always;
+        border: 0;
+        margin: 0;
+        padding: 0;
+    }
+    body.paper-58 .ticket {
+        break-inside: auto;
+        page-break-inside: auto;
+    }
+    body.paper-58 .ticket + .ticket {
+        break-before: auto;
+        page-break-before: auto;
+        border-top: 1px dashed #000;
+        margin-top: 3mm;
+        padding-top: 3mm;
+    }
+    .controls {
+        display: none;
+    }
+}
         /* Dedicated 58mm structure: 48mm of content inside the printer's safe area. */
         body.paper-58{width:58mm;padding:0 5mm;font-size:11px;line-height:1.35}
         .paper-58 .ticket{width:48mm;padding:2mm 0;overflow-wrap:anywhere}
@@ -47,10 +83,40 @@
     // Use valid CSS page dimensions and fit roll length to the longest ticket.
     const paperWidth = @json($paperWidth);
     function fitPaper() {
-        const height = Math.ceil(Math.max(...[...document.querySelectorAll('.ticket')].map(el => el.getBoundingClientRect().height)) * 25.4 / 96 + (paperWidth === '58mm' ? 2 : 12));
+        const tickets = [...document.querySelectorAll('.ticket')];
+        if (!tickets.length) return;
+
+        let height;
+
+        if (paperWidth === '58mm') {
+            const firstTop = tickets[0].getBoundingClientRect().top;
+            const lastBottom = tickets[tickets.length - 1]
+                .getBoundingClientRect().bottom;
+
+            height = Math.ceil(
+                (lastBottom - firstTop) * 25.4 / 96 + 6
+            );
+        } else {
+            const longest = Math.max(
+                ...tickets.map(el => el.getBoundingClientRect().height)
+            );
+
+            height = Math.ceil(longest * 25.4 / 96 + 12);
+        }
+
         let style = document.querySelector('#ticket-paper-size');
-        if (!style) { style = document.createElement('style'); style.id = 'ticket-paper-size'; document.head.append(style); }
-        style.textContent = '@page{size:' + paperWidth + ' ' + Math.max(70, height) + 'mm;margin:' + (paperWidth === '58mm' ? '0' : '4mm') + '}';
+
+        if (!style) {
+            style = document.createElement('style');
+            style.id = 'ticket-paper-size';
+            document.head.append(style);
+        }
+
+        style.textContent =
+            '@page{size:' + paperWidth + ' ' +
+            Math.max(70, height) +
+            'mm;margin:' +
+            (paperWidth === '58mm' ? '0' : '4mm') + '}';
     }
     window.addEventListener('beforeprint', fitPaper);
     fitPaper();

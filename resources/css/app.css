@@ -303,15 +303,6 @@ select:focus[data-flux-control] {
     font-size: 15px;
     line-height: 1.6;
 }
-.auth-lock-panel {
-    max-width: 420px;
-    margin: 6vh auto;
-    padding: 28px;
-}
-.auth-lock-panel .auth-brand {
-    display: flex;
-    width: fit-content;
-}
 .onboarding-brand {
     margin: 16px 0 32px;
 }
@@ -321,10 +312,6 @@ select:focus[data-flux-control] {
         align-items: flex-start;
     }
     .auth-card {
-        padding: 24px 20px;
-    }
-    .auth-lock-panel {
-        margin: 24px 16px;
         padding: 24px 20px;
     }
 }

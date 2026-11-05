@@ -214,7 +214,7 @@ if (root) {
     const servingRequestKeys = new Map();
     let cartTable = "VIP 04";
     let cartCounter = "Main Counter";
-    let cartDiscount = 0;
+    let cartNote = "";
     let period = "Today";
     let orderPage = 1;
     let modalTrigger = null;
@@ -360,7 +360,7 @@ if (root) {
                         <div class="language-switch" role="group" aria-label="${tr("Language")}">
                             ${["en", "sw"].map((locale) => html`<button type="button" data-language="${locale}" aria-label="${locale === "en" ? "English" : "Kiswahili"}" aria-pressed="${window.NightshiftI18n.locale === locale}">${locale.toUpperCase()}</button>`).join("")}
                         </div>
-                        ${db.quickLock?.enabled ? html`<button type="button" class="icon-button" data-action="quick-lock" aria-label="Lock workspace" title="Lock workspace">${icon("lock")}</button>` : ""}<button
+                        <button
                             class="icon-button theme-toggle"
                             type="button"
                             data-theme-toggle
@@ -860,6 +860,7 @@ if (root) {
                                             >
                                                 ${invoice(o.id)}
                                             </button>
+                                            ${o.order_note ? html`<small class="order-note">${esc(o.order_note)}</small>` : ""}
                                         </td>
                                         <td>
                                             <div class="table-avatar">
@@ -959,7 +960,7 @@ if (root) {
         let filtered = branchOrders().filter(
             (o) =>
                 !search ||
-                `${invoice(o.id)} ${waiter(o.waiter)?.name} ${o.table}`
+                `${invoice(o.id)} ${waiter(o.waiter)?.name} ${o.table} ${o.order_note || ""}`
                     .toLowerCase()
                     .includes(search.toLowerCase()),
         );
@@ -1026,6 +1027,7 @@ if (root) {
                                                                   >${esc(o.table)}</span
                                                               >
                                                           </p>
+                                                          ${o.order_note ? html`<p class="order-note">${esc(o.order_note)}</p>` : ""}
                                                           <div class="order-card-items">
                                                               ${o.items.map((it) => `${quantity(it.qty)} × ${esc(it.name || product(it.product)?.name)} ${it.unit > 0 ? `(${esc(product(it.product)?.units[it.unit]?.[0])})` : ""}`).join(html`<br />`)}
                                                           </div>
@@ -1327,22 +1329,19 @@ if (root) {
                             <div class="detail-row">
                                 <span>Subtotal</span><strong>${money(total)}</strong>
                             </div>
-                            <div class="detail-row">
-                                <span>Discount (${esc(currencyLabel())})</span
-                                ><input
-                                    type="number"
-                                    min="0"
-                                    max="${total}"
-                                    data-change="cart-discount"
-                                    aria-label="Order discount"
-                                    value="${cartDiscount}"
-                                    class="search-field"
-                                    style="width:90px;min-width:0;padding:5px 8px"
-                                />
-                            </div>
+                            <label class="form-field cart-note"
+                                ><span>Order Note <small>Optional</small></span
+                                ><textarea
+                                    name="order_note"
+                                    data-input="cart-note"
+                                    maxlength="500"
+                                    rows="2"
+                                    placeholder="Optional"
+                                >
+${esc(cartNote)}</textarea>
+                            </label>
                             <div class="cart-total">
-                                <span>Total</span
-                                ><span>${money(Math.max(0, total - cartDiscount))}</span>
+                                <span>Total</span><span>${money(total)}</span>
                             </div>
                             <div class="cart-actions">
                                 ${btn("Send to cashier", "send-order", "primary", "arrow", cart.length ? "" : "disabled")}${db.role === "Waiter" ? btn("Save draft", "save-draft", "", "orders", cart.length ? "" : "disabled") : ""}${btn("Clear cart", "clear-cart", "small", "", cart.length ? "" : "disabled")}
@@ -1356,7 +1355,7 @@ if (root) {
                         </div>
                     </section>
                 </div>
-                ${cart.length ? html`<button class="cart-jump" data-action="cart-jump"><span>${icon("cart")} View order · ${quantity(cart.reduce((n, it) => n + it.qty, 0))} items</span><strong>${money(Math.max(0, total - cartDiscount))} →</strong></button>` : ""}${footer()}`
+                ${cart.length ? html`<button class="cart-jump" data-action="cart-jump"><span>${icon("cart")} View order · ${quantity(cart.reduce((n, it) => n + it.qty, 0))} items</span><strong>${money(total)} →</strong></button>` : ""}${footer()}`
         );
     }
     function tablesScreen() {
@@ -2546,7 +2545,8 @@ if (root) {
         return {
             stock_location_id: db.locations.find((l) => l.name === cartCounter)?.id,
             service_table_id: db.tables.find((t) => t.name === cartTable)?.id || null,
-            discount: String(cartDiscount),
+            discount: "0",
+            order_note: cartNote || null,
             items: cart.map((it) => ({
                 product_unit_id: product(it.product).units[it.unit][3],
                 quantity: String(it.qty),
@@ -2560,27 +2560,47 @@ if (root) {
         const waiters = (db.servingWaiters || []).filter(
             (w) => w.counter_ids.includes(counter) && (!draft || w.id === draft.waiter),
         );
+        const ownOnly =
+            db.role === "Waiter" &&
+            !db.visibility.staff_operations &&
+            !db.visibility.settlement_only;
+        const selected = waiters.find(
+            (w) => w.id === (draft?.waiter || (db.role === "Waiter" ? db.user.id : null)),
+        );
+        const available = ownOnly
+            ? !!selected?.pin_configured
+            : waiters.some((w) => w.pin_configured);
         modal(
             "Who is serving this order?",
-            html`<input type="hidden" name="id" value="${draftId || ""}" /><input
-                    type="hidden"
-                    name="waiter_id"
-                />
-                <p class="modal-description">
-                    Choose the serving waiter and confirm their PIN. Drinks are issued immediately
-                    after confirmation.
-                </p>
-                <div class="serving-waiters">
-                    ${waiters.map((w, i) => html`<button type="button" class="button waiter-card" data-action="serving-waiter" data-id="${w.id}" aria-pressed="false" ${w.pin_configured ? "" : "disabled"}>${avatar(w.name, i)}<span>${esc(w.name)}${w.pin_configured ? "" : html`<small>Ask Company Admin to set PIN</small>`}</span></button>`).join("") || html`<p>No active waiters with an open shift at this counter.</p>`}
-                </div>
-                ${pinField(true)}
+            html`<input type="hidden" name="id" value="${draftId || ""}" />
+                ${
+                    ownOnly
+                        ? html`<input
+                                  type="hidden"
+                                  name="waiter_id"
+                                  value="${selected?.id || ""}"
+                              /><label class="form-field"
+                                  ><span>Waiter</span><input value="${esc(db.user.name)}" readonly
+                              /></label>`
+                        : html`<label class="form-field"
+                              ><span>Waiter</span
+                              ><select name="waiter_id" required data-change="serving-waiter">
+                                  <option value="">Select waiter</option>
+                                  ${waiters.map((w) => html`<option value="${w.id}" ${w.id === selected?.id ? "selected" : ""} ${w.pin_configured ? "" : "disabled"}>${esc(w.name)}${w.pin_configured ? "" : " · " + tr("Ask Company Admin to set PIN")}</option>`).join("")}
+                              </select></label
+                          >`
+                }
+                ${available ? "" : html`<p class="modal-description">No active waiters with an open shift and PIN at this counter.</p>`}
+                ${pinField(!available)}
                 <p data-pin-error role="alert" class="text-red"></p>`,
-            html`<button type="submit" class="button primary" disabled>
+            html`<button type="submit" class="button primary" ${available ? "" : "disabled"}>
                 Confirm and Send to Cashier
             </button>`,
             false,
             "serving-order",
         );
+        if (ownOnly && available)
+            document.querySelector('[data-form="serving-order"] [name="pin"]').focus();
     }
     function staffPinModal(id) {
         const staff = db.team.find((u) => u.id === id);
@@ -2765,6 +2785,14 @@ if (root) {
                     <span>Waiter</span><strong>${esc(waiter(o.waiter)?.name)}</strong>
                 </div>
                 <div class="detail-row"><span>Table</span><strong>${esc(o.table)}</strong></div>
+                ${
+                    o.order_note
+                        ? html`<div class="order-note">
+                              <strong>Order Note</strong>
+                              <div>${esc(o.order_note)}</div>
+                          </div>`
+                        : ""
+                }
                 ${simpleTable(
                     ["Product", "Quantity", "Unit", "Price", "Total"],
                     o.items.map((it) => {
@@ -3068,8 +3096,7 @@ if (root) {
     }
     function staffCredentials() {
         return (
-            pinField() +
-            html`<p class="form-help">Use this PIN for login, Quick Lock and POS confirmation.</p>`
+            pinField() + html`<p class="form-help">Use this PIN for login and POS confirmation.</p>`
         );
     }
     function newBasicForm(type) {
@@ -3269,7 +3296,7 @@ if (root) {
                 );
             if (action === "confirm-clear-cart") {
                 cart = [];
-                cartDiscount = 0;
+                cartNote = "";
                 closeModal();
                 return shell();
             }
@@ -3282,32 +3309,13 @@ if (root) {
                 );
                 if (result) {
                     cart = [];
-                    cartDiscount = 0;
+                    cartNote = "";
                     shell();
                 }
                 return;
             }
             if (action === "send-order") return servingModal();
             if (action === "send-draft") return servingModal(Number(id));
-            if (action === "serving-waiter") {
-                const form = target.closest("form");
-                form.querySelector("[name=waiter_id]").value = id;
-                form.querySelectorAll("[data-action=serving-waiter]").forEach((b) =>
-                    b.setAttribute("aria-pressed", String(b === target)),
-                );
-                form.querySelector("[name=pin]").disabled = false;
-                form.querySelector("[name=pin]").value = "";
-                form.querySelector("[name=pin]").focus();
-                form.querySelector("[data-pin-error]").textContent = "";
-                form.querySelector("[type=submit]").disabled = false;
-                return;
-            }
-            if (action === "waiter-payment") return waiterPaymentModal(Number(id), value);
-            if (action === "staff-pin") return staffPinModal(Number(id));
-            if (action === "quick-lock") {
-                location.href = "/quick-lock";
-                return;
-            }
             if (action === "reject-order")
                 return confirm(
                     "Cancel order",
@@ -3544,6 +3552,7 @@ if (root) {
         el.className = remaining === 0 ? "text-green" : remaining < 0 ? "text-red" : "text-amber";
     }
     document.addEventListener("input", (e) => {
+        if (e.target.matches('[data-input="cart-note"]')) cartNote = e.target.value;
         if (e.target.matches('[data-input="search"]')) {
             search = e.target.value;
             orderPage = 1;
@@ -3618,9 +3627,11 @@ if (root) {
             db.location_id = db.locations.find((l) => l.name === value)?.id;
             reload().catch((error) => toast(error.message));
         }
-        if (action === "cart-discount") {
-            cartDiscount = Math.max(0, Number(value) || 0);
-            shell();
+        if (action === "serving-waiter") {
+            const form = e.target.closest("form");
+            form.querySelector("[name=pin]").value = "";
+            form.querySelector("[data-pin-error]").textContent = "";
+            form.querySelector("[name=pin]").focus();
         }
         if (action === "category-filter") {
             category = value === "All categories" ? "All products" : value;
@@ -3913,10 +3924,6 @@ if (root) {
                 ...options.headers,
             },
         });
-        if (response.status === 423) {
-            location.href = "/quick-lock";
-            throw new Error("Your workspace is locked.");
-        }
         if (response.status === 401 || response.status === 419) {
             location.href = "/login";
             throw new Error("Your session expired. Please log in again.");
@@ -3958,44 +3965,6 @@ if (root) {
         categories.splice(0, categories.length, "All products", ...data.categories);
         return data;
     }
-    let lastInteraction = Date.now();
-    const activityChannel = new BroadcastChannel("nightshift-staff-activity");
-    activityChannel.onmessage = (e) => {
-        if (e.data?.user === db?.user.id)
-            lastInteraction = Math.max(lastInteraction, Number(e.data.at) || 0);
-    };
-    for (const event of ["pointerdown", "keydown", "touchstart"])
-        document.addEventListener(
-            event,
-            () => {
-                lastInteraction = Date.now();
-                if (db?.quickLock?.enabled)
-                    activityChannel.postMessage({ user: db.user.id, at: lastInteraction });
-            },
-            { passive: true },
-        );
-    setInterval(async () => {
-        if (!db?.quickLock?.enabled) return;
-        if (Date.now() - lastInteraction >= db.quickLock.minutes * 60000) {
-            location.href = "/quick-lock";
-            return;
-        }
-        if (Date.now() - lastInteraction < 60000) {
-            try {
-                const response = await fetch("/api/nightshift/activity", {
-                    method: "POST",
-                    headers: {
-                        Accept: "application/json",
-                        "X-CSRF-TOKEN": document.querySelector("[name=csrf-token]").content,
-                    },
-                });
-                if (response.status === 423) location.href = "/quick-lock";
-                else if ([401, 419].includes(response.status)) location.href = "/login";
-            } catch {
-                /* Normal requests will surface connection failures. */
-            }
-        }
-    }, 30000);
     window.addEventListener("pageshow", (event) => {
         if (event.persisted) boot();
     });
@@ -4077,7 +4046,7 @@ if (root) {
             const result = await send(command, payload, element);
             if (command === "order-send") {
                 cart = [];
-                cartDiscount = 0;
+                cartNote = "";
                 servingRequestKeys.clear();
                 shell();
             }

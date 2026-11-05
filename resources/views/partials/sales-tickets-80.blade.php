@@ -8,6 +8,9 @@
         @foreach(['Invoice' => 'invoice', 'Date/time' => 'issued_at', 'Waiter' => 'waiter', 'Table' => 'table', 'Counter' => 'counter'] as $label => $field)
             <div class="row"><span>{{ \App\Support\UiText::get($label) }}</span><strong>{{ $ticket[$field] }}</strong></div>
         @endforeach
+        @if(filled($ticket['order_note'] ?? null))
+            <div class="order-note"><strong>{{ \App\Support\UiText::get('Order Note') }}</strong><div>{{ $ticket['order_note'] }}</div></div>
+        @endif
         <div class="line"></div>
         <table><thead><tr><th>{{ \App\Support\UiText::get('Item / Quantity / Unit') }}</th><th>{{ \App\Support\UiText::get('Unit price') }}</th><th>{{ \App\Support\UiText::get('Line total') }}</th></tr></thead>
             <tbody>@foreach($ticket['items'] as $item)<tr><td>{{ $item['product_name'] }}<br>{{ \App\Support\QuantityFormatter::format($item['quantity']) }} × {{ $item['unit_name'] }}</td><td>{{ $item['unit_price'] }}</td><td>{{ $item['total'] }}</td></tr>@endforeach</tbody>

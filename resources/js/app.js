@@ -26,10 +26,6 @@ document.addEventListener("click", async (event) => {
             },
             body: JSON.stringify({ locale: button.dataset.language }),
         });
-        if (response.status === 423) {
-            location.href = "/quick-lock";
-            return;
-        }
         if (!response.ok)
             throw new Error(
                 window.NightshiftI18n.messages["Language could not be saved. Please try again."] ||

@@ -6,6 +6,9 @@ const base = process.env.SMOKE_BASE_URL || "http://127.0.0.1:8884";
 const debug = process.env.SMOKE_DEBUG_URL || "http://127.0.0.1:9224";
 const paperWidth = process.env.SMOKE_PAPER_WIDTH || "80mm";
 if (!["58mm", "80mm"].includes(paperWidth)) throw new Error("Unsupported test paper width");
+const orderNote =
+    "Customer near TV <script>window.__noteExecuted=true</script> " +
+    "LongLocationReference".repeat(15);
 const output = process.env.SMOKE_OUTPUT || `/tmp/nightshift-${paperWidth}-ticket-browser`;
 await fs.mkdir(output, { recursive: true });
 // Keep a page open while replacing earlier validation tabs.
@@ -211,8 +214,21 @@ try {
                 const before = await snap(),
                     product = before.products.find((p) => p.sku === "BR-001");
                 await click(`[data-action=add-cart][data-id="${product.id}"]`);
+                await set("order_note", orderNote);
+                check(
+                    `${tag} cart note replaces discount`,
+                    await run(
+                        `!document.querySelector('[data-change="cart-discount"]') && document.querySelector('[name="order_note"]').maxLength===500`,
+                    ),
+                );
                 await click("[data-action=send-order]");
-                await click(`[data-action=serving-waiter][data-id="${asha.id}"]`);
+                check(
+                    `${tag} compact waiter dropdown and ready PIN`,
+                    await run(
+                        `!!document.querySelector('select[name="waiter_id"][required]') && !document.querySelector('[name="pin"]').disabled && !document.querySelector('.serving-waiters')`,
+                    ),
+                );
+                await set("waiter_id", asha.id);
                 if (width === 1440 && theme === "light" && locale === "en") {
                     await set("pin", "9999");
                     await run(
@@ -238,6 +254,16 @@ try {
                 const after = await snap(),
                     order = after.orders.find((o) => !before.orders.some((b) => b.id === o.id));
                 latest = order;
+                check(
+                    `${tag} saved note survives snapshot`,
+                    order.order_note === orderNote && Number(order.discount) === 0,
+                );
+                check(
+                    `${tag} both copies escape and preserve note`,
+                    await run(
+                        `(()=>{const d=document.querySelector('#issue-ticket-frame').contentDocument;return [...d.querySelectorAll('.order-note>div')].length===2 && [...d.querySelectorAll('.order-note>div')].every(n=>n.textContent===${JSON.stringify(orderNote)}) && !d.querySelector('.order-note script')})()`,
+                    ),
+                );
                 check(
                     `${tag} one stock issue and ledger debit`,
                     order.status === "Issued" &&
@@ -315,12 +341,24 @@ try {
     await wait('!!document.querySelector(".subtabs")');
     await click('[data-action=tab][data-value="All orders"]');
     await click(`[data-action=order-detail][data-id="${latest.id}"]`);
+    check(
+        "Order details show saved note safely",
+        await run(
+            `document.querySelector('.modal .order-note')?.textContent.includes(${JSON.stringify(orderNote)}) && !document.querySelector('.order-note script')`,
+        ),
+    );
     await click(`[data-action=reprint-tickets][data-id="${latest.id}"]`);
     await wait('document.querySelector("#issue-ticket-frame")?.contentWindow?.__printCalls===1');
     check(
         "Authorized UI reprint has two REPRINT labels",
         await run(
             `document.querySelector('#issue-ticket-frame').contentDocument.querySelectorAll('.reprint').length===2`,
+        ),
+    );
+    check(
+        "Reprints include note on both copies",
+        await run(
+            `document.querySelector('#issue-ticket-frame').contentDocument.querySelectorAll('.order-note>div').length===2`,
         ),
     );
     const reprintUrl = await run(
@@ -384,7 +422,5 @@ try {
     console.error(String(error));
     process.exitCode = 1;
 } finally {
-    ws.close();
-    // Chrome may retain the debugging connection after the close handshake.
-    setTimeout(() => process.exit(process.exitCode || 0), 100);
+    process.exit(process.exitCode || 0);
 }

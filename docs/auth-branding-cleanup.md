@@ -1,13 +1,15 @@
+> Historical branding validation record. The subsequent [shared POS session update](shared-pos-sessions.md) removes the inactivity lock and its screen. Counts below describe the earlier branding validation.
+
 # Nightshift authentication branding cleanup
 
-The existing canonical mark is `public/nightshift.svg`: the dark rounded tile with the gold cocktail glass. Authentication, registration, Quick Lock, settings and the main workspace now reuse that same asset. No new logo was designed.
+The existing canonical mark is `public/nightshift.svg`: the dark rounded tile with the gold cocktail glass. Authentication, registration, settings and the main workspace now reuse that same asset. No new logo was designed.
 
 ## User-facing cleanup
 
 - Shared `app-logo-icon` / `app-logo` components now use Nightshift. A shared `nightshift-brand` component supplies the mark and wordmark.
 - Simple, card and split auth layouts share a compact Nightshift container. Login, staff registration, forgot/reset password, password confirmation, email verification and two-factor/recovery-code views inherit it.
 - Login now says **Log in to Nightshift**, keeps the username and masked four-digit PIN fields, and retains both the admin-reset helper and business-onboarding link.
-- Quick Lock and business registration reuse the same identity. Their forms and actions were preserved.
+- Business registration reuses the same identity. Its forms and actions were preserved.
 - Settings desktop/mobile layouts no longer link to the Laravel starter-kit repository or documentation.
 - The unused welcome view no longer contains starter-kit promotional text or Laravel SVGs.
 - Normal HTTP error pages use an application-owned Nightshift layout, preserving their status codes.
@@ -38,7 +40,7 @@ The raster exports were rendered from the existing SVG and resized without chang
 - `resources/views/layouts/auth/simple.blade.php`, `card.blade.php`, `split.blade.php`: common auth presentation.
 - `resources/views/layouts/app/header.blade.php`, `sidebar.blade.php`: remove starter-kit external links.
 - `resources/views/pages/auth/login.blade.php`: requested login title.
-- `resources/views/business/register.blade.php`, `quick-lock.blade.php`: shared mark and toolbar.
+- `resources/views/business/register.blade.php`: shared mark and toolbar.
 - `resources/views/partials/head.blade.php`, `brand-icons.blade.php`, `auth-toolbar.blade.php`: titles, icon metadata and guest controls.
 - `resources/views/layouts/nightshift.blade.php`, `bar.blade.php`: shared browser-icon metadata.
 - `resources/views/welcome.blade.php`, `errors/minimal.blade.php`: Nightshift welcome/error identity.
@@ -55,10 +57,10 @@ The raster exports were rendered from the existing SVG and resized without chang
 - Focused authentication/localization/branding suite: **36 tests / 447 assertions passed**.
 - PHPStan: **0 errors**.
 - PHP/JavaScript/CSS formatting and production frontend build: **passed**.
-- Browser matrix: **179 checks passed**, including admin/owner, manager, cashier, waiter and store keeper login; Quick Lock/unlock for each role; EN/SW; light/dark; desktop/mobile; business registration; password recovery/reset; profile settings; 404; and favicon/manifest asset availability.
+- Browser matrix: **179 checks passed**, including admin/owner, manager, cashier, waiter and store keeper login; EN/SW; light/dark; desktop/mobile; business registration; password recovery/reset; profile settings; 404; and favicon/manifest asset availability.
 - Screenshots were visually inspected for desktop English light/dark and mobile Kiswahili dark. No Laravel logo or starter-kit link was visible, no horizontal overflow was detected, and no browser exception or HTTP 5xx response occurred.
 
-A before/after SHA-256 audit confirmed all 127 protected application/authentication/accounting/routing/session/theme files were unchanged. The login, business-registration and Quick Lock form markup matched the original forms exactly; only surrounding presentation and the login heading changed. Existing tenant/role/session and business regression tests passed.
+A before/after SHA-256 audit confirmed all 127 protected application/authentication/accounting/routing/session/theme files were unchanged. The login and business-registration form markup matched the original forms exactly; only surrounding presentation and the login heading changed. Existing tenant/role/session and business regression tests passed.
 
 Browser evidence: [results](/tmp/nightshift-auth-branding-browser/result.json), [desktop light login](/tmp/nightshift-auth-branding-browser/1440-en-light-login.png), [desktop dark login](/tmp/nightshift-auth-branding-browser/1440-en-dark-login.png), [mobile Kiswahili dark login](/tmp/nightshift-auth-branding-browser/390-sw-dark-login.png), [320px login](/tmp/nightshift-auth-branding-browser/320-sw-dark-login.png).
 

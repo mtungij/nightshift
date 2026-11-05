@@ -178,7 +178,7 @@ try {
         const before = await snap();
         await click(`[data-action="add-cart"][data-id="${product.id}"]`);
         await click('[data-action="send-order"]');
-        await click(`[data-action="serving-waiter"][data-id="${w.id}"]`);
+        await set("waiter_id", w.id);
         await set("pin", "0123");
         await run(
             `document.querySelector('[data-form="serving-order"]').requestSubmit();document.querySelector('[data-form="serving-order"]')?.requestSubmit()`,

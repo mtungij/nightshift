@@ -229,28 +229,6 @@ try {
                 await run("location.pathname==='/dashboard'||location.pathname==='/open-shift'"),
             );
             await language(width === 390 ? "sw" : "en");
-            await run(
-                `fetch('/quick-lock',{method:'POST',headers:{'X-CSRF-TOKEN':document.querySelector('[name=csrf-token]').content}}).then(r=>{if(!r.ok)throw Error('Lock '+r.status)})`,
-            );
-            await navigate("/quick-lock");
-            await appearance(width === 390 ? "dark" : "light");
-            await brandCheck(`${tag} Quick Lock`);
-            check(
-                `${tag}: Quick Lock preserves actor`,
-                await run(
-                    `document.body.innerText.includes(${JSON.stringify("PIN " + role)}) && document.querySelector('[name=pin]').type==='password'`,
-                ),
-            );
-            await shot(`${tag}-quick-lock`);
-            await set("pin", "0123");
-            await run(
-                "document.querySelector('form[action$=\"/quick-lock/unlock\"]').requestSubmit()",
-            );
-            await wait("location.pathname==='/dashboard'||location.pathname==='/open-shift'");
-            check(
-                `${tag}: unlock succeeds`,
-                await run("location.pathname==='/dashboard'||location.pathname==='/open-shift'"),
-            );
             await navigate("/settings/profile");
             await brandCheck(`${tag} settings`);
             if (role === "owner") await shot(`${tag}-settings`);

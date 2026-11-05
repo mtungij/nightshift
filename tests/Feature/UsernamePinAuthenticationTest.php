@@ -57,10 +57,7 @@ class UsernamePinAuthenticationTest extends TestCase
         $this->assertAuthenticatedAs($user);
         $this->assertNull($user->email_verified_at);
         $this->get('/dashboard')->assertOk();
-        $this->getJson('/api/nightshift/bootstrap')->assertOk()->assertJsonPath('role', $role)->assertJsonPath('permissions', $permissions)->assertJsonPath('quickLock.enabled', true);
-        $this->get('/quick-lock')->assertOk();
-        $this->getJson('/api/nightshift/bootstrap')->assertStatus(423);
-        $this->post('/quick-lock/unlock', ['pin' => '0123'])->assertRedirect('/dashboard');
+        $this->getJson('/api/nightshift/bootstrap')->assertOk()->assertJsonPath('role', $role)->assertJsonPath('permissions', $permissions)->assertJsonMissingPath('quickLock');
         $this->getJson('/api/nightshift/bootstrap')->assertOk();
     }
 
@@ -145,8 +142,6 @@ class UsernamePinAuthenticationTest extends TestCase
         $this->actingAs($manager)->postJson('/api/nightshift/commands/staff-pin', [...$data, 'idempotency_key' => (string) Str::uuid()])->assertForbidden();
         $this->post('/logout');
         $this->post('/login', ['username' => $manager->username, 'pin' => '0987'])->assertRedirect('/dashboard');
-        $this->get('/quick-lock')->assertOk();
-        $this->post('/quick-lock/unlock', ['pin' => '0987'])->assertRedirect('/dashboard');
     }
 
     public function test_migration_preserves_legacy_data_and_pin_hashes_and_assigns_unique_usernames(): void

@@ -2,7 +2,6 @@
 
 use App\Http\Middleware\RedactPin;
 use App\Http\Middleware\SetLocale;
-use App\Http\Middleware\StaffQuickLock;
 use App\Support\UiText;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -19,7 +18,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->trimStrings(except: ['pin']);
-        $middleware->appendToGroup('web', [SetLocale::class, RedactPin::class, StaffQuickLock::class]);
+        $middleware->appendToGroup('web', [SetLocale::class, RedactPin::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->respond(function (Response $response) {

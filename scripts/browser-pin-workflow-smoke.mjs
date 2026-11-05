@@ -169,7 +169,7 @@ async function draftCheck() {
             'document.documentElement.scrollWidth<=320 && document.querySelector("[name=pin]").disabled',
         ),
     );
-    await click(`[data-action=serving-waiter][data-id="${data.user.id}"]`);
+    await set("waiter_id", data.user.id);
     await set("pin", "0123");
     await submit("serving-order");
     const issued = await snap();
@@ -290,7 +290,7 @@ try {
                         'document.querySelector("[data-form=serving-order] [type=submit]").disabled && document.querySelector("[name=pin]").disabled',
                     ),
                 );
-                await click(`[data-action="serving-waiter"][data-id="${asha.id}"]`);
+                await set("waiter_id", asha.id);
                 await set("pin", "9999");
                 await run('document.querySelector("[data-form=serving-order]").requestSubmit()');
                 await wait(
@@ -399,38 +399,10 @@ try {
             ),
         );
         await click('[data-action="close-modal"]');
-        await navigate("/quick-lock");
-        check(
-            "Quick Lock masks PIN and preserves account identity",
-            await run(
-                'document.querySelector("[name=pin]").type==="password"&&document.body.innerText.includes("Peter Macha")',
-            ),
-        );
-        check(
-            "Locked API cannot read business data",
-            await run(
-                'fetch("/api/nightshift/bootstrap",{headers:{Accept:"application/json"}}).then(r=>r.status===423)',
-            ),
-        );
-        await set("pin", "4567");
-        await run('document.querySelector("form[action$=unlock]").requestSubmit()');
-        await wait('!!document.querySelector("#main h1")');
-        check(
-            "Own PIN unlocks cashier settlement workspace",
-            await run('document.querySelector("#main h1").textContent==="Waiter accounts"'),
-        );
         await run('window.NightshiftTheme.save("light")');
         await login("asha@nightshift.test");
         check(
             "Waiter password login still reaches POS",
-            await run('document.querySelector("#main h1").textContent==="Point of sale"'),
-        );
-        await navigate("/quick-lock");
-        await set("pin", "0123");
-        await run('document.querySelector("form[action$=unlock]").requestSubmit()');
-        await wait('!!document.querySelector("#main h1")');
-        check(
-            "Waiter own PIN unlocks POS",
             await run('document.querySelector("#main h1").textContent==="Point of sale"'),
         );
     }

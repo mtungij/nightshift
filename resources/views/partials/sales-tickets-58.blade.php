@@ -9,6 +9,9 @@
         @foreach(['Invoice' => 'invoice', 'Date/time' => 'issued_at', 'Waiter' => 'waiter', 'Table' => 'table', 'Counter' => 'counter'] as $label => $field)
             <div class="row meta-row"><span>{{ \App\Support\UiText::get($label) }}</span><strong>{{ $ticket[$field] }}</strong></div>
         @endforeach
+        @if(filled($ticket['order_note'] ?? null))
+            <div class="order-note"><strong>{{ \App\Support\UiText::get('Order Note') }}</strong><div>{{ $ticket['order_note'] }}</div></div>
+        @endif
         <div class="line"></div>
         <div class="ticket-items">
             @foreach($ticket['items'] as $item)

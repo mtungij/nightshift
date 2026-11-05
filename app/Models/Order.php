@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property int $waiter_id
  * @property int|null $service_table_id
  * @property int $shift_id
+ * @property string|null $order_note
  * @property string $invoice_number
  * @property numeric-string $subtotal
  * @property numeric-string $discount

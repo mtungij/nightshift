@@ -198,14 +198,14 @@ try {
         const product = d.products.find((p) => p.sku === "BR-001");
         await click(`[data-action="add-cart"][data-id="${product.id}"]`);
         await click('[data-action="send-order"]');
-        await wait('!!document.querySelector(".serving-waiters")');
+        await wait(`!!document.querySelector('[data-form="serving-order"]')`);
         check(
             label + "POS waiter modal exposes only self",
             await run(
-                `document.querySelectorAll('[data-action="serving-waiter"]').length===1 && !!document.querySelector('[data-action="serving-waiter"][data-id="${f.accounts["waiter-a"].id}"]')`,
+                `!document.querySelector('select[name="waiter_id"]') && document.querySelector('[name="waiter_id"]').value==='${f.accounts["waiter-a"].id}'`,
             ),
         );
-        await click(`[data-action="serving-waiter"][data-id="${f.accounts["waiter-a"].id}"]`);
+        await set("waiter_id", f.accounts["waiter-a"].id);
         await set("pin", "0123");
         await submit("serving-order");
         const afterSend = await snap();
@@ -213,14 +213,6 @@ try {
             label + "Own PIN-confirmed POS order still works",
             afterSend.orders.length === d.orders.length + 1 &&
                 afterSend.orders.every((o) => o.waiter === f.accounts["waiter-a"].id),
-        );
-        await navigate("/quick-lock");
-        await set("pin", "0123");
-        await run(`document.querySelector('form[action$="/quick-lock/unlock"]').requestSubmit()`);
-        await wait('!!document.querySelector("#main h1")');
-        check(
-            label + "Same PIN unlocks staff workspace",
-            (await snap()).user.id === f.accounts["waiter-a"].id,
         );
         await screen("waiters");
         check(
@@ -299,11 +291,11 @@ try {
         const cashierProduct = (await snap()).products.find((p) => p.sku === "BR-001");
         await click(`[data-action="add-cart"][data-id="${cashierProduct.id}"]`);
         await click('[data-action="send-order"]');
-        await wait('!!document.querySelector(".serving-waiters")');
+        await wait(`!!document.querySelector('[data-form="serving-order"]')`);
         check(
             label + "Cashier POS lists eligible counter waiters",
             await run(
-                `!!document.querySelector('[data-action="serving-waiter"][data-id="${f.accounts["waiter-a"].id}"]') && !!document.querySelector('[data-action="serving-waiter"][data-id="${f.accounts["waiter-b"].id}"]') && !document.querySelector('[data-action="serving-waiter"][data-id="${f.accounts["waiter-vip"].id}"]')`,
+                `!!document.querySelector('select[name=\"waiter_id\"] option[value=\"${f.accounts["waiter-a"].id}\"]') && !!document.querySelector('select[name=\"waiter_id\"] option[value=\"${f.accounts["waiter-b"].id}\"]') && !document.querySelector('select[name=\"waiter_id\"] option[value=\"${f.accounts["waiter-vip"].id}\"]')`,
             ),
         );
         await click('[data-action="close-modal"]');

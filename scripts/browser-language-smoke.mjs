@@ -262,7 +262,7 @@ try {
             );
             await shot(`${locale}-${theme}-390-pin-modal`);
             if (locale === "sw") {
-                await click(`[data-action="serving-waiter"][data-id="${servingWaiter.id}"]`);
+                await set("waiter_id", servingWaiter.id);
                 await set("pin", "9999");
                 await run(`document.querySelector('[data-form="serving-order"]').requestSubmit()`);
                 await wait(

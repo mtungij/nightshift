@@ -276,7 +276,7 @@ try {
             check(
                 "New waiter visible in POS selection after opening shift",
                 await run(
-                    `!!document.querySelector('[data-action="serving-waiter"][data-id="${staff.id}"]:not(:disabled)')`,
+                    `!!document.querySelector('select[name=\"waiter_id\"] option[value=\"${staff.id}\"]:not(:disabled)')`,
                 ),
             );
             await run(

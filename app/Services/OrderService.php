@@ -69,7 +69,7 @@ final class OrderService
             $discount = D::money($data['discount'] ?? '0');
             $this->stock->require(D::cmp($discount, '0') >= 0 && D::cmp($discount, $subtotal) <= 0, 'Discount cannot exceed the subtotal.');
             $total = D::sub($subtotal, $discount);
-            $o = Order::create(['branch_id' => $location->branch_id, 'stock_location_id' => $location->id, 'waiter_id' => $waiter->id, 'service_table_id' => $table?->id, 'shift_id' => $shift->id, 'invoice_number' => $this->numbers->next('INV'), 'subtotal' => $subtotal, 'discount' => $discount, 'total' => $total, 'balance' => $total, 'status' => $data['status'] ?? 'WAITING_FOR_ISSUE', 'created_by' => $actor->id]);
+            $o = Order::create(['branch_id' => $location->branch_id, 'stock_location_id' => $location->id, 'waiter_id' => $waiter->id, 'service_table_id' => $table?->id, 'order_note' => $data['order_note'] ?? null, 'shift_id' => $shift->id, 'invoice_number' => $this->numbers->next('INV'), 'subtotal' => $subtotal, 'discount' => $discount, 'total' => $total, 'balance' => $total, 'status' => $data['status'] ?? 'WAITING_FOR_ISSUE', 'created_by' => $actor->id]);
             // Floor proportional shares, then distribute the remaining cents. No line
             // can receive a negative discount or more than its original gross value.
             $remaining = $discount;

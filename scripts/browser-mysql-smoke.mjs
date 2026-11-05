@@ -171,7 +171,7 @@ try {
     await click(`[data-action="add-cart"][data-id="${productId}"]`);
     await click('[data-action="send-order"]');
     await wait('!!document.querySelector("[data-form=serving-order]")');
-    await click(`[data-action="serving-waiter"][data-id="${servingWaiter.id}"]`);
+    await set("waiter_id", servingWaiter.id);
     await set("pin", "0123");
     await submit("serving-order");
     await wait(

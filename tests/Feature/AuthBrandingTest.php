@@ -64,7 +64,7 @@ class AuthBrandingTest extends TestCase
         $this->assertStringNotContainsString('laravel.com', $html);
     }
 
-    public function test_quick_lock_and_settings_keep_the_same_brand(): void
+    public function test_authenticated_settings_keep_the_same_brand(): void
     {
         $user = User::factory()->create();
         $this->actingAs($user);
@@ -72,9 +72,6 @@ class AuthBrandingTest extends TestCase
             $this->get($url)->assertOk()->assertSee('/nightshift.svg', false)
                 ->assertDontSee('laravel.com')->assertDontSee('livewire-starter-kit');
         }
-        $this->post('/quick-lock')->assertRedirect('/quick-lock');
-        $this->get('/quick-lock')->assertOk()->assertSee('/nightshift.svg', false)
-            ->assertSee('name="pin"', false)->assertDontSee('Laravel');
     }
 
     public function test_normal_error_pages_are_nightshift_branded_and_keep_status_codes(): void

@@ -5,7 +5,6 @@ use App\Http\Controllers\BusinessProfileController;
 use App\Http\Controllers\LanguagePreferenceController;
 use App\Http\Controllers\NightshiftController;
 use App\Http\Controllers\OpenShiftController;
-use App\Http\Controllers\QuickLockController;
 use App\Http\Controllers\WhatsAppController;
 use App\Http\Middleware\RequireOperationalShift;
 use App\Http\Middleware\RequireWhatsAppAccess;
@@ -27,9 +26,6 @@ Route::middleware('guest')->group(function () {
     Route::post('/register-business', [BusinessOnboardingController::class, 'store'])->middleware('throttle:5,1')->name('business.store');
 });
 Route::middleware(['auth'])->group(function () {
-    Route::get('/quick-lock', [QuickLockController::class, 'show'])->name('quick-lock');
-    Route::post('/quick-lock', [QuickLockController::class, 'lock']);
-    Route::post('/quick-lock/unlock', [QuickLockController::class, 'unlock'])->middleware('throttle:10,1')->name('quick-lock.unlock');
     Route::prefix('settings/whatsapp')->middleware([RequireWhatsAppAccess::class, 'throttle:30,1'])->group(function () {
         Route::get('/', [WhatsAppController::class, 'index'])->name('whatsapp.settings');
         Route::post('/', [WhatsAppController::class, 'save']);
@@ -49,11 +45,6 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/open-shift', [OpenShiftController::class, 'store'])->middleware('throttle:20,1')->name('shift.open.store');
     Route::get('/dashboard', Workspace::class)->middleware(RequireOperationalShift::class)->name('dashboard');
     Route::prefix('api/nightshift')->middleware(['throttle:120,1', RequireOperationalShift::class])->group(function () {
-        Route::post('/activity', function () {
-            abort_unless(auth()->user()->active && auth()->user()->company_id, 403);
-
-            return response()->noContent();
-        });
         Route::get('/products/{id}/image', [NightshiftController::class, 'productImage'])->name('nightshift.product-image');
         Route::get('/bootstrap', [NightshiftController::class, 'snapshot']);
         Route::post('/commands/{command}', [NightshiftController::class, 'command']);
