@@ -4,6 +4,7 @@ use App\Domain\TenantContext;
 use App\Models\User;
 use App\Services\OrderService;
 use App\Services\PaymentService;
+use App\Services\SalesTicketService;
 use App\Services\TransactionService;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Validation\ValidationException;
@@ -33,7 +34,16 @@ try {
             return app(OrderService::class)->issue($request['order_id']);
         }
         if ($request['action'] === 'send') {
-            return app(OrderService::class)->send($request['payload'], $request['key']);
+            $result = app(OrderService::class)->send($request['payload'], $request['key']);
+            $batch = app(SalesTicketService::class)->prepare($result['id'], $request['key']);
+
+            return [...$result, 'print_batch' => $batch?->id];
+        }
+        if ($request['action'] === 'ticket-dispatch') {
+            return ['id' => 0, 'print' => app(SalesTicketService::class)->dispatch($request['token'])];
+        }
+        if ($request['action'] === 'ticket-reprint') {
+            return app(SalesTicketService::class)->prepare($request['order_id'], $request['key'], true);
         }
         if ($request['action'] === 'waiter-payment') {
             return app(TransactionService::class)->idempotent($request['key'], 'waiter-payment', $request['payload'], fn () => app(PaymentService::class)->receiveWaiter($request['payload']['waiter_id'], $request['payload']['stock_location_id'], $request['payload']['amount'], 'Cash'));
@@ -49,7 +59,7 @@ try {
         }
         throw new RuntimeException('Unknown validation worker action.');
     });
-    echo json_encode(['code' => 200, 'id' => is_array($result) ? ($result['id'] ?? $result['waiter_id']) : $result->id], JSON_THROW_ON_ERROR)."\n";
+    echo json_encode(['code' => 200, 'id' => is_array($result) ? ($result['id'] ?? $result['waiter_id']) : $result->id, 'print_batch' => is_array($result) ? ($result['print_batch'] ?? null) : null, 'print' => is_array($result) ? ($result['print'] ?? null) : null], JSON_THROW_ON_ERROR)."\n";
 } catch (ValidationException $error) {
     echo json_encode(['code' => 422, 'errors' => $error->errors()], JSON_THROW_ON_ERROR)."\n";
 } catch (Throwable $error) {

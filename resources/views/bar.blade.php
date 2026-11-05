@@ -6,7 +6,7 @@
     @include('partials.theme')
     <meta name="description" content="Nightshift — a smarter way to run your bar. Sales, waiter accountability, stock and shift control in one workspace.">
     <title>{{ \App\Support\UiText::get('Nightshift · Bar management') }}</title>
-    <link rel="icon" type="image/svg+xml" href="{{ asset('nightshift.svg') }}">
+    @include('partials.brand-icons')
     @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 <body class="nightshift">

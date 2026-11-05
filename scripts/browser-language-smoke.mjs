@@ -150,7 +150,7 @@ try {
     await wait('document.documentElement.lang==="sw"');
     check(
         "Guest Kiswahili login rendered",
-        await run('document.body.innerText.includes("Ingia kwenye akaunti yako")'),
+        await run('document.body.innerText.includes("Ingia Nightshift")'),
     );
     await navigate(`${base}/register-business`);
     check(

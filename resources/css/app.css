@@ -190,3 +190,141 @@ select:focus[data-flux-control] {
 #whatsapp-logs .data-table td {
     vertical-align: top;
 }
+
+/* One Nightshift identity across guest, authentication and settings screens. */
+.nightshift-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 11px;
+    color: #202b3b;
+    text-decoration: none;
+    font:
+        700 18px/1.25 Poppins,
+        sans-serif;
+    letter-spacing: 2.4px;
+}
+.dark .nightshift-brand {
+    color: #f5f5f5;
+}
+.nightshift-brand small {
+    display: block;
+    margin-top: 5px;
+    color: #6b7280;
+    font-size: 10px;
+    letter-spacing: 2px;
+}
+.dark .nightshift-brand small {
+    color: #b6bcc6;
+}
+.nightshift-brand-mark {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+}
+.auth-brand {
+    align-self: center;
+    margin: 0 auto 26px;
+}
+.nightshift-auth {
+    background: #f6f7f9;
+    color: #202b3b;
+    font:
+        500 15px/1.6 Poppins,
+        sans-serif;
+}
+.dark .nightshift-auth {
+    background: #111317;
+    color: #f5f5f5;
+}
+.auth-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 16px;
+    color: #202b3b;
+}
+.dark .auth-toolbar {
+    color: #f5f5f5;
+}
+.auth-theme-toggle {
+    padding: 9px 10px;
+    border: 1px solid #95601566;
+    border-radius: 8px;
+    font:
+        600 12px Poppins,
+        sans-serif;
+    cursor: pointer;
+}
+.auth-theme-toggle:focus-visible {
+    outline: 2px solid #956015;
+    outline-offset: 2px;
+}
+.auth-shell {
+    min-height: calc(100svh - 76px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 20px 64px;
+}
+.auth-container {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 420px;
+}
+.auth-card {
+    background: #fff;
+    border: 1px solid #e4e7ec;
+    border-radius: 16px;
+    padding: 30px;
+    box-shadow: 0 8px 32px #17213308;
+}
+.dark .auth-card {
+    background: #1a1d22;
+    border-color: #30353d;
+}
+.auth-card input:not([type="hidden"]) {
+    font-size: 16px;
+    min-height: 46px;
+}
+.auth-card button[type="submit"] {
+    min-height: 46px;
+    font-size: 15px;
+    font-weight: 700;
+}
+.auth-card [data-flux-heading] {
+    font-size: 23px;
+    line-height: 1.4;
+}
+.auth-card [data-flux-subheading] {
+    margin-top: 8px;
+    font-size: 15px;
+    line-height: 1.6;
+}
+.auth-lock-panel {
+    max-width: 420px;
+    margin: 6vh auto;
+    padding: 28px;
+}
+.auth-lock-panel .auth-brand {
+    display: flex;
+    width: fit-content;
+}
+.onboarding-brand {
+    margin: 16px 0 32px;
+}
+@media (max-width: 480px) {
+    .auth-shell {
+        padding: 20px 16px 40px;
+        align-items: flex-start;
+    }
+    .auth-card {
+        padding: 24px 20px;
+    }
+    .auth-lock-panel {
+        margin: 24px 16px;
+        padding: 24px 20px;
+    }
+}

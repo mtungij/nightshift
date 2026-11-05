@@ -2,9 +2,11 @@
 
 namespace Tests\MySql;
 
+use App\Models\AuditLog;
 use App\Models\Order;
 use App\Models\PaymentAllocation;
 use App\Models\ProductUnit;
+use App\Models\SalesTicketBatch;
 use App\Models\Stock;
 use App\Models\StockLocation;
 use App\Models\StockMovement;
@@ -12,6 +14,7 @@ use App\Models\User;
 use App\Models\WaiterLedgerEntry;
 use App\Services\AdjustmentService;
 use App\Services\OrderService;
+use App\Services\SalesTicketService;
 use App\Services\StaffPinService;
 use App\Services\WaiterLedgerService;
 use Database\Seeders\NightshiftDemoSeeder;
@@ -184,6 +187,10 @@ class ConcurrencyTest extends TestCase
         $this->assertSame(0, bccomp(bcsub($before, '1', 6), $this->quantity(), 6));
         $this->assertSame(1, WaiterLedgerEntry::where('order_id', $results[0]['id'])->where('entry_type', 'ISSUE')->count());
         $this->assertSame(1, StockMovement::where('reference_type', 'Order')->where('reference_id', $results[0]['id'])->where('movement_type', 'ISSUE')->count());
+        $this->assertSame($results[0]['print_batch'], $results[1]['print_batch']);
+        $this->assertNotNull($results[0]['print_batch']);
+        $this->assertSame(1, SalesTicketBatch::count());
+        $this->assertSame(2, AuditLog::where('action', 'SALES_TICKET_PRINT')->count());
     }
 
     public function test_simultaneous_direct_sends_for_last_drink_roll_back_losing_order(): void
@@ -221,5 +228,32 @@ class ConcurrencyTest extends TestCase
         $this->assertSame([200, 422], $codes);
         $this->assertSame($before + 1, PaymentAllocation::count());
         $this->assertSame('0.00', app(WaiterLedgerService::class)->balance($this->waiter->id));
+    }
+
+    public function test_simultaneous_ticket_dispatch_opens_one_print_request(): void
+    {
+        $order = app(OrderService::class)->issue($this->order()->id);
+        $batch = app(SalesTicketService::class)->prepare($order->id, (string) Str::uuid());
+        $request = ['action' => 'ticket-dispatch', 'user_id' => $this->owner->id, 'token' => $batch->token];
+        $before = $this->quantity();
+        $results = $this->race([$request, $request]);
+        $prints = array_column($results, 'print');
+        sort($prints);
+        $this->assertSame([false, true], $prints);
+        $this->assertSame(2, AuditLog::where('action', 'SALES_TICKET_DISPATCH')->count());
+        $this->assertSame($before, $this->quantity());
+    }
+
+    public function test_simultaneous_reprint_retries_create_one_batch_without_business_changes(): void
+    {
+        $order = app(OrderService::class)->issue($this->order()->id);
+        $before = [$this->quantity(), WaiterLedgerEntry::count(), PaymentAllocation::count(), $order->toArray()];
+        $request = ['action' => 'ticket-reprint', 'user_id' => $this->owner->id, 'order_id' => $order->id, 'key' => (string) Str::uuid()];
+        $results = $this->race([$request, $request]);
+        $this->assertSame([200, 200], array_column($results, 'code'));
+        $this->assertSame($results[0]['id'], $results[1]['id']);
+        $this->assertSame(1, SalesTicketBatch::where('reprint', true)->count());
+        $this->assertSame(2, AuditLog::where('action', 'SALES_TICKET_REPRINT')->count());
+        $this->assertSame($before, [$this->quantity(), WaiterLedgerEntry::count(), PaymentAllocation::count(), $order->fresh()->toArray()]);
     }
 }

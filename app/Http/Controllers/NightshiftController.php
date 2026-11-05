@@ -10,7 +10,6 @@ use App\Models\Payment;
 use App\Models\PaymentAllocation;
 use App\Models\Product;
 use App\Models\ServiceTable;
-use App\Models\StockLocation;
 use App\Models\User;
 use App\Services\AdjustmentService;
 use App\Services\CatalogService;
@@ -19,18 +18,19 @@ use App\Services\OrderService;
 use App\Services\PaymentService;
 use App\Services\ReportService;
 use App\Services\ReturnService;
+use App\Services\SalesTicketService;
 use App\Services\ShiftService;
 use App\Services\StaffPinService;
 use App\Services\StockTransferService;
 use App\Services\TransactionService;
 use App\Services\VoidService;
-use App\Services\WaiterLedgerService;
 use App\Services\WorkspaceService;
 use App\Support\UiText;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -48,7 +48,21 @@ final class NightshiftController extends Controller
         $key = $data['idempotency_key'];
         unset($data['idempotency_key']);
         if ($command === 'order-send') {
-            return response()->json(app(OrderService::class)->send($data, $key));
+            $result = app(OrderService::class)->send($data, $key);
+            $result += app(SalesTicketService::class)->response(null);
+            DB::afterCommit(function () use (&$result, $key) {
+                try {
+                    $result = array_replace($result, app(SalesTicketService::class)->response(app(SalesTicketService::class)->prepare($result['id'], $key)));
+                } catch (\Throwable $error) {
+                    report($error);
+                    $result['print_error'] = true;
+                }
+            });
+
+            return response()->json($result);
+        }
+        if ($command === 'ticket-reprint') {
+            return response()->json(app(SalesTicketService::class)->response(app(SalesTicketService::class)->prepare($data['id'], $key, true)));
         }
         $fingerprint = $data;
         if (($data['image'] ?? null) instanceof UploadedFile) {
@@ -59,6 +73,7 @@ final class NightshiftController extends Controller
         }
         $result = $tx->idempotent($key, $command, $fingerprint, function () use ($command, $data) {
             $result = match ($command) {
+                'print-settings' => app(SalesTicketService::class)->savePreferences($data),
                 'staff-pin' => app(StaffPinService::class)->set($data['id'], $data['pin'] ?? null),
                 'waiter-payment' => app(PaymentService::class)->receiveWaiter($data['waiter_id'], $data['stock_location_id'], $data['amount'], $data['method']),
                 'order-create' => app(OrderService::class)->create($data),'order-issue' => app(OrderService::class)->issue($data['id']),'order-submit' => app(OrderService::class)->submit($data['id']),'order-cancel' => app(OrderService::class)->cancel($data['id']),
@@ -131,10 +146,22 @@ final class NightshiftController extends Controller
     {
         Gate::authorize('view-orders');
         $order = app(OrderService::class)->accessible($id);
-        $actor = auth()->user();
         abort_unless($order->issued_at !== null, 409, 'The order has not been issued.');
+        $tickets = app(SalesTicketService::class);
 
-        return view('issue-ticket', ['order' => $order->load('items'), 'company' => $actor->company, 'branch' => Branch::findOrFail($order->branch_id), 'waiter' => User::where('company_id', $order->company_id)->findOrFail($order->waiter_id), 'counter' => StockLocation::findOrFail($order->stock_location_id), 'outstanding' => app(WaiterLedgerService::class)->visibleBalance($order->waiter_id, app(StaffVisibility::class)->settlementOnly() ? $order->stock_location_id : null)]);
+        return view('issue-ticket', ['ticket' => $tickets->data($order), 'copies' => $tickets->copies($tickets->preferences()), 'reprint' => true, 'batch' => null, 'paperWidth' => $tickets->preferences()['paper_width']]);
+    }
+
+    public function salesTicket(string $token): View
+    {
+        $batch = app(SalesTicketService::class)->accessible($token);
+
+        return view('issue-ticket', ['ticket' => app(SalesTicketService::class)->visibleTicket($batch), 'copies' => $batch->copies, 'reprint' => $batch->reprint, 'batch' => $batch, 'paperWidth' => app(SalesTicketService::class)->preferences()['paper_width']]);
+    }
+
+    public function dispatchTicket(string $token): JsonResponse
+    {
+        return response()->json(['print' => app(SalesTicketService::class)->dispatch($token)]);
     }
 
     /**

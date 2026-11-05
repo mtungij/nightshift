@@ -38,6 +38,8 @@ final class NightshiftCommandRequest extends FormRequest
         $text = ['required', 'string', 'max:255'];
         $reason = ['required', 'string', 'min:8', 'max:2000'];
         $rules = match ($this->route('command')) {
+            'print-settings' => ['auto_print' => ['required', 'boolean'], 'waiter_copy' => ['required', 'boolean'], 'cashier_copy' => ['required', 'boolean'], 'number_of_copies' => ['required', 'integer', 'min:'.max(1, (int) $this->boolean('waiter_copy') + (int) $this->boolean('cashier_copy')), 'max:10'], 'paper_width' => ['required', Rule::in(['58mm', '80mm'])]],
+            'ticket-reprint' => ['id' => $id],
             'staff-pin' => ['id' => $id, 'pin' => ['nullable', 'string', 'regex:/^[0-9]{4}$/D']],
             'waiter-payment' => ['waiter_id' => $id, 'stock_location_id' => $id, 'amount' => $amount, 'method' => ['required', Rule::in(['Cash', 'M-Pesa', 'Airtel Money', 'Mixx by Yas', 'Card', 'Bank'])]],
             'order-send' => ['id' => ['nullable', 'integer', 'min:1'], 'pin' => ['required', 'string', 'regex:/^[0-9]{4}$/D'], 'waiter_id' => $id, 'stock_location_id' => ['required_without:id', 'integer', 'min:1'], 'service_table_id' => ['nullable', 'integer', 'min:1'], 'discount' => ['required_without:id', $decimal], 'items' => ['required_without:id', 'array', 'min:1', 'max:100'], 'items.*' => ['array:product_unit_id,quantity'], 'items.*.product_unit_id' => $id, 'items.*.quantity' => $qty],

@@ -4,6 +4,14 @@ import { t as tr, html } from "./localization.js";
 const root = document.getElementById("app");
 if (root) {
     window.addEventListener("nightshift:language", () => shell());
+    window.addEventListener("message", (event) => {
+        if (
+            event.origin === location.origin &&
+            event.source === document.querySelector("#issue-ticket-frame")?.contentWindow &&
+            event.data?.type === "nightshift-print-failed"
+        )
+            toast(tr("Order saved. Printing failed; reprint from the order."));
+    });
     document.addEventListener(
         "error",
         (event) => {
@@ -307,8 +315,13 @@ if (root) {
                     : navItems.find(([id]) => allowed(id))?.[0] || "dashboard";
         root.innerHTML = html`<aside class="sidebar" id="sidebar">
                 <a href="#dashboard" class="brand" aria-label="Nightshift home"
-                    ><span class="brand-symbol">${icon("cocktail")}</span
-                    ><span>NIGHTSHIFT<small>BAR MANAGEMENT</small></span></a
+                    ><img
+                        class="nightshift-brand-mark"
+                        src="/nightshift.svg"
+                        alt=""
+                        width="36"
+                        height="36"
+                    /><span>NIGHTSHIFT<small>BAR MANAGEMENT</small></span></a
                 >
                 <div class="workspace-switch">
                     <span class="workspace-icon">${icon("branch")}</span>
@@ -2257,6 +2270,48 @@ if (root) {
                         </div>
                     </section>
                     <section class="panel">
+                        <div class="panel-header"><h2>Sales ticket printing</h2></div>
+                        <div class="panel-body">
+                            ${[
+                                ["auto_print", "Auto Print After Send to Cashier"],
+                                ["waiter_copy", "Print Waiter Copy"],
+                                ["cashier_copy", "Print Cashier Copy"],
+                            ]
+                                .map(
+                                    ([name, label]) =>
+                                        html`<label class="settings-row"
+                                            ><span>${tr(label)}</span
+                                            ><input
+                                                type="checkbox"
+                                                name="${name}"
+                                                ${db.printSettings[name] ? "checked" : ""}
+                                        /></label>`,
+                                )
+                                .join("")}
+                            ${input("Number of Copies", "number_of_copies", "number", db.printSettings.number_of_copies)}
+                            <p class="field-help">Copies alternate between enabled ticket types.</p>
+                            ${field(
+                                "Paper Width",
+                                "paper_width",
+                                html`<select name="paper_width">
+                                    <option
+                                        value="58mm"
+                                        ${db.printSettings.paper_width === "58mm" ? "selected" : ""}
+                                    >
+                                        58mm
+                                    </option>
+                                    <option
+                                        value="80mm"
+                                        ${db.printSettings.paper_width === "80mm" ? "selected" : ""}
+                                    >
+                                        80mm
+                                    </option>
+                                </select>`,
+                            )}
+                            ${btn("Save print preferences", "save-print-settings", "primary", "check")}
+                        </div>
+                    </section>
+                    <section class="panel">
                         <div class="panel-header"><h2>Your account</h2></div>
                         <div class="panel-body">
                             <div class="profile-summary">
@@ -2668,6 +2723,18 @@ if (root) {
         const o = db.orders.find((o) => o.id === Number(id));
         if (!o) return;
         let actions = btn("Print receipt", "receipt", "", "print", `data-id="${o.id}"`);
+        if (
+            ["Issued", "Partially paid", "Paid", "Void requested", "Voided", "Returned"].includes(
+                o.status,
+            )
+        )
+            actions += btn(
+                "Reprint sales tickets",
+                "reprint-tickets",
+                "",
+                "print",
+                `data-id="${o.id}"`,
+            );
         if (o.status === "Draft")
             actions += btn(
                 "Send to cashier",
@@ -3406,6 +3473,22 @@ if (root) {
                             /><button class="button danger" type="submit">Log out</button>
                         </form>`,
                 );
+            if (action === "reprint-tickets")
+                return perform("ticket-reprint", { id: Number(id) }, target);
+            if (action === "save-print-settings")
+                return perform(
+                    "print-settings",
+                    {
+                        auto_print: document.querySelector('[name="auto_print"]').checked,
+                        waiter_copy: document.querySelector('[name="waiter_copy"]').checked,
+                        cashier_copy: document.querySelector('[name="cashier_copy"]').checked,
+                        number_of_copies: Number(
+                            document.querySelector('[name="number_of_copies"]').value,
+                        ),
+                        paper_width: document.querySelector('[name="paper_width"]').value,
+                    },
+                    target,
+                );
             if (action === "save-settings")
                 return perform(
                     "catalog-company",
@@ -3574,7 +3657,12 @@ if (root) {
                 form.querySelector("[name=pin]").value = "";
                 try {
                     const result = await perform("order-send", payload, form);
-                    if (result) toast("Sent to cashier. Drinks issued; waiter account updated.");
+                    if (result)
+                        toast(
+                            result.print_error
+                                ? tr("Order saved. Printing failed; reprint from the order.")
+                                : "Sent to cashier. Drinks issued; waiter account updated.",
+                        );
                 } catch (error) {
                     form.querySelector("[data-pin-error]").textContent = error.message;
                     form.querySelector("[name=pin]").focus();
@@ -3992,10 +4080,16 @@ if (root) {
                 cartDiscount = 0;
                 servingRequestKeys.clear();
                 shell();
+            }
+            if (
+                ["order-send", "ticket-reprint"].includes(command) &&
+                result.auto_print &&
+                result.print_url
+            ) {
                 const frame = document.createElement("iframe");
-                frame.title = "Committed waiter issue ticket";
+                frame.title = tr("Sales tickets");
                 frame.style.cssText = "position:fixed;width:1px;height:1px;left:-9999px;border:0";
-                frame.src = result.ticket_url + "?print=1";
+                frame.src = result.print_url + "?print=1";
                 document.querySelector("#issue-ticket-frame")?.remove();
                 frame.id = "issue-ticket-frame";
                 document.body.append(frame);
@@ -4048,9 +4142,13 @@ if (root) {
             }
             closeModal();
             toast(
-                command === "catalog-user"
-                    ? tr(":role added successfully.", { role: tr(payload.role) })
-                    : "Saved. Stock, cash and ledger records are up to date.",
+                result.print_error
+                    ? tr("Order saved. Printing failed; reprint from the order.")
+                    : command === "ticket-reprint" && !result.auto_print
+                      ? tr("No ticket copies are enabled.")
+                      : command === "catalog-user"
+                        ? tr(":role added successfully.", { role: tr(payload.role) })
+                        : "Saved. Stock, cash and ledger records are up to date.",
             );
             return result;
         } finally {

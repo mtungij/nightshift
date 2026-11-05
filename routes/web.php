@@ -60,6 +60,8 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/reports/{name}/export', [NightshiftController::class, 'exportReport']);
         Route::get('/reports/{name}', [NightshiftController::class, 'report']);
         Route::get('/receipts/{id}', [NightshiftController::class, 'receipt'])->name('nightshift.receipt');
+        Route::post('/sales-tickets/{token}/dispatch', [NightshiftController::class, 'dispatchTicket'])->name('nightshift.ticket-dispatch');
+        Route::get('/sales-tickets/{token}', [NightshiftController::class, 'salesTicket'])->name('nightshift.sales-ticket');
         Route::get('/issue-tickets/{id}', [NightshiftController::class, 'issueTicket'])->name('nightshift.issue-ticket');
     });
 });

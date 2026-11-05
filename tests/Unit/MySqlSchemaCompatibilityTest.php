@@ -17,7 +17,9 @@ class MySqlSchemaCompatibilityTest extends TestCase
         $this->assertNotEmpty($audit['money_columns']);
         $this->assertLessThanOrEqual(64, $audit['longest_identifier_length']);
         $this->assertCount(29, $audit['money_columns']);
-        $this->assertCount(11, $audit['json_columns']);
+        $this->assertCount(13, $audit['json_columns']);
+        $this->assertContains('sales_ticket_batches.ticket', $audit['json_columns']);
+        $this->assertContains('sales_ticket_batches.copies', $audit['json_columns']);
         foreach (['whatsapp_settings.options', 'whatsapp_recipients.branch_ids', 'whatsapp_delivery_logs.payload', 'whatsapp_delivery_logs.scope_branch_ids'] as $column) {
             $this->assertContains($column, $audit['json_columns']);
         }

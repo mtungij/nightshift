@@ -1,7 +1,7 @@
 <x-layouts::nightshift>
-    @include('partials.language-switch')
+    @include('partials.auth-toolbar')
     <main class="onboarding-container">
-        <a href="{{ route('login') }}" class="brand"><img src="{{ asset('nightshift.svg') }}" width="36" height="36" alt=""><span>{{ \App\Support\UiText::get('NIGHTSHIFT') }}<small>{{ \App\Support\UiText::get('BAR MANAGEMENT') }}</small></span></a>
+        <x-nightshift-brand :href="route('login')" class="onboarding-brand" />
         <div class="page-heading"><div><p class="eyebrow">{{ \App\Support\UiText::get('YOUR BUSINESS. YOUR NIGHTSHIFT.') }}</p><h1>{{ \App\Support\UiText::get('Set up your bar account') }}</h1><p>{{ \App\Support\UiText::get('A workspace for your bar, your team, and every night ahead.') }}</p></div><a class="button" href="{{ route('login') }}">{{ \App\Support\UiText::get('Already registered? Log in') }}</a></div>
         @if($errors->any())<div class="info-box red" role="alert"><strong>{{ \App\Support\UiText::get('Please check these details:') }}</strong><ul>@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></div>@endif
         <form method="POST" action="{{ route('business.store') }}" enctype="multipart/form-data">

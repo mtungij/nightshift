@@ -163,7 +163,7 @@
     "Don't have an account?": "Huna akaunti?",
     "Already have an account?": "Tayari una akaunti?",
     "Already registered? Log in": "Tayari una akaunti? Ingia",
-    "Set up your business": "Sajili Biashara Yako",
+    "Set up your business": "Sajili biashara yako",
     "Set up your bar account": "Sajili akaunti ya baa yako",
     "Create business account": "Fungua Akaunti ya Biashara",
     "Business information": "Taarifa za Biashara",
@@ -849,10 +849,13 @@
     "Staff roles": "Nafasi za wafanyakazi",
     "Staff status": "Hali ya mfanyakazi",
     ":role added successfully.": ":role ameongezwa kikamilifu.",
-    "Username": "Jina la kuingia",
-    "Enter your username and 4-digit PIN": "Weka jina lako la kuingia na PIN ya tarakimu 4",
-    "Ask your company admin to reset a forgotten PIN.": "Mwombe msimamizi wa kampuni abadilishe PIN uliyosahau.",
+    "Username": "Jina la Mtumiaji",
+    "Enter your username and 4-digit PIN": "Weka jina lako la mtumiaji na PIN ya tarakimu 4",
+    "Ask your company admin to reset a forgotten PIN.": "Umesahau PIN? Wasiliana na msimamizi wa biashara yako.",
     "Use this PIN for login, Quick Lock and POS confirmation.": "Tumia PIN hii kuingia, kufungua skrini na kuthibitisha POS.",
     "Your shifts": "Zamu zako",
-    "Your current shift and shift history.": "Zamu yako ya sasa na historia ya zamu."
+    "Your current shift and shift history.": "Zamu yako ya sasa na historia ya zamu.",
+    "Log in to Nightshift": "Ingia Nightshift",
+    "Toggle color theme": "Badili mwonekano",
+    "Light / Dark": "Mwanga / Giza"
 }

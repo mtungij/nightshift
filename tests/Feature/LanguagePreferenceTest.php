@@ -14,12 +14,12 @@ class LanguagePreferenceTest extends TestCase
 
     public function test_guests_default_to_english_and_can_switch_to_kiswahili(): void
     {
-        $this->get('/login')->assertOk()->assertSee('lang="en"', false)->assertSee('Log in to your account');
+        $this->get('/login')->assertOk()->assertSee('lang="en"', false)->assertSee('Log in to Nightshift');
         $this->postJson('/settings/language', ['locale' => 'sw'])->assertOk()->assertJsonPath('locale', 'sw');
-        $this->get('/login')->assertOk()->assertSee('lang="sw"', false)->assertSee('Ingia kwenye akaunti yako');
+        $this->get('/login')->assertOk()->assertSee('lang="sw"', false)->assertSee('Ingia Nightshift');
         $this->get('/register-business')->assertOk()->assertSee('Sajili akaunti ya baa yako');
         $this->postJson('/settings/language', ['locale' => 'en'])->assertOk();
-        $this->get('/login')->assertSee('Log in to your account');
+        $this->get('/login')->assertSee('Log in to Nightshift');
     }
 
     public function test_user_language_persists_and_is_rendered_before_assets(): void
