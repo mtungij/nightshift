@@ -5,6 +5,7 @@ use App\Http\Controllers\BusinessProfileController;
 use App\Http\Controllers\LanguagePreferenceController;
 use App\Http\Controllers\NightshiftController;
 use App\Http\Controllers\OpenShiftController;
+use App\Http\Controllers\ShiftStockController;
 use App\Http\Controllers\WhatsAppController;
 use App\Http\Middleware\RequireOperationalShift;
 use App\Http\Middleware\RequireWhatsAppAccess;
@@ -43,6 +44,10 @@ Route::middleware(['auth'])->group(function () {
     })->name('business.setup');
     Route::get('/open-shift', [OpenShiftController::class, 'show'])->name('shift.open');
     Route::post('/open-shift', [OpenShiftController::class, 'store'])->middleware('throttle:20,1')->name('shift.open.store');
+    // History remains available after the cashier closes their operational shift.
+    Route::get('/api/nightshift/shift-stock/{id}', [ShiftStockController::class, 'show'])->whereNumber('id');
+    Route::get('/shift-stock/{id}', [ShiftStockController::class, 'page'])->whereNumber('id');
+    Route::get('/shift-stock/{id}/print', [ShiftStockController::class, 'sheet'])->whereNumber('id');
     Route::get('/dashboard', Workspace::class)->middleware(RequireOperationalShift::class)->name('dashboard');
     Route::prefix('api/nightshift')->middleware(['throttle:120,1', RequireOperationalShift::class])->group(function () {
         Route::get('/products/{id}/image', [NightshiftController::class, 'productImage'])->name('nightshift.product-image');

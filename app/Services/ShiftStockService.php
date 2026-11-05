@@ -1,0 +1,253 @@
+<?php
+
+namespace App\Services;
+
+use App\Domain\Decimal as D;
+use App\Domain\TenantContext;
+use App\Models\Branch;
+use App\Models\Order;
+use App\Models\Payment;
+use App\Models\Product;
+use App\Models\Shift;
+use App\Models\ShiftStockCount;
+use App\Models\ShiftStockSnapshot;
+use App\Models\Stock;
+use App\Models\StockLocation;
+use App\Models\StockMovement;
+use App\Models\User;
+use Illuminate\Support\Facades\Gate;
+
+final class ShiftStockService
+{
+    public function __construct(private TransactionService $tx, private StockService $stock, private AuditService $audit) {}
+
+    public function accessible(int $id, bool $edit = false): Shift
+    {
+        $shift = Shift::findOrFail($id);
+        Gate::authorize('view', $shift);
+        $actor = app(TenantContext::class)->user();
+        abort_unless($actor->company->active, 403);
+        abort_unless($shift->type === 'CASHIER' && $actor->role->name !== 'Waiter', 403);
+        abort_unless($actor->id === $shift->user_id || $actor->hasPermission('view-staff-operations'), 403);
+        if ($edit) {
+            Gate::authorize('close-shifts');
+            if ($actor->id !== $shift->user_id) {
+                Gate::authorize('manage-users');
+            }
+        }
+
+        return $shift;
+    }
+
+    private function cursor(int $location): int
+    {
+        return (int) (StockMovement::where('stock_location_id', $location)->orderByDesc('id')->lockForUpdate()->first()->id ?? 0);
+    }
+
+    /** @return array<string, mixed> */
+    private function metadata(Product $p): array
+    {
+        // Prefer an explicitly sold base unit; normalize another pack only if needed.
+        $unit = $p->sellingUnits->first(fn ($u) => $u->unit_id === $p->base_unit_id && D::cmp($u->conversion_quantity, '1') === 0)
+            ?? $p->sellingUnits->first(fn ($u) => D::cmp($u->conversion_quantity, '1') === 0)
+            ?? $p->sellingUnits->sort(fn ($a, $b) => D::cmp($a->conversion_quantity, $b->conversion_quantity))->first();
+        $price = $unit ? D::quantity(bcdiv($unit->selling_price, $unit->conversion_quantity, 8)) : '0.000000';
+
+        return ['product_id' => $p->id, 'product' => $p->name, 'category' => $p->category->name, 'base_unit' => $p->baseUnit->name, 'price' => $price, 'cost' => $p->purchase_cost,
+            'conversions' => $p->sellingUnits->map(fn ($u) => ['unit' => $u->unit->name, 'quantity' => $u->conversion_quantity])->all()];
+    }
+
+    // Runs inside the same company-serialized transaction as ShiftService::open.
+    public function opening(Shift $shift): void
+    {
+        if ($shift->type !== 'CASHIER') {
+            return;
+        }
+        $quantities = Stock::where('stock_location_id', $shift->stock_location_id)->orderBy('product_id')->lockForUpdate()->get()->keyBy('product_id');
+        $lines = [];
+        foreach (Product::with(['category', 'baseUnit', 'sellingUnits.unit'])->orderBy('id')->get() as $p) {
+            $q = $quantities->get($p->id)->quantity ?? '0.000000';
+            if ($p->active || D::cmp($q, '0') !== 0) {
+                $lines[] = $this->metadata($p) + ['opening' => $q];
+            }
+        }
+        ShiftStockSnapshot::create(['branch_id' => $shift->branch_id, 'stock_location_id' => $shift->stock_location_id, 'shift_id' => $shift->id, 'user_id' => auth()->id(), 'kind' => 'OPENING', 'data' => ['cursor' => $this->cursor($shift->stock_location_id), 'lines' => $lines, 'captured_at' => now()->toIso8601String()]]);
+        $this->audit->record('SHIFT_STOCK_OPENING', 'Shifts', 'Shift', $shift->id, [], ['products' => count($lines), 'counter_id' => $shift->stock_location_id], $shift->branch_id);
+    }
+
+    /** @return array<string, mixed> */
+    public function report(int $id): array
+    {
+        return $this->tx->run(function () use ($id) {
+            $report = $this->build($this->accessible($id));
+            $user = app(TenantContext::class)->user();
+            if (! $user->hasPermission('manage-inventory') && ! $user->hasPermission('view-reports')) {
+                foreach ($report['rows'] as &$row) {
+                    unset($row['cost'], $row['cost_variance_value']);
+                }
+                unset($row, $report['totals']['cost_variance_value']);
+            }
+
+            return $report;
+        });
+    }
+
+    /** @return array<string, mixed> */
+    private function build(Shift $shift): array
+    {
+        if ($final = ShiftStockSnapshot::where('shift_id', $shift->id)->where('kind', 'CLOSING')->first()) {
+            return $final->data;
+        }
+        $opening = ShiftStockSnapshot::where('shift_id', $shift->id)->where('kind', 'OPENING')->first();
+        abort_unless($opening !== null, 409, 'This legacy shift has no opening stock snapshot. Complete a supervised cutover before enabling stock reconciliation.');
+        $count = ShiftStockCount::where('shift_id', $shift->id)->first();
+        $rows = [];
+        foreach ($opening->data['lines'] as $line) {
+            $rows[$line['product_id']] = $line + ['added' => '0.000000', 'out' => '0.000000', 'system_sold' => '0.000000', 'returns' => '0.000000'];
+        }
+        $movements = StockMovement::where('stock_location_id', $shift->stock_location_id)->where('id', '>', $opening->data['cursor'])->orderBy('id')->lockForUpdate()->get();
+        foreach ($movements as $m) {
+            if (! isset($rows[$m->product_id])) {
+                $p = Product::with(['category', 'baseUnit', 'sellingUnits.unit'])->findOrFail($m->product_id);
+                $rows[$p->id] = $this->metadata($p) + ['opening' => '0.000000', 'added' => '0.000000', 'out' => '0.000000', 'system_sold' => '0.000000', 'returns' => '0.000000'];
+            }
+            $r = &$rows[$m->product_id];
+            if (D::cmp($m->quantity, '0') < 0) {
+                $r['out'] = D::sub($r['out'], $m->quantity, 6);
+                if ($m->movement_type === 'ISSUE') {
+                    $r['system_sold'] = D::sub($r['system_sold'], $m->quantity, 6);
+                }
+            } else {
+                $key = in_array($m->movement_type, ['RETURN', 'VOID_REVERSAL'], true) ? 'returns' : 'added';
+                $r[$key] = D::add($r[$key], $m->quantity, 6);
+            }
+            unset($r);
+        }
+        $cursor = $movements->last()->id ?? $opening->data['cursor'];
+        $basis = hash_hmac('sha256', json_encode([$cursor, $rows], JSON_THROW_ON_ERROR), config('app.key'));
+        $stale = $count && $count->basis !== $basis;
+        $totals = ['sales_value' => '0.00', 'system_sales_value' => '0.00', 'variance_value' => '0.00', 'cost_variance_value' => '0.00', 'variance_count' => 0, 'ledger_mismatches' => 0];
+        $currentStock = Stock::where('stock_location_id', $shift->stock_location_id)->orderBy('product_id')->lockForUpdate()->get()->keyBy('product_id');
+        $complete = true;
+        foreach ($rows as $pid => &$r) {
+            $r['total_available'] = D::add($r['opening'], $r['added'], 6);
+            $r['net_out'] = D::sub($r['out'], $r['returns'], 6);
+            $r['other_out'] = D::sub($r['out'], $r['system_sold'], 6);
+            $r['expected'] = D::sub($r['total_available'], $r['net_out'], 6);
+            $r['ledger_balance'] = $currentStock->get($pid)->quantity ?? '0.000000';
+            if (D::cmp($r['expected'], $r['ledger_balance']) !== 0) {
+                $totals['ledger_mismatches']++;
+            }
+            $r['physical'] = $count?->data['counts'][(string) $pid] ?? null;
+            $r['variance'] = $r['physical'] === null ? null : D::sub($r['physical'], $r['expected'], 6);
+            $r['physical_sold'] = $r['physical'] === null ? null : D::sub($r['total_available'], $r['physical'], 6);
+            $r['sales_value'] = $r['physical_sold'] === null ? null : D::mul($r['physical_sold'], $r['price']);
+            $absolute = $r['variance'] === null ? '0' : ltrim($r['variance'], '-');
+            $r['variance_value'] = D::mul($absolute, $r['price']);
+            $r['cost_variance_value'] = D::mul($absolute, $r['cost']);
+            $r['status'] = $r['variance'] === null ? 'Not counted' : (D::cmp($r['variance'], '0') === 0 ? 'Balanced' : (D::cmp($r['variance'], '0') < 0 ? 'Short' : 'Over'));
+            $complete = $complete && $r['physical'] !== null;
+            $totals['sales_value'] = D::add($totals['sales_value'], $r['sales_value'] ?? '0');
+            $totals['system_sales_value'] = D::add($totals['system_sales_value'], D::mul(D::sub($r['system_sold'], $r['returns'], 6), $r['price']));
+            $totals['variance_value'] = D::add($totals['variance_value'], $r['variance_value']);
+            $totals['cost_variance_value'] = D::add($totals['cost_variance_value'], $r['cost_variance_value']);
+            if ($r['variance'] !== null && D::cmp($r['variance'], '0') !== 0) {
+                $totals['variance_count']++;
+            }
+        }
+        unset($r);
+        $actor = app(TenantContext::class)->user();
+        $approved = $count && ! $stale && $count->approved_by !== null;
+
+        return ['shift_id' => $shift->id, 'number' => $shift->number, 'company' => $actor->company->name, 'branch' => Branch::findOrFail($shift->branch_id)->name, 'counter' => StockLocation::findOrFail($shift->stock_location_id)->name, 'opened_by' => User::where('company_id', $shift->company_id)->findOrFail($opening->user_id)->name, 'cashier' => User::where('company_id', $shift->company_id)->findOrFail($shift->user_id)->name, 'opened_at' => $shift->opened_at->toIso8601String(), 'status' => $shift->status,
+            'rows' => array_values($rows), 'basis' => $basis, 'revision' => $count->revision ?? 0, 'stale' => (bool) $stale, 'complete' => $complete && (bool) $count && ! $stale, 'approved' => (bool) $approved, 'approved_by' => $count?->approved_by, 'approved_name' => $count?->approved_by ? User::where('company_id', $shift->company_id)->findOrFail($count->approved_by)->name : null, 'approved_at' => $count?->approved_at?->toIso8601String(), 'approval_note' => $count?->approval_note, 'reason' => $count?->reason, 'counted_at' => $count?->data['counted_at'] ?? null, 'entered_by' => $count?->user_id, 'entered_name' => $count ? User::where('company_id', $shift->company_id)->findOrFail($count->user_id)->name : null,
+            'can_edit' => $shift->status === 'OPEN' && $actor->hasPermission('close-shifts') && ($actor->id === $shift->user_id || $actor->hasPermission('manage-users')), 'can_approve' => $shift->status === 'OPEN' && $actor->hasPermission('override-shifts') && $actor->hasPermission('view-staff-operations'),
+            'totals' => $totals, 'cash' => $this->cash($shift), 'captured_at' => now()->toIso8601String()];
+    }
+
+    /** @return array<string, mixed> */
+    private function cash(Shift $shift): array
+    {
+        $methods = array_fill_keys(['Cash', 'M-Pesa', 'Airtel Money', 'Mixx by Yas', 'Card', 'Bank'], ['sales' => '0.00', 'refunds' => '0.00', 'net' => '0.00']);
+        foreach (Payment::where('shift_id', $shift->id)->where('is_credit', false)->orderBy('id')->lockForUpdate()->get() as $p) {
+            $methods[$p->method] ??= ['sales' => '0.00', 'refunds' => '0.00', 'net' => '0.00'];
+            $key = D::cmp($p->amount, '0') < 0 ? 'refunds' : 'sales';
+            $methods[$p->method][$key] = D::add($methods[$p->method][$key], ltrim($p->amount, '-'));
+            $methods[$p->method]['net'] = D::add($methods[$p->method]['net'], $p->amount);
+        }
+        $outstanding = '0.00';
+        foreach (Order::where('stock_location_id', $shift->stock_location_id)->whereNotNull('issued_at')->whereIn('status', ['ISSUED', 'PARTIALLY_PAID', 'VOID_REQUESTED'])->orderBy('id')->lockForUpdate()->get() as $order) {
+            $outstanding = D::add($outstanding, $order->balance);
+        }
+
+        return ['opening' => $shift->opening_cash, 'methods' => $methods, 'expected' => D::add($shift->opening_cash, $methods['Cash']['net'] ?? '0'), 'actual' => $shift->actual_cash, 'difference' => $shift->cash_difference, 'waiter_outstanding' => $outstanding];
+    }
+
+    /** @param array<string, mixed> $data */
+    public function count(int $id, array $data): ShiftStockCount
+    {
+        return $this->tx->run(function () use ($id, $data) {
+            $shift = $this->accessible($id, true);
+            $this->stock->require($shift->status === 'OPEN', 'Finalized reconciliation cannot be edited.');
+            $report = $this->build($shift);
+            abort_unless(hash_equals($report['basis'], $data['basis']), 409, 'Stock changed. Reload and verify every physical count.');
+            $counts = [];
+            foreach ($data['counts'] as $line) {
+                $counts[(string) $line['product_id']] = D::quantity($line['quantity']);
+                $this->stock->require(D::cmp($line['quantity'], '0') >= 0, 'Physical counts must not be negative.');
+            }
+            $ids = array_map(fn ($r) => (string) $r['product_id'], $report['rows']);
+            $this->stock->require(count($counts) === count($ids) && array_diff($ids, array_keys($counts)) === [], 'Count every product in this reconciliation.');
+            $hasVariance = false;
+            foreach ($report['rows'] as $row) {
+                $hasVariance = $hasVariance || D::cmp($counts[(string) $row['product_id']], $row['expected']) !== 0;
+            }
+            $this->stock->require(! $hasVariance || mb_strlen(trim($data['reason'] ?? '')) >= 8, 'Explain the stock variance.');
+            $old = ShiftStockCount::where('shift_id', $id)->first();
+            abort_unless(($old->revision ?? 0) === (int) $data['revision'], 409, 'Another user changed this count. Reload before saving.');
+            $before = $old?->toArray() ?? [];
+            $count = ShiftStockCount::updateOrCreate(['shift_id' => $id], ['branch_id' => $shift->branch_id, 'stock_location_id' => $shift->stock_location_id, 'user_id' => auth()->id(), 'data' => ['counts' => $counts, 'counted_at' => now()->toIso8601String()], 'basis' => $report['basis'], 'revision' => ($old->revision ?? 0) + 1, 'reason' => $data['reason'] ?? null, 'approved_by' => null, 'approved_at' => null, 'approval_note' => null]);
+            $this->audit->record('SHIFT_STOCK_COUNTED', 'Shifts', 'Shift', $id, $before, $count->toArray(), $shift->branch_id);
+
+            return $count;
+        });
+    }
+
+    public function approve(int $id, string $basis, int $revision, string $note): ShiftStockCount
+    {
+        Gate::authorize('override-shifts');
+        Gate::authorize('view-staff-operations');
+
+        return $this->tx->run(function () use ($id, $basis, $revision, $note) {
+            $shift = $this->accessible($id);
+            $report = $this->build($shift);
+            abort_unless($shift->status === 'OPEN' && $report['complete'] && $report['basis'] === $basis && $report['revision'] === $revision, 409, 'Count or stock changed. Review again before approval.');
+            $this->stock->require(mb_strlen(trim($note)) >= 8, 'Explain the variance approval.');
+            $count = ShiftStockCount::where('shift_id', $id)->firstOrFail();
+            $before = $count->only(['approved_by', 'approved_at', 'approval_note']);
+            $count->update(['approved_by' => auth()->id(), 'approved_at' => now(), 'approval_note' => $note]);
+            $this->audit->record('SHIFT_STOCK_APPROVED', 'Shifts', 'Shift', $id, $before, ['revision' => $revision, 'basis' => $basis, 'note' => $note, 'approved_by' => auth()->id()], $shift->branch_id);
+
+            return $count;
+        });
+    }
+
+    // ShiftService calls this before changing status; company lock spans both operations.
+    public function finalize(Shift $shift): void
+    {
+        $report = $this->build($shift);
+        $this->stock->require($report['totals']['ledger_mismatches'] === 0, 'Stock balances do not match the ledger. Investigate before closing.');
+        $this->stock->require($report['complete'], 'Complete stock reconciliation before closing this shift.');
+        $this->stock->require($report['totals']['variance_count'] === 0 || $report['approved'], 'A manager must approve the stock variances before closing.');
+        $report['status'] = 'CLOSED';
+        $report['closed_by'] = auth()->user()->name;
+        $report['closed_by_id'] = auth()->id();
+        $report['closed_at'] = now()->toIso8601String();
+        $report['closing_notes'] = $shift->closing_notes;
+        $report['cash']['actual'] = $shift->actual_cash;
+        $report['cash']['difference'] = $shift->cash_difference;
+        $report['can_edit'] = $report['can_approve'] = false;
+        ShiftStockSnapshot::create(['branch_id' => $shift->branch_id, 'stock_location_id' => $shift->stock_location_id, 'shift_id' => $shift->id, 'user_id' => auth()->id(), 'kind' => 'CLOSING', 'data' => $report]);
+        $this->audit->record('SHIFT_STOCK_FINALIZED', 'Shifts', 'Shift', $shift->id, [], ['revision' => $report['revision'], 'basis' => $report['basis'], 'variance_value' => $report['totals']['variance_value']], $shift->branch_id);
+    }
+}

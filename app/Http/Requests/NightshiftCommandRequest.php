@@ -38,6 +38,8 @@ final class NightshiftCommandRequest extends FormRequest
         $text = ['required', 'string', 'max:255'];
         $reason = ['required', 'string', 'min:8', 'max:2000'];
         $rules = match ($this->route('command')) {
+            'shift-stock-count' => ['id' => $id, 'basis' => ['required', 'string', 'size:64'], 'revision' => ['required', 'integer', 'min:0'], 'reason' => ['nullable', 'string', 'max:2000'], 'counts' => ['present', 'array', 'max:10000'], 'counts.*' => ['array:product_id,quantity'], 'counts.*.product_id' => ['required', 'integer', 'min:1', 'distinct'], 'counts.*.quantity' => $qty],
+            'shift-stock-approve' => ['id' => $id, 'basis' => ['required', 'string', 'size:64'], 'revision' => ['required', 'integer', 'min:1'], 'note' => $reason],
             'print-settings' => ['auto_print' => ['required', 'boolean'], 'waiter_copy' => ['required', 'boolean'], 'cashier_copy' => ['required', 'boolean'], 'number_of_copies' => ['required', 'integer', 'min:'.max(1, (int) $this->boolean('waiter_copy') + (int) $this->boolean('cashier_copy')), 'max:10'], 'paper_width' => ['required', Rule::in(['58mm', '80mm'])]],
             'ticket-reprint' => ['id' => $id],
             'staff-pin' => ['id' => $id, 'pin' => ['nullable', 'string', 'regex:/^[0-9]{4}$/D']],

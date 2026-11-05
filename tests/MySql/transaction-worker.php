@@ -5,6 +5,8 @@ use App\Models\User;
 use App\Services\OrderService;
 use App\Services\PaymentService;
 use App\Services\SalesTicketService;
+use App\Services\ShiftService;
+use App\Services\StockService;
 use App\Services\TransactionService;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Validation\ValidationException;
@@ -47,6 +49,12 @@ try {
         }
         if ($request['action'] === 'waiter-payment') {
             return app(TransactionService::class)->idempotent($request['key'], 'waiter-payment', $request['payload'], fn () => app(PaymentService::class)->receiveWaiter($request['payload']['waiter_id'], $request['payload']['stock_location_id'], $request['payload']['amount'], 'Cash'));
+        }
+        if ($request['action'] === 'recon-close') {
+            return app(TransactionService::class)->idempotent($request['key'], 'shift-close', ['id' => $request['shift_id']], fn () => ['id' => app(ShiftService::class)->close($request['shift_id'], ['actual_cash' => '300000'])->id]);
+        }
+        if ($request['action'] === 'recon-move') {
+            return app(TransactionService::class)->run(fn () => app(StockService::class)->change($request['location_id'], $request['product_id'], '1', 'GRN', 'Shift', $request['shift_id']));
         }
         if ($request['action'] === 'payment') {
             $payload = ['id' => $request['order_id'], 'lines' => [['method' => 'Cash', 'amount' => $request['amount']]]];

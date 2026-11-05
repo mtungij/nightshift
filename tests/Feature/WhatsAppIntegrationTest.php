@@ -24,11 +24,13 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpKernel\Exception\HttpException;
+use Tests\Support\CompletesStockCount;
 use Tests\Support\WhatsAppFixtures;
 use Tests\TestCase;
 
 class WhatsAppIntegrationTest extends TestCase
 {
+    use CompletesStockCount;
     use RefreshDatabase, WhatsAppFixtures;
 
     protected function setUp(): void
@@ -257,6 +259,7 @@ class WhatsAppIntegrationTest extends TestCase
         $order = $this->issueWhatsAppOrder();
         $this->actingAs($this->cashier);
         app(PaymentService::class)->receive($order->id, [['method' => 'Cash', 'amount' => '6000']]);
+        $this->completeStockCount($this->cashierShift);
         app(ShiftService::class)->close($this->cashierShift->id, ['actual_cash' => '4000', 'notes' => 'Verified cash shortage']);
         $this->actingAs($this->owner);
         $this->scanWhatsApp();
@@ -304,6 +307,7 @@ class WhatsAppIntegrationTest extends TestCase
         $order = $this->issueWhatsAppOrder();
         $this->actingAs($this->cashier);
         app(PaymentService::class)->receive($order->id, [['method' => 'Cash', 'amount' => '6000']]);
+        $this->completeStockCount($this->cashierShift);
         app(ShiftService::class)->close($this->cashierShift->id, ['actual_cash' => '6000']);
         $this->actingAs($this->owner);
         $this->scanWhatsApp();

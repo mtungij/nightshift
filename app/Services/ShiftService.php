@@ -38,6 +38,7 @@ final class ShiftService
             $this->stock->require(Branch::findOrFail($location->branch_id)->active, 'Branch is inactive.');
             $this->stock->require(! Shift::withoutGlobalScopes()->where('company_id', $user->company_id)->where('user_id', $user->id)->where('status', 'OPEN')->exists(), 'Employee already has an open shift.');
             $shift = Shift::create(['branch_id' => $location->branch_id, 'user_id' => $user->id, 'stock_location_id' => $location->id, 'number' => $this->numbers->next('SHF'), 'type' => $data['type'], 'status' => 'OPEN', 'opening_cash' => D::money($data['opening_cash'] ?? '0'), 'opened_at' => now()]);
+            app(ShiftStockService::class)->opening($shift);
             $this->audit->record('SHIFT_OPENED', 'Shifts', 'Shift', $shift->id, [], ['number' => $shift->number], $shift->branch_id);
 
             return $shift;
@@ -97,6 +98,10 @@ final class ShiftService
                 $shift->expected_cash = $expected;
                 $shift->actual_cash = $actual;
                 $shift->cash_difference = $difference;
+            }
+            $shift->closing_notes = $data['notes'] ?? null;
+            if ($shift->type === 'CASHIER') {
+                app(ShiftStockService::class)->finalize($shift);
             }
             $shift->status = 'CLOSED';
             $shift->closed_at = now();

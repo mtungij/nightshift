@@ -14,10 +14,12 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\CompletesStockCount;
 use Tests\TestCase;
 
 class OperationalShiftRoutingTest extends TestCase
 {
+    use CompletesStockCount;
     use RefreshDatabase;
 
     private User $owner;
@@ -92,6 +94,7 @@ class OperationalShiftRoutingTest extends TestCase
         $this->get('/dashboard')->assertOk();
         $shift = Shift::where('user_id', $user->id)->where('status', 'OPEN')->firstOrFail();
         $this->assertSame($type, $shift->type);
+        $this->completeStockCount($shift);
         $this->postJson('/api/nightshift/commands/shift-close', ['idempotency_key' => (string) Str::uuid(), 'id' => $shift->id, 'actual_cash' => $shift->opening_cash])->assertOk();
         $this->get('/dashboard#'.$screen)->assertRedirect('/open-shift');
         $this->getJson('/api/nightshift/bootstrap')->assertStatus(409);

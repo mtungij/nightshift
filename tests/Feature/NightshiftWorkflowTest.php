@@ -37,10 +37,12 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Tests\Support\CompletesStockCount;
 use Tests\TestCase;
 
 class NightshiftWorkflowTest extends TestCase
 {
+    use CompletesStockCount;
     use RefreshDatabase;
 
     private User $owner;
@@ -414,6 +416,7 @@ class NightshiftWorkflowTest extends TestCase
         $this->issued();
         app(PaymentService::class)->receive(Order::firstOrFail()->id, [['method' => 'Cash', 'amount' => '6000']]);
         $s = Shift::where('user_id', $this->cashier->id)->firstOrFail();
+        $this->completeStockCount($s);
         $this->command('shift-close', ['id' => $s->id, 'actual_cash' => '300000'])->assertUnprocessable();
         $this->command('shift-close', ['id' => $s->id, 'actual_cash' => '300000', 'notes' => 'Shortage confirmed during drawer reconciliation'])->assertOk();
         $this->assertDecimal('-6000', $s->fresh()->cash_difference);
@@ -611,6 +614,7 @@ class NightshiftWorkflowTest extends TestCase
     public function test_workspace_prefers_the_open_shift_counter_and_preserves_explicit_selection(): void
     {
         $shift = Shift::where('user_id', $this->owner->id)->firstOrFail();
+        $this->completeStockCount($shift);
         app(ShiftService::class)->close($shift->id, ['actual_cash' => '0']);
         // With no open shift, the first counter by ID is a stable fallback.
         $this->getJson('/api/nightshift/bootstrap')->assertOk()->assertJsonPath('location_id', $this->counter->id);

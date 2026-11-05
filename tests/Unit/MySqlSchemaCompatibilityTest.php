@@ -17,14 +17,16 @@ class MySqlSchemaCompatibilityTest extends TestCase
         $this->assertNotEmpty($audit['money_columns']);
         $this->assertLessThanOrEqual(64, $audit['longest_identifier_length']);
         $this->assertCount(29, $audit['money_columns']);
-        $this->assertCount(13, $audit['json_columns']);
+        $this->assertCount(15, $audit['json_columns']);
+        $this->assertContains('shift_stock_snapshots.data', $audit['json_columns']);
+        $this->assertContains('shift_stock_counts.data', $audit['json_columns']);
         $this->assertContains('sales_ticket_batches.ticket', $audit['json_columns']);
         $this->assertContains('sales_ticket_batches.copies', $audit['json_columns']);
         foreach (['whatsapp_settings.options', 'whatsapp_recipients.branch_ids', 'whatsapp_delivery_logs.payload', 'whatsapp_delivery_logs.scope_branch_ids'] as $column) {
             $this->assertContains($column, $audit['json_columns']);
         }
         $sql = implode("\n", $schema['sql']);
-        $this->assertSame(14, substr_count($sql, 'CREATE TRIGGER'));
+        $this->assertSame(16, substr_count($sql, 'CREATE TRIGGER'));
         $this->assertStringContainsString('CHECK (quantity >= 0)', $sql);
         $this->assertStringContainsString('`issued_shift_id` bigint unsigned null', $sql);
         $this->assertSame(0, substr_count($sql, 'add `issued_shift_id`'));

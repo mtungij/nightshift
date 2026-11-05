@@ -8,11 +8,13 @@ use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Tests\Support\CompletesStockCount;
 use Tests\Support\WhatsAppFixtures;
 use Tests\TestCase;
 
 class WhatsAppAfterCommitTest extends TestCase
 {
+    use CompletesStockCount;
     use WhatsAppFixtures;
 
     protected function setUp(): void
@@ -32,6 +34,7 @@ class WhatsAppAfterCommitTest extends TestCase
     {
         $this->actingAs($this->cashier);
         DB::beginTransaction();
+        $this->completeStockCount($this->cashierShift);
         app(ShiftService::class)->close($this->cashierShift->id, ['actual_cash' => '0']);
         Queue::assertNothingPushed();
         DB::commit();
@@ -44,6 +47,7 @@ class WhatsAppAfterCommitTest extends TestCase
     {
         $this->actingAs($this->cashier);
         DB::beginTransaction();
+        $this->completeStockCount($this->cashierShift);
         app(ShiftService::class)->close($this->cashierShift->id, ['actual_cash' => '0']);
         DB::rollBack();
         Queue::assertNothingPushed();

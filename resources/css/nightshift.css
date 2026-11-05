@@ -3148,3 +3148,70 @@ body > .language-switch {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
+
+.reconciliation-page {
+    max-width: 1500px;
+    margin: 30px auto;
+    padding: 20px;
+}
+.recon-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.reconciliation-page .panel {
+    margin: 20px 0;
+}
+.recon-cash {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+}
+.recon-cash strong,
+.recon-cash small {
+    display: block;
+}
+.recon-filters {
+    flex-wrap: wrap;
+}
+.recon-table {
+    min-width: 1300px;
+}
+.recon-table small {
+    display: block;
+    color: var(--muted);
+}
+.recon-table .physical-count {
+    width: 105px;
+    min-width: 0;
+    font-size: 16px;
+}
+.recon-unbalanced {
+    background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+.recon-summary {
+    position: sticky;
+    bottom: 0;
+    background: var(--panel);
+    padding: 16px;
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--line);
+}
+.reconciliation-page textarea {
+    width: 100%;
+}
+@media (max-width: 600px) {
+    .reconciliation-page {
+        margin: 0;
+        padding: 16px;
+    }
+    .recon-cash {
+        grid-template-columns: 1fr 1fr;
+    }
+    .recon-summary {
+        font-size: 13px;
+        gap: 8px;
+    }
+}

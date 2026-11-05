@@ -96,7 +96,8 @@ class SalesTicketPrintingTest extends TestCase
         $this->assertSame(0, DB::transactionLevel());
         $this->assertSame($response->json('id'), $batch->order_id);
         $this->assertSame(app(WaiterLedgerService::class)->visibleBalance($this->waiter->id), $batch->ticket['outstanding']);
-        $page = $this->get($response->json('print_url'))->assertOk()->assertSee('WAITER COPY')->assertSee('CASHIER COPY')->assertSee('ISSUED / UNPAID')->assertSee('Subtotal')->assertSee('Discount')->assertSee('Waiter outstanding after this order')->assertSee($batch->ticket['outstanding'])->assertSee('size:80mm 200mm', false)->assertSee('background:#fff', false)->assertSee('break-before:page', false)->assertSee('Unit price')->assertSee('Line total');
+        $page = $this->get($response->json('print_url'))->assertOk()->assertSee('WAITER COPY')->assertSee('CASHIER COPY')->assertSee('ISSUED / UNPAID')->assertSee('Subtotal')->assertSee('Discount')->assertSee('Waiter outstanding after this order')->assertSee($batch->ticket['outstanding'])->assertSee('size:80mm 200mm', false)->assertSee('background:#fff', false)->assertSee('Unit price')->assertSee('Line total');
+        $this->assertMatchesRegularExpression('/break-before:\s*page/', $page->getContent());
         $this->assertSame(2, substr_count($page->getContent(), '<article class="ticket"'));
         $this->assertSame(1, substr_count($page->getContent(), 'Waiter outstanding after this order'));
         $events = AuditLog::where('action', 'SALES_TICKET_PRINT')->get();

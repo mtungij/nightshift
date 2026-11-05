@@ -20,6 +20,7 @@ use App\Services\ReportService;
 use App\Services\ReturnService;
 use App\Services\SalesTicketService;
 use App\Services\ShiftService;
+use App\Services\ShiftStockService;
 use App\Services\StaffPinService;
 use App\Services\StockTransferService;
 use App\Services\TransactionService;
@@ -73,6 +74,8 @@ final class NightshiftController extends Controller
         }
         $result = $tx->idempotent($key, $command, $fingerprint, function () use ($command, $data) {
             $result = match ($command) {
+                'shift-stock-count' => app(ShiftStockService::class)->count($data['id'], $data),
+                'shift-stock-approve' => app(ShiftStockService::class)->approve($data['id'], $data['basis'], $data['revision'], $data['note']),
                 'print-settings' => app(SalesTicketService::class)->savePreferences($data),
                 'staff-pin' => app(StaffPinService::class)->set($data['id'], $data['pin'] ?? null),
                 'waiter-payment' => app(PaymentService::class)->receiveWaiter($data['waiter_id'], $data['stock_location_id'], $data['amount'], $data['method']),

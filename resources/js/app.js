@@ -1,5 +1,6 @@
 import "./nightshift.js";
 import "./whatsapp.js";
+import "./shift-stock.js";
 
 // FormData captures the submitted credential before clearing the field, so
 // neither a completed form nor the back/forward cache retains the entered PIN.

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Domain\Decimal as D;
 use App\Domain\TenantContext;
+use App\Models\Company;
 use App\Models\Product;
 use App\Models\ProductUnit;
 use App\Models\Stock;
@@ -36,6 +37,8 @@ final class StockService
         if (DB::transactionLevel() === 0) {
             throw new \LogicException('Stock mutations require a transaction.');
         }
+        // Share the existing company transaction lock with opening/count/final close.
+        Company::whereKey(app(TenantContext::class)->companyId())->lockForUpdate()->firstOrFail();
         $location = $this->location($locationId);
         $product = Product::whereKey($productId)->firstOrFail();
         Stock::firstOrCreate(['stock_location_id' => $location->id, 'product_id' => $product->id], ['branch_id' => $location->branch_id, 'quantity' => '0']);

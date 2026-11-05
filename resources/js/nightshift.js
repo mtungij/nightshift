@@ -1826,6 +1826,19 @@ ${esc(cartNote)}</textarea>
                         : ""),
             ) +
             tabs(["Current shifts", "Shift history"], tab || "Current shifts") +
+            html`<section class="panel panel-body">
+                <h2>Stock Reconciliation</h2>
+                ${db.shifts
+                    .filter((s) => s.type === "CASHIER" && s.status === "OPEN")
+                    .map(
+                        (s) =>
+                            html`<a class="button" href="/shift-stock/${s.id}"
+                                >${esc(s.number)} ·
+                                ${esc(db.locations.find((l) => l.id === s.stock_location_id)?.name || "")}</a
+                            >`,
+                    )
+                    .join("")}
+            </section>` +
             (tab === "Shift history"
                 ? html`<section class="panel">
                       ${simpleTable(
@@ -1847,7 +1860,10 @@ ${esc(cartNote)}</textarea>
                                   esc(s.closed_at),
                                   money(s.expected_cash),
                                   money(s.actual_cash),
-                                  money(s.cash_difference),
+                                  money(s.cash_difference) +
+                                      (s.type === "CASHIER"
+                                          ? `<a class="button small" href="/shift-stock/${s.id}">${tr("Stock Reconciliation")}</a>`
+                                          : ""),
                               ]),
                       )}
                   </section>`
@@ -4247,26 +4263,7 @@ ${esc(cartNote)}</textarea>
     }
     function shiftCloseModal() {
         if (!db.shift.active) return toast("You do not have an open cashier shift.");
-        const expected = db.shift.opening + db.shift.cashSales;
-        modal(
-            "Reconcile cashier shift",
-            html`<h3>Staff with unpaid balances</h3>
-                ${simpleTable(
-                    ["Waiter", "Outstanding"],
-                    branchWaiters()
-                        .filter((w) => outstanding(w) > 0)
-                        .map((w) => [esc(w.name), money(outstanding(w))]),
-                )}
-                <div class="payment-total">
-                    <span>Expected cash in drawer</span><strong>${money(expected)}</strong>
-                </div>
-                ${input(`Actual cash counted (${currencyLabel()})`, "actual", "number", expected)}
-                <div id="cash-variance"></div>
-                ${field("Closing notes", "notes", html`<textarea name="notes" placeholder="Explain any shortage or excess…"></textarea>`)}`,
-            submitButton("Close shift"),
-            false,
-            "close-shift",
-        );
+        location.href = `/shift-stock/${db.shift.id}`;
     }
     function productPayload(data) {
         const categoryRecord = db.categoryRecords.find((c) => c.name === data.category),

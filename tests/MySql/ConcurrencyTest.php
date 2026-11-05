@@ -4,9 +4,12 @@ namespace Tests\MySql;
 
 use App\Models\AuditLog;
 use App\Models\Order;
+use App\Models\Payment;
 use App\Models\PaymentAllocation;
 use App\Models\ProductUnit;
 use App\Models\SalesTicketBatch;
+use App\Models\Shift;
+use App\Models\ShiftStockSnapshot;
 use App\Models\Stock;
 use App\Models\StockLocation;
 use App\Models\StockMovement;
@@ -15,6 +18,7 @@ use App\Models\WaiterLedgerEntry;
 use App\Services\AdjustmentService;
 use App\Services\OrderService;
 use App\Services\SalesTicketService;
+use App\Services\ShiftStockService;
 use App\Services\StaffPinService;
 use App\Services\WaiterLedgerService;
 use Database\Seeders\NightshiftDemoSeeder;
@@ -255,5 +259,51 @@ class ConcurrencyTest extends TestCase
         $this->assertSame(1, SalesTicketBatch::where('reprint', true)->count());
         $this->assertSame(2, AuditLog::where('action', 'SALES_TICKET_REPRINT')->count());
         $this->assertSame($before, [$this->quantity(), WaiterLedgerEntry::count(), PaymentAllocation::count(), $order->fresh()->toArray()]);
+    }
+
+    private function prepareReconciliation(): Shift
+    {
+        $shift = Shift::where('user_id', $this->cashier->id)->where('type', 'CASHIER')->firstOrFail();
+        $service = app(ShiftStockService::class);
+        $report = $service->report($shift->id);
+        $service->count($shift->id, ['basis' => $report['basis'], 'revision' => $report['revision'], 'counts' => array_map(fn ($row) => ['product_id' => $row['product_id'], 'quantity' => $row['expected']], $report['rows'])]);
+
+        return $shift;
+    }
+
+    public function test_stock_movement_and_final_close_have_one_serialized_cutoff(): void
+    {
+        $shift = $this->prepareReconciliation();
+        $before = $this->quantity();
+        $ledger = WaiterLedgerEntry::count();
+        $payments = Payment::count();
+        $results = $this->race([
+            ['action' => 'recon-close', 'user_id' => $this->cashier->id, 'shift_id' => $shift->id, 'key' => (string) Str::uuid()],
+            ['action' => 'recon-move', 'user_id' => $this->owner->id, 'location_id' => $this->counter->id, 'product_id' => $this->piece->product_id, 'shift_id' => $shift->id],
+        ]);
+        $this->assertSame(200, $results[1]['code']);
+        $this->assertContains($results[0]['code'], [200, 422]);
+        $this->assertSame(bcadd($before, '1', 6), $this->quantity());
+        $this->assertSame($ledger, WaiterLedgerEntry::count());
+        $this->assertSame($payments, Payment::count());
+        $report = app(ShiftStockService::class)->report($shift->id);
+        if ($results[0]['code'] === 200) {
+            $this->assertSame('CLOSED', $shift->fresh()->status);
+            $this->assertSame($before, collect($report['rows'])->firstWhere('product_id', $this->piece->product_id)['expected']);
+            $this->assertFalse($report['stale']);
+        } else {
+            $this->assertSame('OPEN', $shift->fresh()->status);
+            $this->assertTrue($report['stale']);
+        }
+    }
+
+    public function test_duplicate_close_claim_cannot_duplicate_final_reconciliation(): void
+    {
+        $shift = $this->prepareReconciliation();
+        $request = ['action' => 'recon-close', 'user_id' => $this->cashier->id, 'shift_id' => $shift->id, 'key' => (string) Str::uuid()];
+        $results = $this->race([$request, $request]);
+        $this->assertSame([200, 200], array_column($results, 'code'));
+        $this->assertSame(1, ShiftStockSnapshot::where('shift_id', $shift->id)->where('kind', 'CLOSING')->count());
+        $this->assertSame(1, AuditLog::where('action', 'SHIFT_STOCK_FINALIZED')->where('reference_id', (string) $shift->id)->count());
     }
 }

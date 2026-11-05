@@ -24,10 +24,12 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Tests\Support\CompletesStockCount;
 use Tests\TestCase;
 
 class StaffDataAuthorizationTest extends TestCase
 {
+    use CompletesStockCount;
     use RefreshDatabase;
 
     private User $owner;
@@ -218,6 +220,7 @@ class StaffDataAuthorizationTest extends TestCase
         $this->command('order-send', ['waiter_id' => $this->a->id, 'pin' => '0123', 'stock_location_id' => $this->main->id, 'discount' => '0', 'items' => [['product_unit_id' => $this->unit->id, 'quantity' => '1']]])->assertStatus(409);
         $this->actingAs($this->cashier);
         $own = Shift::where('user_id', $this->cashier->id)->firstOrFail();
+        $this->completeStockCount($own);
         $this->command('shift-close', ['id' => $own->id, 'actual_cash' => $own->opening_cash])->assertOk();
         $this->getJson('/api/nightshift/bootstrap')->assertStatus(409);
         $this->assertSame([$this->main->id], app(StaffVisibility::class)->counters());
