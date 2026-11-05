@@ -31,6 +31,8 @@ The earlier session-removal changes already present in the workspace were preser
 ## Validation results
 
 - Full Laravel suite: **254 tests / 2,675 assertions passed**.
+- Full MySQL **8.4.11** suite: **267 tests / 3,766 assertions passed**, including note persistence, accounting, tenancy, PIN, print/reprint and concurrency regressions. The isolated `nightshift_validation` database on port 3340 was used.
+- Pint, frontend formatting and `git diff --check` passed.
 - PHPStan: **0 errors**; production frontend build passed.
 - Shared-POS desktop/mobile browser: **52 checks passed**, including ordinary waiter auto-selection, tamper rejection, cashier dropdown eligibility, wrong/correct selected PIN, persisted note after reload, history/details, zero manual discount, two-copy printing, and permission-based admin/manager selection. English and Kiswahili confirmation text passed; no runtime errors or HTTP 5xx.
 
