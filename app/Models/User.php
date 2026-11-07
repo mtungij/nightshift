@@ -34,6 +34,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property string|null $two_factor_recovery_codes
  * @property CarbonInterface|null $two_factor_confirmed_at
  * @property int|null $company_id
+ * @property int|null $terminal_stock_location_id
  * @property int|null $role_id
  * @property bool $active
  * @property string|null $theme_preference
@@ -42,7 +43,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property int $pin_failed_attempts
  * @property CarbonInterface|null $pin_locked_until
  * @property-read Company $company
- * @property-read Role $role
+ * @property-read Role|null $role
  * @property-read Collection<int, Branch> $branches
  */
 #[Fillable(['name', 'username', 'email', 'password'])]
@@ -90,13 +91,22 @@ class User extends Authenticatable implements PasskeyUser
         return $this->belongsToMany(Branch::class)->withPivot('company_id');
     }
 
+    public function isPosTerminal(): bool
+    {
+        return $this->role?->name === 'POS Terminal';
+    }
+
     public function hasPermission(string $permission): bool
     {
-        return $this->active && $this->company_id && $this->role->permissions()->where('name', $permission)->exists();
+        return $this->active && $this->company_id && (! $this->isPosTerminal() || in_array($permission, ['create-orders', 'view-orders'], true)) && $this->role->permissions()->where('name', $permission)->exists();
     }
 
     public function canAccessBranch(int $id): bool
     {
+        if ($this->isPosTerminal()) {
+            return StockLocation::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($this->terminal_stock_location_id)->where('branch_id', $id)->where('type', 'COUNTER')->where('active', true)->exists();
+        }
+
         return Branch::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($id)->exists() && ($this->hasPermission('all-branches') || $this->branches()->withoutGlobalScopes()->where('branches.id', $id)->exists());
     }
 

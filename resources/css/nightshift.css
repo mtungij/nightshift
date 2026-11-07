@@ -3215,3 +3215,50 @@ body > .language-switch {
         gap: 8px;
     }
 }
+
+.my-orders-list {
+    display: grid;
+    gap: 12px;
+    margin: 16px 0;
+}
+.my-orders-card {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.my-orders-view > .toolbar,
+.my-orders-card .toolbar {
+    flex-wrap: wrap;
+}
+.my-orders-card .order-note {
+    white-space: normal;
+    margin: 12px 0;
+}
+.my-orders-card .order-note p {
+    white-space: pre-wrap;
+    margin: 4px 0 0;
+}
+.my-orders-amounts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+}
+.my-orders-amounts dt {
+    color: var(--muted);
+    font-size: 12px;
+}
+.my-orders-amounts dd {
+    margin: 4px 0 0;
+    font-weight: 600;
+}
+.my-orders-error {
+    color: var(--red);
+}
+@media (max-width: 480px) {
+    .my-orders-amounts {
+        grid-template-columns: 1fr;
+    }
+}

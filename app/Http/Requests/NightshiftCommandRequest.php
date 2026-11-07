@@ -65,7 +65,7 @@ final class NightshiftCommandRequest extends FormRequest
             'catalog-unit' => ['name' => $text],
             'catalog-supplier' => ['name' => $text, 'contact' => $text, 'category' => ['nullable', 'string', 'max:255']],
             'catalog-reservation' => ['service_table_id' => $id, 'guest' => $text, 'phone' => $text, 'size' => ['required', 'integer', 'min:1', 'max:100'], 'date' => ['required', 'date_format:Y-m-d'], 'arrival' => ['required', 'date_format:H:i']],
-            'catalog-user' => ['name' => $text, 'email' => ['required', 'email', 'max:255'], 'username' => ['sometimes', 'required', 'string', 'max:100', 'regex:/^[a-z0-9][a-z0-9._-]*$/iD', Rule::unique('users', 'username')], 'pin' => ['required', 'string', 'regex:/^[0-9]{4}$/D'], 'role' => ['required', Rule::in(config('business.staff_roles'))], 'branch_id' => $id, 'phone' => ['nullable', 'string', 'max:40'], 'active' => ['sometimes', 'boolean']],
+            'catalog-user' => ['stock_location_id' => ['required_if:role,POS Terminal', 'nullable', 'integer', 'min:1'], 'name' => $text, 'email' => ['required', 'email', 'max:255'], 'username' => ['sometimes', 'required', 'string', 'max:100', 'regex:/^[a-z0-9][a-z0-9._-]*$/iD', Rule::unique('users', 'username')], 'pin' => ['required', 'string', 'regex:/^[0-9]{4}$/D'], 'role' => ['required', Rule::in(config('business.staff_roles'))], 'branch_id' => $id, 'phone' => ['nullable', 'string', 'max:40'], 'active' => ['sometimes', 'boolean']],
             'catalog-company' => ['name' => $text, 'email' => ['nullable', 'email', 'max:255'], 'phone' => ['nullable', 'string', 'max:255']],
             'notifications-read' => [],
             default => abort(404),

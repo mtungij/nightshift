@@ -3,6 +3,7 @@
 use App\Http\Controllers\BusinessOnboardingController;
 use App\Http\Controllers\BusinessProfileController;
 use App\Http\Controllers\LanguagePreferenceController;
+use App\Http\Controllers\MyOrdersController;
 use App\Http\Controllers\NightshiftController;
 use App\Http\Controllers\OpenShiftController;
 use App\Http\Controllers\ShiftStockController;
@@ -48,9 +49,16 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/api/nightshift/shift-stock/{id}', [ShiftStockController::class, 'show'])->whereNumber('id');
     Route::get('/shift-stock/{id}', [ShiftStockController::class, 'page'])->whereNumber('id');
     Route::get('/shift-stock/{id}/print', [ShiftStockController::class, 'sheet'])->whereNumber('id');
-    Route::get('/dashboard', Workspace::class)->middleware(RequireOperationalShift::class)->name('dashboard');
+    Route::post('/api/nightshift/my-orders/close', [MyOrdersController::class, 'close'])->middleware('throttle:60,1')->block(10, 10);
+    Route::get('/dashboard', Workspace::class)->middleware(RequireOperationalShift::class)->name('dashboard')->block(10, 10);
     Route::prefix('api/nightshift')->middleware(['throttle:120,1', RequireOperationalShift::class])->group(function () {
         Route::get('/products/{id}/image', [NightshiftController::class, 'productImage'])->name('nightshift.product-image');
+        Route::prefix('my-orders')->group(function () {
+            Route::get('/staff', [MyOrdersController::class, 'staff'])->block(10, 10);
+            Route::post('/verify', [MyOrdersController::class, 'verify'])->middleware('throttle:20,1')->block(10, 10);
+            Route::get('/', [MyOrdersController::class, 'index'])->block(10, 10);
+            Route::get('/{id}', [MyOrdersController::class, 'show'])->whereNumber('id')->block(10, 10);
+        });
         Route::get('/bootstrap', [NightshiftController::class, 'snapshot']);
         Route::post('/commands/{command}', [NightshiftController::class, 'command']);
         Route::get('/reports/{name}/export', [NightshiftController::class, 'exportReport']);

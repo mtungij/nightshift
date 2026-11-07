@@ -57,6 +57,9 @@ final class StaffVisibility
     public function assertLocation(int $id): void
     {
         StockLocation::findOrFail($id);
+        if ($this->context->user()->isPosTerminal()) {
+            abort_unless($id === (int) $this->context->user()->terminal_stock_location_id, 403);
+        }
         if ($this->settlementOnly()) {
             $counters = $this->counters();
             // Before the first shift, permitted counter metadata is available
@@ -101,6 +104,9 @@ final class StaffVisibility
             return $query;
         }
         $actor = $this->context->user();
+        if ($actor->isPosTerminal()) {
+            return $query->where('created_by', $actor->id)->where('stock_location_id', $actor->terminal_stock_location_id);
+        }
         if (! $this->settlementOnly()) {
             return $query->where('waiter_id', $actor->id);
         }
@@ -147,6 +153,9 @@ final class StaffVisibility
      */
     public function ledger(Builder $query, ?int $counter = null): Builder
     {
+        if ($this->context->user()->isPosTerminal()) {
+            return $query->whereIn('order_id', Order::where('stock_location_id', $this->context->user()->terminal_stock_location_id)->select('id'));
+        }
         if (! $this->broad() && ! $this->settlementOnly()) {
             $query->where('waiter_id', $this->context->user()->id);
         }
@@ -205,6 +214,9 @@ final class StaffVisibility
     {
         if ($user->company_id !== $order->company_id || ! $user->canAccessBranch($order->branch_id)) {
             return false;
+        }
+        if ($user->isPosTerminal()) {
+            return $order->created_by === $user->id && $order->stock_location_id === (int) $user->terminal_stock_location_id;
         }
         if ($this->broad($user)) {
             return true;

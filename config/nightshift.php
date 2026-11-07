@@ -12,6 +12,7 @@ return [
         'Supervisor' => ['view-staff-operations', 'view-dashboard', 'view-orders', 'view-waiter-balances', 'manage-inventory', 'view-reports', 'view-audit', 'open-shifts', 'close-shifts', 'request-void'],
         'Store Keeper' => ['manage-inventory', 'receive-stock', 'transfer-stock', 'adjust-stock', 'manage-products', 'view-reports', 'open-shifts', 'close-shifts'],
         'Cashier' => ['view-dashboard', 'create-orders', 'view-orders', 'issue-drinks', 'receive-payments', 'view-waiter-balances', 'request-void', 'open-shifts', 'close-shifts', 'return-items'],
+        'POS Terminal' => ['create-orders', 'view-orders'],
         'Waiter' => ['create-orders', 'view-orders', 'view-waiter-balances', 'request-void', 'open-shifts', 'close-shifts'],
     ],
 ];

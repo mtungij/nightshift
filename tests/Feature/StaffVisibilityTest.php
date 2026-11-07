@@ -31,6 +31,7 @@ class StaffVisibilityTest extends TestCase
             'idempotency_key' => (string) Str::uuid(), 'name' => 'New '.$role,
             'email' => Str::uuid().'@staff.test', 'role' => $role, 'branch_id' => $branch,
             'active' => $active, 'pin' => '0123',
+            ...($role === 'POS Terminal' ? ['stock_location_id' => StockLocation::where('branch_id', $branch)->where('type', 'COUNTER')->firstOrFail()->id] : []),
         ])->assertOk();
 
         return $response->json('id');

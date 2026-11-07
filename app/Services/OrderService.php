@@ -30,6 +30,8 @@ final class OrderService
      */
     public function create(array $data): Order
     {
+        abort_if(app(TenantContext::class)->user()->isPosTerminal(), 403);
+
         return $this->createOrder($data);
     }
 
@@ -68,6 +70,7 @@ final class OrderService
             }
             $discount = D::money($data['discount'] ?? '0');
             $this->stock->require(D::cmp($discount, '0') >= 0 && D::cmp($discount, $subtotal) <= 0, 'Discount cannot exceed the subtotal.');
+            abort_if($actor->isPosTerminal() && D::cmp($discount, '0') !== 0, 403);
             $total = D::sub($subtotal, $discount);
             $o = Order::create(['branch_id' => $location->branch_id, 'stock_location_id' => $location->id, 'waiter_id' => $waiter->id, 'service_table_id' => $table?->id, 'order_note' => $data['order_note'] ?? null, 'shift_id' => $shift->id, 'invoice_number' => $this->numbers->next('INV'), 'subtotal' => $subtotal, 'discount' => $discount, 'total' => $total, 'balance' => $total, 'status' => $data['status'] ?? 'WAITING_FOR_ISSUE', 'created_by' => $actor->id]);
             // Floor proportional shares, then distribute the remaining cents. No line
@@ -88,7 +91,7 @@ final class OrderService
             foreach ($items as $line) {
                 $o->items()->create($line);
             }
-            $this->audit->record('ORDER_CREATED', 'Orders', 'Order', $o->id, [], ['invoice' => $o->invoice_number, 'status' => $o->status, 'total' => $total], $o->branch_id);
+            $this->audit->record('ORDER_CREATED', 'Orders', 'Order', $o->id, [], ['terminal_user_id' => $actor->isPosTerminal() ? $actor->id : null, 'entered_by' => $actor->id, 'waiter_id' => $waiter->id, 'stock_location_id' => $location->id, 'invoice' => $o->invoice_number, 'status' => $o->status, 'total' => $total], $o->branch_id);
             $this->audit->notify($o->branch_id, 'NEW_ORDER', 'New waiter order', "{$o->invoice_number} from {$waiter->name}", 'orders', $waiter->id, $o->stock_location_id);
 
             return $o;
@@ -123,7 +126,7 @@ final class OrderService
         Gate::authorize('create-orders');
         $locationId = ! empty($data['id']) ? $this->accessible((int) $data['id'], 'create-orders')->stock_location_id : (int) $data['stock_location_id'];
         $location = $this->stock->location($locationId);
-        if (! app(StaffVisibility::class)->broad() && ! app(StaffVisibility::class)->settlementOnly()) {
+        if (! app(TenantContext::class)->user()->isPosTerminal() && ! app(StaffVisibility::class)->broad() && ! app(StaffVisibility::class)->settlementOnly()) {
             abort_unless((int) $data['waiter_id'] === app(TenantContext::class)->user()->id, 403);
         }
         app(StaffVisibility::class)->assertOperationalLocation($locationId);

@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\Payment;
 use App\Models\PaymentAllocation;
 use App\Models\ProductUnit;
+use App\Models\Role;
 use App\Models\SalesTicketBatch;
 use App\Models\Shift;
 use App\Models\ShiftStockSnapshot;
@@ -195,6 +196,23 @@ class ConcurrencyTest extends TestCase
         $this->assertNotNull($results[0]['print_batch']);
         $this->assertSame(1, SalesTicketBatch::count());
         $this->assertSame(2, AuditLog::where('action', 'SALES_TICKET_PRINT')->count());
+    }
+
+    public function test_shared_terminal_simultaneous_retries_issue_and_print_once(): void
+    {
+        $terminal = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', 'POS Terminal')->firstOrFail()->id, 'terminal_stock_location_id' => $this->counter->id]);
+        $request = [...$this->sendRequest((string) Str::uuid()), 'user_id' => $terminal->id];
+        $before = $this->quantity();
+        $results = $this->race([$request, $request]);
+        $this->assertSame([200, 200], array_column($results, 'code'));
+        $this->assertSame($results[0]['id'], $results[1]['id']);
+        $this->assertSame($results[0]['print_batch'], $results[1]['print_batch']);
+        $this->assertSame(bcsub($before, '1', 6), $this->quantity());
+        $order = Order::findOrFail($results[0]['id']);
+        $this->assertSame($terminal->id, $order->created_by);
+        $this->assertSame($this->waiter->id, $order->waiter_id);
+        $this->assertSame(1, WaiterLedgerEntry::where('order_id', $order->id)->where('entry_type', 'ISSUE')->count());
+        $this->assertSame(1, SalesTicketBatch::where('order_id', $order->id)->count());
     }
 
     public function test_simultaneous_direct_sends_for_last_drink_roll_back_losing_order(): void

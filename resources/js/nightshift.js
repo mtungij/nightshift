@@ -219,6 +219,8 @@ if (root) {
     let orderPage = 1;
     let modalTrigger = null;
     const roles = ["Manager", "Cashier", "Waiter", "Store Keeper", "Supervisor"];
+    const terminal = () => db.role === "POS Terminal";
+    const owner = () => ["Company Admin / Owner", "Super Admin"].includes(db.role);
     const navigationPermissions = {
         dashboard: "view-dashboard",
         pos: "create-orders",
@@ -242,10 +244,23 @@ if (root) {
         notifications: null,
     };
     const permitted = (name) => db.permissions.includes(name);
-    const allowed = (name) => name === "notifications" || permitted(navigationPermissions[name]);
+    const allowed = (name) =>
+        terminal()
+            ? ["pos", "orders"].includes(name)
+            : name === "notifications" || permitted(navigationPermissions[name]);
     const managerial = () => permitted("approve-void") || permitted("override-shifts");
     const canIssue = () => permitted("issue-drinks");
-    const waiter = (id) => db.waiters.find((w) => w.id === Number(id));
+    const waiter = (id) =>
+        db.waiters.find((w) => w.id === Number(id)) ||
+        (terminal()
+            ? {
+                  id: Number(id),
+                  name:
+                      db.servingWaiters.find((w) => w.id === Number(id))?.name ||
+                      db.orders.find((o) => o.waiter === Number(id))?.waiter_name ||
+                      "",
+              }
+            : undefined);
     const product = (id) => db.products.find((p) => p.id === Number(id));
     const outstanding = (w) => Number(w.outstanding || 0);
     const branchWaiters = () =>
@@ -303,7 +318,7 @@ if (root) {
         return navItems
             .map(
                 ([id, ico, label], i) =>
-                    `${i === 0 ? html`<div class="nav-group">WORKSPACE</div>` : i === 6 ? html`<div class="nav-group">MANAGEMENT</div>` : i === 12 ? html`<div class="nav-group">ADMINISTRATION</div>` : ""}${allowed(id) ? html`<button class="nav-item ${screen === id ? "active" : ""}" data-nav="${id}">${icon(ico)}<span>${tr(label)}</span>${id === "orders" ? html`<span class="nav-count">${branchOrders().filter((o) => !["Paid", "Voided", "Cancelled", "Returned"].includes(o.status)).length}</span>` : id === "approvals" ? html`<span class="nav-count nav-alert">${db.approvals.filter((a) => a.status === "Pending").length}</span>` : ["inventory", "shifts"].includes(id) ? icon("chevron", "chevron") : ""}</button>` : ""}`,
+                    `${i === 0 ? html`<div class="nav-group">WORKSPACE</div>` : !terminal() && i === 6 ? html`<div class="nav-group">MANAGEMENT</div>` : !terminal() && i === 12 ? html`<div class="nav-group">ADMINISTRATION</div>` : ""}${allowed(id) ? html`<button class="nav-item ${screen === id ? "active" : ""}" data-nav="${id}">${icon(ico)}<span>${tr(label)}</span>${id === "orders" ? html`<span class="nav-count">${branchOrders().filter((o) => !["Paid", "Voided", "Cancelled", "Returned"].includes(o.status)).length}</span>` : id === "approvals" ? html`<span class="nav-count nav-alert">${db.approvals.filter((a) => a.status === "Pending").length}</span>` : ["inventory", "shifts"].includes(id) ? icon("chevron", "chevron") : ""}</button>` : ""}`,
             )
             .join("");
     }
@@ -329,7 +344,7 @@ if (root) {
                     ${icon("down")}
                 </div>
                 <nav class="nav-scroll" aria-label="Main navigation">${navigation()}</nav>
-                <div class="sidebar-foot">
+                <div class="sidebar-foot" ${terminal() ? "hidden" : ""}>
                     <div class="shift-live">
                         <span class="dot" style="${db.shift.active ? "" : "background:#888"}"></span
                         >${tr(db.shift.active ? "Current shift is live" : "Shift is closed")}<small
@@ -371,7 +386,11 @@ if (root) {
                             <span class="theme-sun">${icon("sun")}</span
                             ><span class="theme-moon">${icon("moon")}</span>
                         </button>
-                        <form class="global-search" id="global-search">
+                        <form
+                            class="global-search"
+                            id="global-search"
+                            ${terminal() ? "hidden" : ""}
+                        >
                             ${icon("search")}<input
                                 name="query"
                                 aria-label="Search the workspace"
@@ -382,6 +401,7 @@ if (root) {
                         <button
                             class="icon-button"
                             data-nav="notifications"
+                            ${terminal() ? "hidden" : ""}
                             aria-label="Notifications"
                         >
                             ${icon("bell")}<span class="notification-dot"></span>
@@ -445,7 +465,7 @@ if (root) {
         </div>`;
     const branchSelect = () =>
         html`<select class="select-control" data-change="branch" aria-label="Branch">
-            ${[...db.branches.map((b) => b.name), "All branches"].map((b) => html`<option value="${esc(b)}" ${b === db.branch ? "selected" : ""}>${b === "All branches" ? tr(b) : esc(b)}</option>`).join("")}
+            ${[...db.branches.map((b) => b.name), ...(terminal() ? [] : ["All branches"])].map((b) => html`<option value="${esc(b)}" ${b === db.branch ? "selected" : ""}>${b === "All branches" ? tr(b) : esc(b)}</option>`).join("")}
         </select>`;
     const dateSelect = () =>
         html`<select class="select-control" data-change="period" aria-label="Reporting period">
@@ -1199,7 +1219,7 @@ if (root) {
             heading(
                 "Point of sale",
                 "A great night starts with a seamless order.",
-                `${branchSelect()}${badge("Current shift")}`,
+                `${btn("My Orders", "my-orders", "", "orders")}${branchSelect()}${badge(terminal() ? "POS Terminal" : "Current shift")}`,
                 "POUR. SERVE. REPEAT.",
             ) +
             html`<div class="toolbar">
@@ -2336,7 +2356,7 @@ ${esc(cartNote)}</textarea>
                                     <p>${esc(tr(db.role))}</p>
                                 </div>
                             </div>
-                            <a class="button" href="/settings/profile">Profile & security</a>
+                            ${terminal() ? "" : html`<a class="button" href="/settings/profile">Profile & security</a>`}
                         </div>
                     </section>
                 </div>` +
@@ -2406,6 +2426,7 @@ ${esc(cartNote)}</textarea>
             ["Supervisor", "Supervisors"],
             ["Manager", "Manager"],
             ["Store Keeper", "Store Keeper"],
+            ["POS Terminal", "POS Terminal"],
             ["Supervisor", "Supervisor role"],
         ];
         const users = db.team.filter(
@@ -2505,6 +2526,249 @@ ${esc(cartNote)}</textarea>
             }[screen] || adminScreen
         )();
     }
+    let myOrdersView = null;
+    function revokeMyOrders(view, beacon = false) {
+        clearTimeout(view?.timer);
+        if (!view?.view) return;
+        if (beacon) {
+            const body = new FormData();
+            body.set("_token", document.querySelector('[name="csrf-token"]').content);
+            body.set("view", view.view);
+            navigator.sendBeacon("/api/nightshift/my-orders/close", body);
+        } else {
+            fetch("/api/nightshift/my-orders/close", {
+                method: "POST",
+                keepalive: true,
+                headers: {
+                    "X-CSRF-TOKEN": document.querySelector('[name="csrf-token"]').content,
+                    "X-My-Orders-View": view.view,
+                    Accept: "application/json",
+                },
+            }).catch(() => {});
+        }
+        view.token = null;
+    }
+    function clearMyOrders(beacon = false) {
+        const view = myOrdersView;
+        myOrdersView = null;
+        revokeMyOrders(view, beacon);
+    }
+    window.addEventListener("pagehide", () => {
+        if (myOrdersView) {
+            clearMyOrders(true);
+            document.getElementById("modal-root").innerHTML = "";
+            document.body.style.overflow = "";
+        }
+    });
+    async function openMyOrders() {
+        closeModal();
+        const view = { view: null, token: null, filter: "all", sequence: 0 };
+        myOrdersView = view;
+        modal("View My Orders", html`<p>Loading…</p>`);
+        try {
+            const result = await api("my-orders/staff?stock_location_id=" + db.location_id, {
+                cache: "no-store",
+            });
+            view.view = result.view;
+            if (myOrdersView !== view) return revokeMyOrders(view);
+            const individual = ["Waiter", "Cashier"].includes(db.role);
+            const selected = result.staff.find((s) => s.id === db.user.id);
+            const choices = html`<select name="staff_id" required>
+                <option value="">${tr("Select your name")}</option>
+                ${result.staff.map((s) => html`<option value="${s.id}">${esc(s.name)} · ${esc(tr(s.role))}</option>`).join("")}
+            </select>`;
+            modal(
+                "View My Orders",
+                html`<div class="form-grid">
+                        ${field("Staff member", "staff_id", individual && selected ? html`<input type="hidden" name="staff_id" value="${selected.id}" /><input value="${esc(selected.name)}" readonly />` : choices)}${pinField()}
+                        <p class="form-help my-orders-error" data-my-orders-error role="alert"></p>
+                    </div>
+                    ${btn("Close My Orders", "close-my-orders")}`,
+                submitButton("View My Orders"),
+                false,
+                "my-orders-verify",
+            );
+            if (!result.staff.length)
+                document.querySelector("[data-my-orders-error]").textContent = tr(
+                    "No eligible staff at this counter.",
+                );
+            if (individual)
+                document.querySelector('[data-form="my-orders-verify"] [name="pin"]').focus();
+        } catch (error) {
+            if (myOrdersView === view) {
+                closeModal();
+                toast(error.message);
+            }
+        }
+    }
+    async function verifyMyOrders(form) {
+        const view = myOrdersView;
+        if (!view?.view || view.busy) return;
+        view.busy = true;
+        const button = form.querySelector("[type=submit]");
+        button.disabled = true;
+        const payload = {
+            staff_id: Number(form.elements.staff_id.value),
+            pin: form.elements.pin.value,
+        };
+        form.elements.pin.value = "";
+        try {
+            const result = await api("my-orders/verify", {
+                method: "POST",
+                headers: { "X-My-Orders-View": view.view },
+                body: JSON.stringify(payload),
+                cache: "no-store",
+            });
+            if (myOrdersView !== view) return revokeMyOrders(view);
+            view.token = result.token;
+            view.staff = result.staff;
+            view.timer = setTimeout(
+                () => {
+                    if (myOrdersView === view) {
+                        closeModal();
+                        toast("My Orders verification expired. Verify your PIN again.");
+                    }
+                },
+                Math.max(0, result.expires_at * 1000 - Date.now()),
+            );
+            await loadMyOrders(1);
+        } catch (error) {
+            if (myOrdersView === view) {
+                const errorBox = form.querySelector("[data-my-orders-error]");
+                if (errorBox?.isConnected) {
+                    errorBox.textContent = error.message;
+                    form.elements.pin.focus();
+                } else {
+                    closeModal();
+                    toast(error.message);
+                }
+            }
+        } finally {
+            delete payload.pin;
+            button.disabled = false;
+            view.busy = false;
+        }
+    }
+    async function loadMyOrders(page = 1) {
+        const view = myOrdersView;
+        if (!view?.token) return;
+        const sequence = ++view.sequence;
+        try {
+            const result = await api("my-orders?filter=" + view.filter + "&page=" + page, {
+                cache: "no-store",
+                headers: { "X-My-Orders-Token": view.token },
+            });
+            if (myOrdersView !== view || sequence !== view.sequence) return;
+            const labels = {
+                ISSUED: "Unpaid",
+                PARTIALLY_PAID: "Partially Paid",
+                PAID: "Paid",
+                VOIDED: "My Orders voided",
+                VOID_REQUESTED: "Void requested",
+                DRAFT: "Draft",
+                WAITING_FOR_ISSUE: "Waiting for issue",
+                CANCELLED: "Cancelled",
+            };
+            const date = (value) =>
+                value
+                    ? new Intl.DateTimeFormat(
+                          window.NightshiftI18n.locale === "sw" ? "sw-TZ" : "en-GB",
+                          { dateStyle: "medium", timeStyle: "short", timeZone: db.timezone },
+                      ).format(new Date(value))
+                    : "";
+            modal(
+                "My Orders",
+                html`<div class="my-orders-view">
+                    <div class="toolbar">
+                        <div>
+                            <strong>${esc(view.staff.name)}</strong>
+                            <p class="form-help">${esc(tr(view.staff.role))}</p>
+                        </div>
+                        ${btn("Close My Orders", "close-my-orders")}
+                    </div>
+                    <div class="subtabs" role="group" aria-label="${tr("Order status")}">
+                        ${[
+                            ["all", "My Orders all"],
+                            ["unpaid", "My Orders unpaid"],
+                            ["paid", "My Orders paid"],
+                        ]
+                            .map(
+                                ([filter, label]) =>
+                                    html`<button
+                                        class="tab ${view.filter === filter ? "active" : ""}"
+                                        data-action="my-orders-filter"
+                                        data-value="${filter}"
+                                        aria-pressed="${view.filter === filter}"
+                                    >
+                                        ${esc(tr(label))}
+                                    </button>`,
+                            )
+                            .join("")}
+                    </div>
+                    <div class="my-orders-list">
+                        ${
+                            result.orders
+                                .map(
+                                    (o) =>
+                                        html`<article
+                                            class="my-orders-card"
+                                            data-order-id="${o.id}"
+                                        >
+                                            <div class="toolbar">
+                                                <strong>${esc(o.invoice)}</strong
+                                                >${badge(labels[o.status] || o.status, o.status === "PAID" ? "" : o.status === "VOIDED" ? "red" : ["ISSUED", "PARTIALLY_PAID", "VOID_REQUESTED"].includes(o.status) ? "amber" : "gray")}
+                                            </div>
+                                            <p class="form-help">
+                                                ${esc(date(o.created_at))} ·
+                                                ${esc(o.counter)}${o.table ? " · " + esc(o.table) : ""}
+                                            </p>
+                                            ${view.staff.role === "Cashier" ? html`<p>${tr("Waiter")}: ${esc(o.waiter)}</p>` : ""}${
+                                                o.order_note
+                                                    ? html`<div class="order-note">
+                                                          <strong>${tr("Order Note")}</strong>
+                                                          <p>${esc(o.order_note)}</p>
+                                                      </div>`
+                                                    : ""
+                                            }
+                                            <dl class="my-orders-amounts">
+                                                <div>
+                                                    <dt>${tr("Total")}</dt>
+                                                    <dd>${money(o.total)}</dd>
+                                                </div>
+                                                <div>
+                                                    <dt>${tr("Amount paid")}</dt>
+                                                    <dd>${money(o.amount_paid)}</dd>
+                                                </div>
+                                                <div>
+                                                    <dt>${tr("Balance")}</dt>
+                                                    <dd>${money(o.balance)}</dd>
+                                                </div>
+                                            </dl>
+                                        </article>`,
+                                )
+                                .join("") ||
+                            html`<div class="empty-state">
+                                ${tr("No orders match this filter.")}
+                            </div>`
+                        }
+                    </div>
+                    <div class="toolbar">
+                        ${btn("Previous", "my-orders-page", "", "", `data-value="${result.page - 1}" ${result.page <= 1 ? "disabled" : ""}`)}<span
+                            >${result.page} / ${result.last_page}</span
+                        >${btn("Next", "my-orders-page", "", "", `data-value="${result.page + 1}" ${result.page >= result.last_page ? "disabled" : ""}`)}
+                    </div>
+                </div>`,
+                "",
+                true,
+            );
+        } catch (error) {
+            if (myOrdersView === view) {
+                closeModal();
+                toast(error.message);
+            }
+        }
+    }
+
     function modal(title, body, actions = "", wide = false, formAction = "") {
         modalTrigger = document.activeElement;
         document.getElementById("modal-root").innerHTML = html`<div class="modal-backdrop">
@@ -2532,6 +2796,7 @@ ${esc(cartNote)}</textarea>
             ?.focus();
     }
     function closeModal() {
+        clearMyOrders();
         document.getElementById("modal-root").innerHTML = "";
         document.body.style.overflow = "";
         modalTrigger?.focus();
@@ -2758,7 +3023,9 @@ ${esc(cartNote)}</textarea>
     function orderDetail(id) {
         const o = db.orders.find((o) => o.id === Number(id));
         if (!o) return;
-        let actions = btn("Print receipt", "receipt", "", "print", `data-id="${o.id}"`);
+        let actions = terminal()
+            ? ""
+            : btn("Print receipt", "receipt", "", "print", `data-id="${o.id}"`);
         if (
             ["Issued", "Partially paid", "Paid", "Void requested", "Voided", "Returned"].includes(
                 o.status,
@@ -2788,7 +3055,14 @@ ${esc(cartNote)}</textarea>
                 actions +=
                     btn("Return items", "return-items", "", "refresh", `data-id="${o.id}"`) +
                     btn("Receive payment", "payment", "primary", "wallet", `data-id="${o.id}"`);
-            actions += btn("Request void", "void-request", "danger", "ban", `data-id="${o.id}"`);
+            if (permitted("request-void"))
+                actions += btn(
+                    "Request void",
+                    "void-request",
+                    "danger",
+                    "ban",
+                    `data-id="${o.id}"`,
+                );
         }
         modal(
             invoice(o.id),
@@ -3136,9 +3410,15 @@ ${esc(cartNote)}</textarea>
                     input("Email", "email", "email") +
                     input("Phone", "phone", "tel", "", false) +
                     select("Status", "active", ["Active", "Inactive"]) +
-                    select("Role", "role", roles, "Cashier") +
+                    select(
+                        "Role",
+                        "role",
+                        owner() ? [...roles, "POS Terminal"] : roles,
+                        "Cashier",
+                    ) +
                     html`<div data-staff-credentials>${staffCredentials("Cashier")}</div>` +
-                    select("Branch", "branch", branches),
+                    select("Branch", "branch", branches) +
+                    html`<div data-terminal-counter hidden></div>`,
                 "Add member",
             ],
             "add-branch": [
@@ -3231,6 +3511,14 @@ ${esc(cartNote)}</textarea>
         if (!target) return;
         const { action, id, value } = target.dataset;
         try {
+            if (action === "my-orders") return openMyOrders();
+            if (action === "close-my-orders") return closeModal();
+            if (action === "my-orders-filter") {
+                if (!myOrdersView?.token) return;
+                myOrdersView.filter = value;
+                return loadMyOrders(1);
+            }
+            if (action === "my-orders-page") return loadMyOrders(Number(value));
             if (action === "close-modal") return closeModal();
             if (action === "menu")
                 return document.getElementById("sidebar").classList.toggle("open");
@@ -3488,7 +3776,7 @@ ${esc(cartNote)}</textarea>
                                 <p>${esc(tr(db.role))} · ${esc(db.company)}</p>
                             </div>
                         </div>
-                        <a class="button" href="/settings/profile">Profile & security</a>
+                        ${terminal() ? "" : html`<a class="button" href="/settings/profile">Profile & security</a>`}
                         <form method="POST" action="/logout" style="margin-top:15px">
                             <input
                                 type="hidden"
@@ -3596,6 +3884,20 @@ ${esc(cartNote)}</textarea>
             shell();
             return;
         }
+        const staffForm = e.target.closest('[data-form="add-user"]');
+        if (staffForm && ["role", "branch"].includes(e.target.name)) {
+            const container = staffForm.querySelector("[data-terminal-counter]");
+            container.hidden = staffForm.elements.role.value !== "POS Terminal";
+            container.innerHTML = container.hidden
+                ? ""
+                : select(
+                      "Counter",
+                      "terminal_counter",
+                      db.terminalLocations
+                          .filter((l) => l.branch_id === Number(staffForm.elements.branch.value))
+                          .map((l) => [l.id, l.name]),
+                  );
+        }
         if (e.target.name === "role" && e.target.closest('[data-form="add-user"]')) {
             e.target.closest("form").querySelector("[data-staff-credentials]").innerHTML =
                 staffCredentials(e.target.value);
@@ -3670,6 +3972,7 @@ ${esc(cartNote)}</textarea>
         const form = e.target.closest("[data-form]");
         if (!form) return;
         e.preventDefault();
+        if (form.dataset.form === "my-orders-verify") return verifyMyOrders(form);
         if (pendingRequests) return toast("Please wait for the current save to finish.");
         try {
             const data = Object.fromEntries(new FormData(form)),
@@ -3845,6 +4148,9 @@ ${esc(cartNote)}</textarea>
                     phone: data.phone,
                     active: data.active === "Active",
                     branch_id: Number(data.branch),
+                    ...(data.role === "POS Terminal"
+                        ? { stock_location_id: Number(data.terminal_counter) }
+                        : {}),
                 };
             } else if (type === "add-supplier") {
                 command = "catalog-supplier";

@@ -141,11 +141,17 @@ final class CatalogService
         $actor = app(TenantContext::class)->user();
         $role = Role::where('name', $data['role'])->whereIn('name', config('business.staff_roles'))->firstOrFail();
         $branch = Branch::whereKey($data['branch_id'])->firstOrFail();
+        $terminalLocation = null;
+        if ($role->name === 'POS Terminal') {
+            abort_unless(in_array($actor->role->name, ['Company Admin / Owner', 'Super Admin'], true), 403);
+            $terminalLocation = StockLocation::whereKey($data['stock_location_id'] ?? 0)->where('branch_id', $branch->id)->where('type', 'COUNTER')->where('active', true)->firstOrFail();
+            $this->stock->require((bool) $branch->active, 'Branch is inactive.');
+        }
         $data['email'] = mb_strtolower(trim($data['email']));
         $this->stock->require(! User::where('email', $data['email'])->exists(), 'This email address is already registered.');
         $u = User::create(['name' => $data['name'], 'username' => isset($data['username']) ? mb_strtolower(trim($data['username'])) : null, 'email' => $data['email'], 'password' => Str::password(64)]);
         $u->forceFill(['operational_pin' => Hash::make($data['pin'])])->save();
-        $u->forceFill(['company_id' => $actor->company_id, 'role_id' => $role->id, 'phone' => $data['phone'] ?? null, 'active' => $data['active'] ?? true])->save();
+        $u->forceFill(['company_id' => $actor->company_id, 'role_id' => $role->id, 'terminal_stock_location_id' => $terminalLocation?->id, 'phone' => $data['phone'] ?? null, 'active' => $data['active'] ?? true])->save();
         $u->branches()->attach($branch->id, ['company_id' => $actor->company_id]);
 
         return $u;

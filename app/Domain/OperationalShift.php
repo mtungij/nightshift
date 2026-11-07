@@ -34,6 +34,9 @@ final class OperationalShift
 
     public function destination(User $user): string
     {
+        if ($user->isPosTerminal()) {
+            return route('dashboard', absolute: false).'#pos';
+        }
         if (! $this->type($user)) {
             return route('dashboard', absolute: false);
         }

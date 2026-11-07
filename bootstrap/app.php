@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Middleware\RedactPin;
+use App\Http\Middleware\RestrictPosTerminal;
 use App\Http\Middleware\SetLocale;
 use App\Support\UiText;
 use Illuminate\Foundation\Application;
@@ -18,7 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->trimStrings(except: ['pin']);
-        $middleware->appendToGroup('web', [SetLocale::class, RedactPin::class]);
+        $middleware->appendToGroup('web', [SetLocale::class, RedactPin::class, RestrictPosTerminal::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->respond(function (Response $response) {

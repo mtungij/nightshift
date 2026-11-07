@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\AuditLog;
 use App\Models\Branch;
+use App\Models\StockLocation;
 use App\Models\User;
 use App\Services\StaffPinService;
 use Database\Seeders\NightshiftDemoSeeder;
@@ -26,7 +27,7 @@ class StaffCreationPinTest extends TestCase
 
     private function payload(string $role = 'Waiter'): array
     {
-        return ['idempotency_key' => (string) Str::uuid(), 'name' => 'New staff', 'email' => 'newstaff@test.example', 'branch_id' => Branch::firstOrFail()->id, 'role' => $role];
+        return ['idempotency_key' => (string) Str::uuid(), 'name' => 'New staff', 'email' => 'newstaff@test.example', 'branch_id' => Branch::firstOrFail()->id, 'role' => $role, ...($role === 'POS Terminal' ? ['stock_location_id' => StockLocation::where('type', 'COUNTER')->firstOrFail()->id] : [])];
     }
 
     public function test_operational_staff_require_pin_and_generate_private_password_atomically(): void
@@ -52,7 +53,7 @@ class StaffCreationPinTest extends TestCase
             $this->assertTrue(Hash::check('6543', $staff->fresh()->operational_pin));
             $this->actingAs($staff);
             $this->assertSame($staff->id, app(StaffPinService::class)->verify($staff->id, '6543')->id);
-            $this->get('/settings/profile')->assertOk();
+            $this->get('/settings/profile')->assertStatus($role === 'POS Terminal' ? 403 : 200);
             $this->actingAs(User::where('email', 'admin@nightshift.test')->firstOrFail());
         }
     }
