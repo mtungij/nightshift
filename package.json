@@ -3,8 +3,10 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "build": "vp build",
-        "dev": "vp dev"
+        "build": "vp build && node scripts/verify-frontend-build.mjs",
+        "dev": "vp dev",
+        "frontend:check": "node scripts/verify-frontend-build.mjs",
+        "test:frontend": "node --test tests/Frontend/*.test.mjs"
     },
     "dependencies": {
         "@fontsource/poppins": "^5.3.0",

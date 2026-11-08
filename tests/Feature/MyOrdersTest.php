@@ -22,6 +22,7 @@ use App\Services\OrderService;
 use App\Services\PaymentService;
 use App\Services\ShiftService;
 use App\Services\StaffPinService;
+use App\Services\WaiterLedgerService;
 use Database\Seeders\NightshiftDemoSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
@@ -219,6 +220,31 @@ class MyOrdersTest extends TestCase
         $this->assertNotContains($this->otherCashierPaid->id, $ids);
         $this->getJson('/api/nightshift/my-orders/'.$this->otherCashierPaid->id, $headers)->assertNotFound();
         $this->assertAuthenticatedAs($this->terminal);
+    }
+
+    public function test_cashier_reads_own_allocated_settlement_history_without_a_direct_payment_source_order(): void
+    {
+        $this->actingAs($this->owner);
+        $order = $this->issue($this->asha, '0123');
+        $shift = Shift::where('user_id', $this->cashier->id)->where('type', 'CASHIER')->where('status', 'OPEN')->firstOrFail();
+        // Existing allocation-based historical payments legitimately have no source order_id.
+        $payment = Payment::create(['branch_id' => $order->branch_id, 'shift_id' => $shift->id, 'number' => 'LEGACY-'.Str::uuid(), 'method' => 'Cash', 'amount' => $order->total, 'is_credit' => false, 'received_by' => $this->cashier->id]);
+        PaymentAllocation::create(['branch_id' => $order->branch_id, 'payment_id' => $payment->id, 'order_id' => $order->id, 'amount' => $order->total]);
+        app(WaiterLedgerService::class)->post($order, 'PAYMENT', '0', $order->total, 'Payment', $payment->id, 'Historical allocated payment', $payment->id);
+        $order->update(['amount_paid' => $order->total, 'balance' => '0', 'status' => 'PAID', 'closed_at' => now()]);
+        $this->actingAs($this->terminal);
+        $before = $this->effects();
+        $grant = $this->verify($this->cashier, '4567');
+        $headers = ['X-My-Orders-Token' => $grant['token']];
+        $this->assertContains($order->id, array_column($this->getJson('/api/nightshift/my-orders?filter=paid', $headers)->assertOk()->json('orders'), 'id'));
+        $this->getJson('/api/nightshift/my-orders/'.$order->id, $headers)->assertOk();
+        $this->actingAs($this->cashier);
+        $this->getJson('/api/nightshift/bootstrap')->assertOk();
+        $this->get('/api/nightshift/receipts/'.$order->id)->assertOk();
+        $this->actingAs($this->terminal);
+        $other = $this->verify($this->otherCashier, '9876');
+        $this->getJson('/api/nightshift/my-orders/'.$order->id, ['X-My-Orders-Token' => $other['token']])->assertNotFound();
+        $this->assertSame($before, $this->effects());
     }
 
     public function test_another_cashiers_counter_and_other_company_ids_are_inaccessible(): void

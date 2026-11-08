@@ -3,11 +3,13 @@
 use App\Http\Middleware\RedactPin;
 use App\Http\Middleware\RestrictPosTerminal;
 use App\Http\Middleware\SetLocale;
+use App\Http\Middleware\TrustTraefikProxies;
 use App\Support\UiText;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -18,6 +20,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->replace(TrustProxies::class, TrustTraefikProxies::class);
         $middleware->trimStrings(except: ['pin']);
         $middleware->appendToGroup('web', [SetLocale::class, RedactPin::class, RestrictPosTerminal::class]);
     })

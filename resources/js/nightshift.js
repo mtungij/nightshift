@@ -197,6 +197,10 @@ if (root) {
         html`<button type="button" class="button ${type}" data-action="${action}" ${attrs}>
             ${ico ? icon(ico) : ""}${tr(label)}
         </button>`;
+    const installAppAction = () => html`<div data-pwa-install-area hidden>
+        <button type="button" class="button" data-pwa-install hidden>${tr("Install App")}</button>
+        <p class="form-help">${tr("Install Nightshift on this device for faster access.")}</p>
+    </div>`;
     const link = (label, screen) =>
         html`<button class="text-link" data-nav="${screen}">${tr(label)}${icon("arrow")}</button>`;
     const badge = (text, color = "") => html`<span class="badge ${color}">${esc(tr(text))}</span>`;
@@ -438,6 +442,7 @@ if (root) {
                         .join("")}<button data-action="menu">${icon("menu")}More</button>
                 </nav>
             </div>`;
+        window.NightshiftPwa?.syncControls();
     }
     function navigate(next, nextTab = "") {
         if (next === "pos" || next === "inventory") category = "All products";
@@ -2356,7 +2361,7 @@ ${esc(cartNote)}</textarea>
                                     <p>${esc(tr(db.role))}</p>
                                 </div>
                             </div>
-                            ${terminal() ? "" : html`<a class="button" href="/settings/profile">Profile & security</a>`}
+                            ${installAppAction()}${terminal() ? "" : html`<a class="button" href="/settings/profile">Profile & security</a>`}
                         </div>
                     </section>
                 </div>` +
@@ -2791,6 +2796,7 @@ ${esc(cartNote)}</textarea>
             </section>
         </div>`;
         document.body.style.overflow = "hidden";
+        window.NightshiftPwa?.syncControls();
         document
             .querySelector('.modal input:not([type="hidden"]),.modal select,.modal button')
             ?.focus();
@@ -2899,7 +2905,10 @@ ${esc(cartNote)}</textarea>
         );
     }
     function waiterPaymentModal(id, mode = "") {
+        if (!permitted("receive-payments")) return toast("You do not have access to this page.");
         const w = waiter(id);
+        if (!w || !db.locations.some((l) => l.id === db.location_id && l.type === "COUNTER"))
+            return toast("Select a waiter and settlement counter first.");
         const balance = Number(w.settlement_balance || 0);
         if (!balance)
             return toast(
@@ -3563,6 +3572,7 @@ ${esc(cartNote)}</textarea>
                 );
             if (action === "confirm-issue")
                 return perform("order-issue", { id: Number(id) }, target);
+            if (action === "waiter-payment") return waiterPaymentModal(Number(id), value || "");
             if (action === "payment") return paymentModal(id);
             if (action === "category") {
                 category = value;
@@ -3776,7 +3786,7 @@ ${esc(cartNote)}</textarea>
                                 <p>${esc(tr(db.role))} · ${esc(db.company)}</p>
                             </div>
                         </div>
-                        ${terminal() ? "" : html`<a class="button" href="/settings/profile">Profile & security</a>`}
+                        ${installAppAction()}${terminal() ? "" : html`<a class="button" href="/settings/profile">Profile & security</a>`}
                         <form method="POST" action="/logout" style="margin-top:15px">
                             <input
                                 type="hidden"

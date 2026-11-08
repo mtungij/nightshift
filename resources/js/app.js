@@ -1,4 +1,5 @@
 import "./nightshift.js";
+import "./pwa.js";
 import "./whatsapp.js";
 import "./shift-stock.js";
 

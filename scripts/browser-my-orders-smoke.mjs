@@ -298,6 +298,7 @@ try {
                 visible.includes(o.unpaid) &&
                     visible.includes(o.james) &&
                     visible.includes(o.paid) &&
+                    visible.includes(o.legacy_paid) &&
                     !visible.includes(o.restricted_paid) &&
                     !visible.includes(o.vip),
             );

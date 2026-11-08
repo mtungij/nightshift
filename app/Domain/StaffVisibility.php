@@ -114,7 +114,8 @@ final class StaffVisibility
         return $this->atCounter($query)->whereHas('waiter.branches', fn ($q) => $q->whereIn('branches.id', StockLocation::whereIn('id', $this->counters())->select('branch_id')))->where(function ($q) use ($actor) {
             $q->where('created_by', $actor->id)->orWhere('issued_by', $actor->id)
                 ->orWhereIn('status', ['DRAFT', 'WAITING_FOR_ISSUE', 'ISSUED', 'PARTIALLY_PAID', 'VOID_REQUESTED'])
-                ->orWhereIn('id', Payment::where('received_by', $actor->id)->select('order_id'));
+                ->orWhereIn('id', Payment::where('received_by', $actor->id)->select('order_id'))
+                ->orWhereIn('id', PaymentAllocation::whereIn('payment_id', Payment::where('received_by', $actor->id)->select('id'))->select('order_id'));
         });
     }
 
@@ -229,6 +230,7 @@ final class StaffVisibility
             && User::where('company_id', $user->company_id)->find($order->waiter_id)?->canAccessBranch($order->branch_id)
             && ($order->created_by === $user->id || $order->issued_by === $user->id
                 || in_array($order->status, ['DRAFT', 'WAITING_FOR_ISSUE', 'ISSUED', 'PARTIALLY_PAID', 'VOID_REQUESTED'], true)
-                || Payment::withoutGlobalScopes()->where('company_id', $user->company_id)->where('order_id', $order->id)->where('received_by', $user->id)->exists());
+                || Payment::withoutGlobalScopes()->where('company_id', $user->company_id)->where('order_id', $order->id)->where('received_by', $user->id)->exists()
+                || PaymentAllocation::withoutGlobalScopes()->where('company_id', $user->company_id)->where('branch_id', $order->branch_id)->where('order_id', $order->id)->whereIn('payment_id', Payment::withoutGlobalScopes()->where('company_id', $user->company_id)->where('received_by', $user->id)->select('id'))->exists());
     }
 }

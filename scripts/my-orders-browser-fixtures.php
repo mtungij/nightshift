@@ -16,6 +16,7 @@ use App\Models\WaiterLedgerEntry;
 use App\Services\OrderService;
 use App\Services\PaymentService;
 use App\Services\ShiftService;
+use App\Services\WaiterLedgerService;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 
@@ -53,14 +54,20 @@ $result = app(TenantContext::class)->run($owner, function () use ($accounts) {
     $james = $issue($accounts['james']['id'], '6789');
     $restricted = $issue($accounts['james']['id'], '6789');
     $vipOrder = $issue($vipWaiter->id, '1133', '1', $vip->id);
+    $legacy = $issue($accounts['asha']['id'], '0123');
     $cashier = User::findOrFail($accounts['cashier']['id']);
-    app(TenantContext::class)->run($cashier, function () use ($partial, $paid) {
+    app(TenantContext::class)->run($cashier, function () use ($partial, $paid, $legacy, $cashier) {
         app(PaymentService::class)->receive($partial->id, [['method' => 'Cash', 'amount' => '3000']]);
         app(PaymentService::class)->receive($paid->id, [['method' => 'Cash', 'amount' => '3000']]);
+        $shift = Shift::where('user_id', $cashier->id)->where('type', 'CASHIER')->where('status', 'OPEN')->firstOrFail();
+        $payment = Payment::create(['branch_id' => $legacy->branch_id, 'shift_id' => $shift->id, 'number' => 'LEGACY-'.Str::uuid(), 'method' => 'Cash', 'amount' => $legacy->total, 'is_credit' => false, 'received_by' => $cashier->id]);
+        PaymentAllocation::create(['branch_id' => $legacy->branch_id, 'payment_id' => $payment->id, 'order_id' => $legacy->id, 'amount' => $legacy->total]);
+        app(WaiterLedgerService::class)->post($legacy, 'PAYMENT', '0', $legacy->total, 'Payment', $payment->id, 'Historical allocated payment', $payment->id);
+        $legacy->update(['amount_paid' => $legacy->total, 'balance' => '0', 'status' => 'PAID', 'closed_at' => now()]);
     });
     app(TenantContext::class)->run($other, fn () => app(PaymentService::class)->receive($restricted->id, [['method' => 'Cash', 'amount' => '3000']]));
     $effects = ['orders' => Order::count(), 'stock_movements' => StockMovement::count(), 'ledger' => WaiterLedgerEntry::count(), 'payments' => Payment::count(), 'allocations' => PaymentAllocation::count(), 'print_batches' => SalesTicketBatch::count(), 'stocks' => Stock::orderBy('id')->pluck('quantity', 'id')->all(), 'debit' => WaiterLedgerEntry::sum('debit'), 'credit' => WaiterLedgerEntry::sum('credit')];
 
-    return ['accounts' => $accounts, 'counter_id' => $counter->id, 'orders' => ['unpaid' => $unpaid->id, 'partial' => $partial->id, 'paid' => $paid->id, 'james' => $james->id, 'restricted_paid' => $restricted->id, 'vip' => $vipOrder->id], 'excluded_staff' => [$vipWaiter->id, $vipCashier->id, $inactive->id, $foreign->id], 'other_cashier_id' => $other->id, 'effects' => $effects];
+    return ['payment_baseline' => ['max_payment_id' => Payment::max('id') ?? 0, 'orders_paid_total' => Order::sum('amount_paid'), 'allocation_total' => PaymentAllocation::sum('amount')], 'accounts' => $accounts, 'counter_id' => $counter->id, 'orders' => ['unpaid' => $unpaid->id, 'partial' => $partial->id, 'paid' => $paid->id, 'james' => $james->id, 'restricted_paid' => $restricted->id, 'vip' => $vipOrder->id, 'legacy_paid' => $legacy->id], 'excluded_staff' => [$vipWaiter->id, $vipCashier->id, $inactive->id, $foreign->id], 'other_cashier_id' => $other->id, 'effects' => $effects];
 });
 echo json_encode($result, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n";

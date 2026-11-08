@@ -1,6 +1,10 @@
 <?php
 
 return [
+    'Select a waiter and settlement counter first.' => 'Chagua mhudumu na kaunta ya malipo kwanza.',
+    'Install App' => 'Sakinisha App',
+    'Install Nightshift on this device for faster access.' => 'Sakinisha Nightshift kwenye kifaa hiki kwa ufikiaji wa haraka.',
+    'Installation could not be started. Use your browser menu to install Nightshift.' => 'Usakinishaji haukuanza. Tumia menyu ya kivinjari kusakinisha Nightshift.',
     'My Orders' => 'Oda Zangu',
     'View My Orders' => 'Ona Oda Zangu',
     'Close My Orders' => 'Funga Oda Zangu',

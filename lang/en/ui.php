@@ -1,6 +1,10 @@
 <?php
 
 return [
+    'Select a waiter and settlement counter first.' => 'Select a waiter and settlement counter first.',
+    'Install App' => 'Install App',
+    'Install Nightshift on this device for faster access.' => 'Install Nightshift on this device for faster access.',
+    'Installation could not be started. Use your browser menu to install Nightshift.' => 'Installation could not be started. Use your browser menu to install Nightshift.',
     'My Orders' => 'My Orders',
     'View My Orders' => 'View My Orders',
     'Close My Orders' => 'Close My Orders',
