@@ -82,18 +82,58 @@ class MyOrdersTest extends TestCase
         $this->actingAs($this->cashier);
         app(PaymentService::class)->receive($this->partial->id, [['method' => 'Cash', 'amount' => '3000']]);
         app(PaymentService::class)->receive($this->paid->id, [['method' => 'Cash', 'amount' => '3000']]);
-        $this->actingAs($this->otherCashier);
-        app(PaymentService::class)->receive($this->otherCashierPaid->id, [['method' => 'Cash', 'amount' => '3000']]);
-        $this->terminal = User::factory()->create(['name' => 'Shared POS', 'company_id' => $this->owner->company_id, 'role_id' => Role::where('name', 'POS Terminal')->firstOrFail()->id, 'terminal_stock_location_id' => $this->counter->id, 'active' => true]);
+        // Preserve a previous cashier's paid history without overlapping operations.
+        $legacy = Shift::where('user_id', $this->otherCashier->id)->firstOrFail();
+        $payment = Payment::create(['branch_id' => $this->counter->branch_id, 'shift_id' => $legacy->id, 'order_id' => $this->otherCashierPaid->id, 'number' => 'LEGACY-PAID', 'method' => 'Cash', 'amount' => '3000', 'is_credit' => false, 'received_by' => $this->otherCashier->id]);
+        app(WaiterLedgerService::class)->post($this->otherCashierPaid, 'PAYMENT', '0', '3000', 'Payment', $payment->id, 'Historical cashier payment', $payment->id);
+        $this->otherCashierPaid->update(['amount_paid' => '3000', 'balance' => '0', 'status' => 'PAID', 'closed_at' => now()]);
+        $this->terminal = User::factory()->create([
+            'name' => 'Shared POS',
+            'company_id' => $this->owner->company_id,
+            'role_id' => Role::where('name', 'POS Terminal')->firstOrFail()->id,
+            'terminal_stock_location_id' => $this->counter->id,
+            'active' => true,
+        ]);
+
+        $this->terminal->branches()->syncWithoutDetaching([
+            $this->counter->branch_id => [
+                'company_id' => $this->terminal->company_id,
+            ],
+        ]);
+
+        $this->terminal->businessUnits()->syncWithoutDetaching([
+            $this->counter->business_unit_id => [
+                'company_id' => $this->terminal->company_id,
+            ],
+        ]);
+
         $this->actingAs($this->terminal);
     }
 
     private function employee(string $role, string $pin, ?StockLocation $counter = null): User
     {
         $counter ??= $this->counter;
-        $user = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', $role)->firstOrFail()->id, 'active' => true, 'operational_pin' => Hash::make($pin)]);
-        $user->branches()->attach($counter->branch_id, ['company_id' => $user->company_id]);
-        app(ShiftService::class)->open(['user_id' => $user->id, 'stock_location_id' => $counter->id, 'type' => $role === 'Waiter' ? 'WAITER' : 'CASHIER', 'opening_cash' => '0']);
+        $user = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => Role::where('name', $role)->firstOrFail()->id,
+            'active' => true,
+            'operational_pin' => Hash::make($pin),
+        ]);
+
+        $user->branches()->attach($counter->branch_id, [
+            'company_id' => $user->company_id,
+        ]);
+
+        $user->businessUnits()->syncWithoutDetaching([
+            $counter->business_unit_id => [
+                'company_id' => $user->company_id,
+            ],
+        ]);
+        if ($role === 'Cashier' && Shift::where('stock_location_id', $counter->id)->where('type', 'CASHIER')->where('status', 'OPEN')->exists()) {
+            Shift::create(['user_id' => $user->id, 'branch_id' => $counter->branch_id, 'stock_location_id' => $counter->id, 'number' => 'OLD-'.Str::uuid(), 'type' => 'CASHIER', 'status' => 'CLOSED', 'opened_at' => now()->subDays(2), 'closed_at' => now()->subDay(), 'opening_cash' => '0']);
+        } else {
+            app(ShiftService::class)->open(['user_id' => $user->id, 'stock_location_id' => $counter->id, 'type' => $role === 'Waiter' ? 'WAITER' : 'CASHIER', 'opening_cash' => '0']);
+        }
 
         return $user;
     }
@@ -136,7 +176,7 @@ class MyOrdersTest extends TestCase
         $this->actingAs($this->terminal);
         $staff = $this->getJson('/api/nightshift/my-orders/staff?stock_location_id='.$this->counter->id)->assertOk()->json('staff');
         $ids = array_column($staff, 'id');
-        $this->assertEqualsCanonicalizing([$this->asha->id, $this->james->id, $this->cashier->id, $this->otherCashier->id], $ids);
+        $this->assertEqualsCanonicalizing([$this->asha->id, $this->james->id, $this->cashier->id], $ids);
         foreach ([$wrongCounter->id, $notAssigned->id, $foreign->id, $this->owner->id, $this->terminal->id] as $id) {
             $this->assertNotContains($id, $ids);
         }
@@ -242,8 +282,8 @@ class MyOrdersTest extends TestCase
         $this->getJson('/api/nightshift/bootstrap')->assertOk();
         $this->get('/api/nightshift/receipts/'.$order->id)->assertOk();
         $this->actingAs($this->terminal);
-        $other = $this->verify($this->otherCashier, '9876');
-        $this->getJson('/api/nightshift/my-orders/'.$order->id, ['X-My-Orders-Token' => $other['token']])->assertNotFound();
+        $view = $this->open();
+        $this->postJson('/api/nightshift/my-orders/verify', ['staff_id' => $this->otherCashier->id, 'pin' => '9876'], ['X-My-Orders-View' => $view])->assertNotFound();
         $this->assertSame($before, $this->effects());
     }
 
@@ -255,10 +295,35 @@ class MyOrdersTest extends TestCase
         $otherCashier = $this->employee('Cashier', '1113', $vip);
         $order = $this->issue($waiter, '1112', '1', $vip);
         $foreign = User::factory()->create(['role_id' => $this->asha->role_id]);
-        $foreignCounter = app(TenantContext::class)->run($foreign, function () {
+        $foreignCounter = app(TenantContext::class)->run($foreign, function () use ($foreign) {
             $branch = Branch::create(['name' => 'Foreign branch']);
 
-            return StockLocation::create(['branch_id' => $branch->id, 'name' => 'Foreign counter', 'type' => 'COUNTER', 'active' => true]);
+            $businessUnit = \App\Models\BusinessUnit::create([
+                'branch_id' => $branch->id,
+                'name' => 'Foreign Operations',
+                'code' => 'FOREIGN-'.$branch->id,
+                'active' => true,
+            ]);
+
+            $foreign->branches()->syncWithoutDetaching([
+                $branch->id => [
+                    'company_id' => $foreign->company_id,
+                ],
+            ]);
+
+            $foreign->businessUnits()->syncWithoutDetaching([
+                $businessUnit->id => [
+                    'company_id' => $foreign->company_id,
+                ],
+            ]);
+
+            return StockLocation::create([
+                'branch_id' => $branch->id,
+                'business_unit_id' => $businessUnit->id,
+                'name' => 'Foreign counter',
+                'type' => 'COUNTER',
+                'active' => true,
+            ]);
         });
         $this->actingAs($this->terminal);
         $this->getJson('/api/nightshift/my-orders/staff?stock_location_id='.$vip->id)->assertForbidden();
@@ -274,14 +339,14 @@ class MyOrdersTest extends TestCase
     public function test_wrong_selected_waiter_and_cashier_pins_fail_without_order_stock_payment_or_ledger_effects(): void
     {
         $before = $this->effects();
-        foreach ([[$this->asha, '6789'], [$this->james, '0123'], [$this->cashier, '9876'], [$this->otherCashier, '4567']] as [$staff, $pin]) {
+        foreach ([[$this->asha, '6789'], [$this->james, '0123'], [$this->cashier, '9876']] as [$staff, $pin]) {
             $view = $this->open();
             $this->postJson('/api/nightshift/my-orders/verify', ['staff_id' => $staff->id, 'pin' => $pin], ['X-My-Orders-View' => $view])->assertUnprocessable()->assertJsonValidationErrors('pin');
             $this->getJson('/api/nightshift/my-orders')->assertForbidden();
             $this->assertSame(1, $staff->fresh()->pin_failed_attempts);
         }
         $this->assertSame($before, $this->effects());
-        $this->assertSame(4, AuditLog::where('action', 'MY_ORDERS_PIN_FAILED')->count());
+        $this->assertSame(3, AuditLog::where('action', 'MY_ORDERS_PIN_FAILED')->count());
         $this->assertAuthenticatedAs($this->terminal);
     }
 

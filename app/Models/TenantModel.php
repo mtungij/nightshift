@@ -2,10 +2,12 @@
 
 namespace App\Models;
 
+use App\Domain\BusinessUnitContext;
 use App\Domain\TenantContext;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Scope;
+use Illuminate\Support\Facades\DB;
 
 /** @implements Scope<TenantModel> */
 final class TenantScope implements Scope
@@ -13,14 +15,26 @@ final class TenantScope implements Scope
     public function apply(Builder $builder, Model $model): void
     {
         $context = app(TenantContext::class);
+        app(BusinessUnitContext::class)->apply($builder, $model);
         $builder->where($model->qualifyColumn('company_id'), $context->companyId());
         if ($model->isBranchScoped() && ($branches = $context->branches()) !== null) {
             $builder->whereIn($model->qualifyColumn($model instanceof Branch ? 'id' : 'branch_id'), $branches);
         }
     }
 }
+/**
+ * @property int $company_id
+ * @property int|null $business_unit_id
+ */
 abstract class TenantModel extends Model
 {
+    public function getBusinessUnitIdAttribute(): ?int
+    {
+        $id = $this->attributes['business_unit_id'] ?? DB::table('operational_unit_contexts')->where('company_id', $this->company_id)->where('record_type', $this->getTable())->where('record_id', $this->getKey())->value('business_unit_id');
+
+        return $id ? (int) $id : null;
+    }
+
     protected $guarded = ['id', 'company_id'];
 
     protected bool $branchScoped = true;
@@ -45,7 +59,14 @@ abstract class TenantModel extends Model
             } if ($model->company_id && (int) $model->company_id !== $company) {
                 throw new \LogicException('Tenant mismatch.');
             } $model->company_id = $company;
+            if ($model instanceof StockLocation && ! $model->business_unit_id && ! $model->is_shared) {
+            }
         });
+        static::created(function ($model) {
+            if ($model instanceof Branch) {
+            }
+        });
+        static::created(fn ($model) => app(BusinessUnitContext::class)->capture($model));
         static::updating(function ($model) {
             if ($model->isDirty('company_id')) {
                 throw new \LogicException('Company cannot be changed.');

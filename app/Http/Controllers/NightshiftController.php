@@ -10,12 +10,15 @@ use App\Models\Payment;
 use App\Models\PaymentAllocation;
 use App\Models\Product;
 use App\Models\ServiceTable;
+use App\Models\StockLocation;
 use App\Models\User;
 use App\Services\AdjustmentService;
 use App\Services\CatalogService;
 use App\Services\GoodsReceiptService;
 use App\Services\OrderService;
 use App\Services\PaymentService;
+use App\Services\ReportFilterService;
+use App\Services\ReportPdfService;
 use App\Services\ReportService;
 use App\Services\ReturnService;
 use App\Services\SalesTicketService;
@@ -26,10 +29,12 @@ use App\Services\StockTransferService;
 use App\Services\TransactionService;
 use App\Services\VoidService;
 use App\Services\WorkspaceService;
+use App\Support\CounterLocationPresenter;
 use App\Support\UiText;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
@@ -90,6 +95,10 @@ final class NightshiftController extends Controller
             return is_array($result) ? $result : ['id' => $result->id, 'status' => $result->status ?? null];
         });
 
+        if ($command === 'catalog-cashier-limit') {
+            $result['location'] = app(CounterLocationPresenter::class)->present(StockLocation::whereKey($data['id'])->firstOrFail());
+        }
+
         return response()->json($result);
     }
 
@@ -104,38 +113,56 @@ final class NightshiftController extends Controller
 
     public function report(Request $request, string $name, ReportService $reports): JsonResponse
     {
-        return response()->json($reports->generate($name, $this->filters($request, true)));
+        $this->authorizeReport($request, $name);
+
+        return response()->json($reports->generate($name, app(ReportFilterService::class)->validate($request, $name)));
+    }
+
+    public function pdfReport(Request $request, string $name, ReportService $reports, ReportPdfService $pdf): Response
+    {
+        $this->authorizeReport($request, $name);
+        $filters = app(ReportFilterService::class)->validate($request, $name);
+        if (! in_array($name, ['Cash Custody Balance', 'Waiter Outstanding'], true)) {
+            $filters += ['from' => now()->toDateString(), 'to' => now()->toDateString()];
+        }
+        $data = $pdf->all(fn (int $page) => $reports->generate($name, [...$filters, 'page' => $page]));
+
+        return $pdf->download($name, $filters, [$data]);
     }
 
     public function exportReport(Request $request, string $name, ReportService $reports): StreamedResponse
     {
-        $filters = $this->filters($request, true);
+        $this->authorizeReport($request, $name);
+        $filters = app(ReportFilterService::class)->validate($request, $name);
         $first = $reports->generate($name, [...$filters, 'page' => 1]);
 
-        return response()->streamDownload(function () use ($name, $reports, $filters, $first) {
-            $out = fopen('php://output', 'w');
-            if ($out === false) {
-                throw new \RuntimeException('Cannot open export output.');
-            }
-            fwrite($out, "\xEF\xBB\xBF");
-            fputcsv($out, array_map(UiText::get(...), $first['headers']), ',', '"', '');
-            $result = $first;
-            do {
-                foreach ($result['rows'] as $row) {
-                    $safe = array_map(function ($value) {
-                        $text = (string) ($value ?? '');
+        return response()->streamDownload(function () use ($name, $reports, $filters) {
+            DB::transaction(function () use ($name, $reports, $filters) {
+                $first = $reports->generate($name, [...$filters, 'page' => 1]);
+                $out = fopen('php://output', 'w');
+                if ($out === false) {
+                    throw new \RuntimeException('Cannot open export output.');
+                }
+                fwrite($out, "\xEF\xBB\xBF");
+                fputcsv($out, array_map(UiText::get(...), $first['headers']), ',', '"', '');
+                $result = $first;
+                do {
+                    foreach ($result['rows'] as $row) {
+                        $safe = array_map(function ($value) {
+                            $text = (string) ($value ?? '');
 
-                        return preg_match('/^[=+@\-\t\r]/', $text) && ! is_numeric($text) ? "'".$text : $text;
-                    }, $row);
-                    fputcsv($out, $safe, ',', '"', '');
-                }
-                if (! $result['has_more']) {
-                    break;
-                }
-                $result = $reports->generate($name, [...$filters, 'page' => $result['page'] + 1]);
-            } while (true);
-            fclose($out);
-        }, 'Nightshift-'.preg_replace('/[^A-Za-z0-9-]/', '-', $name).'.csv', ['Content-Type' => 'text/csv; charset=UTF-8']);
+                            return preg_match('/^[=+@\-\t\r]/', $text) && ! is_numeric($text) ? "'".$text : $text;
+                        }, $row);
+                        fputcsv($out, $safe, ',', '"', '');
+                    }
+                    if (! $result['has_more']) {
+                        break;
+                    }
+                    $result = $reports->generate($name, [...$filters, 'page' => $result['page'] + 1]);
+                } while (true);
+                fclose($out);
+            });
+        }, 'Nightshift-'.preg_replace('/[^A-Za-z0-9-]/', '-', $name).(! empty($first['shift_context']) ? '-'.$first['shift_context']['number'] : '').'.csv', ['Content-Type' => 'text/csv; charset=UTF-8']);
     }
 
     public function receipt(int $id): View
@@ -167,12 +194,27 @@ final class NightshiftController extends Controller
         return response()->json(['print' => app(SalesTicketService::class)->dispatch($token)]);
     }
 
-    /**
-     * @return array<string, mixed>
-     */
+    private function authorizeReport(Request $request, string $name): void
+    {
+        $name = $name === 'Salaries/Wages' ? 'Salaries and Wages' : $name;
+        if (! in_array($name, config('treasury.reports'), true)) {
+            Gate::authorize('view-reports');
+
+            return;
+        }
+        $actor = $request->user();
+        abort_unless($actor->active && $actor->company->active && ! $actor->isPosTerminal(), 403);
+        if ($name === 'Cashier Handover') {
+            abort_unless($actor->hasPermission('review-cash-handovers') || $actor->hasPermission('view-treasury') || ($actor->hasPermission('issue-drinks') && $actor->hasPermission('close-shifts')), 403);
+        } else {
+            Gate::authorize('view-treasury');
+        }
+    }
+
+    /** @return array<string,mixed> */
     private function filters(Request $request, bool $report = false): array
     {
-        return $request->validate(['page' => ['nullable', 'integer', 'min:1', 'max:100000'], 'branch_id' => ['nullable', 'integer', 'min:1'], 'stock_location_id' => ['nullable', 'integer', 'min:1'], 'waiter_id' => ['nullable', 'integer', 'min:1'], 'issued_by' => ['nullable', 'integer', 'min:1'], 'category_id' => ['nullable', 'integer', 'min:1'], 'product_id' => ['nullable', 'integer', 'min:1'], 'from' => ['nullable', 'date_format:Y-m-d'], 'to' => ['nullable', 'date_format:Y-m-d'], 'period' => ['nullable', 'in:Today,Yesterday,This week'], 'all_branches' => ['nullable', 'boolean'], 'search' => ['nullable', 'string', 'max:100']]);
+        return $request->validate(['unit_context' => ['nullable', 'boolean'], 'pos_context' => ['nullable', 'boolean'], 'business_unit_id' => ['nullable', 'integer', 'min:1'], 'custodian_id' => ['nullable', 'integer', 'min:1'], 'shift_id' => ['nullable', 'integer', 'min:1'], 'page' => ['nullable', 'integer', 'min:1', 'max:100000'], 'branch_id' => ['nullable', 'integer', 'min:1'], 'stock_location_id' => ['nullable', 'integer', 'min:1'], 'waiter_id' => ['nullable', 'integer', 'min:1'], 'issued_by' => ['nullable', 'integer', 'min:1'], 'category_id' => ['nullable', 'integer', 'min:1'], 'product_id' => ['nullable', 'integer', 'min:1'], 'from' => ['nullable', 'date_format:Y-m-d'], 'to' => ['nullable', 'date_format:Y-m-d'], 'period' => ['nullable', 'in:Today,Yesterday,This week'], 'all_branches' => ['nullable', 'boolean'], 'search' => ['nullable', 'string', 'max:100']]);
     }
 
     /**

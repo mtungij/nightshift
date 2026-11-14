@@ -5,6 +5,14 @@ namespace App\Models;
 use Carbon\CarbonInterface;
 
 /**
+ * @property int|null $schedule_id
+ * @property list<int>|null $scope_business_unit_ids
+ * @property array<string,mixed>|null $report_data
+ * @property string $attachment_status
+ * @property string|null $attachment_message_id
+ * @property string|null $attachment_path
+ * @property CarbonInterface|null $attachment_sent_at
+ * @property CarbonInterface|null $text_sent_at
  * @property int $id
  * @property int $company_id
  * @property CarbonInterface|null $created_at
@@ -43,6 +51,6 @@ class WhatsAppDeliveryLog extends TenantModel
 
     protected function casts(): array
     {
-        return [...parent::casts(), 'payload' => 'array', 'scope_branch_ids' => 'array', 'queued_at' => 'datetime', 'sent_at' => 'datetime', 'failed_at' => 'datetime', 'next_attempt_at' => 'datetime', 'last_dispatched_at' => 'datetime', 'sending_at' => 'datetime'];
+        return [...parent::casts(), 'scope_business_unit_ids' => 'array', 'report_data' => 'array', 'attachment_sent_at' => 'datetime', 'text_sent_at' => 'datetime', 'payload' => 'array', 'scope_branch_ids' => 'array', 'queued_at' => 'datetime', 'sent_at' => 'datetime', 'failed_at' => 'datetime', 'next_attempt_at' => 'datetime', 'last_dispatched_at' => 'datetime', 'sending_at' => 'datetime'];
     }
 }

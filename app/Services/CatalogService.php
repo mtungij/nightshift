@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Domain\Decimal as D;
 use App\Domain\TenantContext;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\Category;
 use App\Models\Company;
 use App\Models\Product;
@@ -46,6 +47,7 @@ final class CatalogService
                 $category = Category::whereKey($data['category_id'])->firstOrFail();
                 $base = Unit::whereKey($data['base_unit_id'])->firstOrFail();
                 $p = isset($data['id']) ? Product::whereKey($data['id'])->firstOrFail() : new Product;
+                $creating = ! $p->exists;
                 $old = $p->exists ? $p->only(['name', 'sku', 'purchase_cost', 'minimum_stock']) : [];
                 $sku = trim((string) ($data['sku'] ?? ''));
                 if ($sku === '') {
@@ -67,6 +69,17 @@ final class CatalogService
                     $oldPrices[$unit->name] = $u->selling_price;
                     $u->fill(['conversion_quantity' => $conversion, 'selling_price' => $price]);
                     $u->save();
+                }
+                if (array_key_exists('business_units', $data)) {
+                    $availableUnits = collect($data['business_units'])
+                        ->filter(fn ($row) => (bool) ($row['available'] ?? false));
+
+                    $this->stock->require(
+                        $availableUnits->isNotEmpty(),
+                        __('ui.Choose at least one Business Unit for this product.')
+                    );
+
+                    app(BusinessUnitService::class)->configureProduct($p, $data['business_units'], $creating);
                 }
                 if ($imagePath) {
                     $p->update(['image_path' => $imagePath]);
@@ -91,12 +104,15 @@ final class CatalogService
     public function save(string $type, #[\SensitiveParameter] array $data): array
     {
         $permission = match ($type) {
-            'branch' => 'manage-branches','location' => 'manage-counters','user' => 'manage-users','company', 'setup' => 'manage-company', 'reservation' => 'create-orders',default => 'manage-inventory'
+            'branch' => 'manage-branches','location', 'cashier-limit' => 'manage-counters','user' => 'manage-users','company', 'setup' => 'manage-company', 'reservation' => 'create-orders',default => 'manage-inventory'
         };
         Gate::authorize($permission);
 
         return $this->tx->run(function () use ($type, $data) {
             $actor = app(TenantContext::class)->user();
+            if ($type === 'cashier-limit') {
+                return ['id' => app(CounterCashierService::class)->update((int) $data['id'], (int) $data['max_active_cashiers'])->id];
+            }
             if ($type === 'category-order') {
                 return $this->categoryOrder($data);
             }
@@ -106,7 +122,7 @@ final class CatalogService
             $record = match ($type) {
                 'branch' => $this->branch($data),'location' => $this->location($data),'category' => $this->category($data),'unit' => Unit::firstOrCreate(['name' => $data['name']]),'supplier' => Supplier::create(['name' => $data['name'], 'contact' => $data['contact'], 'category' => $data['category'] ?? null]),'reservation' => $this->reservation($data),'user' => $this->user($data),'company' => $this->company($data),default => throw new \InvalidArgumentException('Unknown catalog type')
             };
-            $this->audit->record(strtoupper($type).'_SAVED', 'Management', class_basename($record), $record->id, [], ['name' => $record->name ?? $type]);
+            $this->audit->record(strtoupper($type).'_SAVED', 'Management', class_basename($record), $record->id, [], ['name' => $record->name ?? $type, ...($record instanceof StockLocation ? ['business_unit_id' => $record->business_unit_id, 'branch_id' => $record->branch_id, 'max_active_cashiers' => $record->max_active_cashiers] : [])], $record instanceof StockLocation ? $record->branch_id : null);
 
             return ['id' => $record->id];
         });
@@ -119,7 +135,12 @@ final class CatalogService
     {
         $b = Branch::whereKey($data['branch_id'])->firstOrFail();
 
-        return StockLocation::create(['branch_id' => $b->id, 'name' => $data['name'], 'type' => $data['type']]);
+        $unit = BusinessUnit::where('branch_id', $b->id)
+            ->where('active', true)
+            ->whereKey($data['business_unit_id'])
+            ->firstOrFail();
+
+        return StockLocation::create(['business_unit_id' => $unit->id, 'branch_id' => $b->id, 'name' => $data['name'], 'type' => $data['type'], 'max_active_cashiers' => $data['type'] === 'COUNTER' ? ($data['max_active_cashiers'] ?? 1) : 1]);
     }
 
     /**
@@ -144,15 +165,37 @@ final class CatalogService
         $terminalLocation = null;
         if ($role->name === 'POS Terminal') {
             abort_unless(in_array($actor->role->name, ['Company Admin / Owner', 'Super Admin'], true), 403);
-            $terminalLocation = StockLocation::whereKey($data['stock_location_id'] ?? 0)->where('branch_id', $branch->id)->where('type', 'COUNTER')->where('active', true)->firstOrFail();
+            $unitIds = $data['business_unit_ids'] ?? [];
+            if (count($unitIds) === 1) {
+                $unit = BusinessUnit::where('branch_id', $branch->id)->whereKey($unitIds[0])->firstOrFail();
+                $terminalLocation = app(UnitOperationalService::class)->resolve(['business_unit_id' => $unit->id, 'stock_location_id' => $data['stock_location_id'] ?? null]);
+            } else {
+                $terminalLocation = StockLocation::whereKey($data['stock_location_id'] ?? 0)->where('branch_id', $branch->id)->where('type', 'COUNTER')->where('active', true)->firstOrFail();
+            }
             $this->stock->require((bool) $branch->active, 'Branch is inactive.');
+            if ($data['active'] ?? true) {
+                $this->stock->location($terminalLocation->id);
+            }
         }
         $data['email'] = mb_strtolower(trim($data['email']));
         $this->stock->require(! User::where('email', $data['email'])->exists(), 'This email address is already registered.');
         $u = User::create(['name' => $data['name'], 'username' => isset($data['username']) ? mb_strtolower(trim($data['username'])) : null, 'email' => $data['email'], 'password' => Str::password(64)]);
         $u->forceFill(['operational_pin' => Hash::make($data['pin'])])->save();
-        $u->forceFill(['company_id' => $actor->company_id, 'role_id' => $role->id, 'terminal_stock_location_id' => $terminalLocation?->id, 'phone' => $data['phone'] ?? null, 'active' => $data['active'] ?? true])->save();
+        $u->forceFill(['company_id' => $actor->company_id, 'role_id' => $role->id, 'terminal_stock_location_id' => $terminalLocation?->id, 'terminal_business_unit_id' => $terminalLocation?->business_unit_id, 'phone' => $data['phone'] ?? null, 'active' => $data['active'] ?? true])->save();
         $u->branches()->attach($branch->id, ['company_id' => $actor->company_id]);
+
+        $ids = $data['business_unit_ids'] ?? ($terminalLocation ? [$terminalLocation->business_unit_id] : []);
+
+        $this->stock->require(
+            $ids !== [],
+            __('ui.Choose at least one Business Unit.')
+        );
+
+        app(BusinessUnitService::class)->assign($u, $ids);
+        if ($role->name === 'Cashier') {
+            $counters = $data['counter_ids'] ?? StockLocation::where('branch_id', $branch->id)->whereIn('business_unit_id', $ids)->where('type', 'COUNTER')->pluck('id')->all();
+            app(BusinessUnitService::class)->counters($u, $counters);
+        }
 
         return $u;
     }

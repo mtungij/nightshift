@@ -2,6 +2,7 @@ import "./nightshift.js";
 import "./pwa.js";
 import "./whatsapp.js";
 import "./shift-stock.js";
+import "./cash-custody.js";
 
 // FormData captures the submitted credential before clearing the field, so
 // neither a completed form nor the back/forward cache retains the entered PIN.
@@ -43,3 +44,11 @@ document.addEventListener("click", async (event) => {
         buttons.forEach((item) => (item.disabled = false));
     }
 });
+
+import './business-units';
+
+import "./admin-pages.js";
+
+import "./report-pdf.js";
+
+import "./counter-cashiers.js";

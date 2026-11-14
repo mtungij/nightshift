@@ -126,34 +126,4 @@ final class Gowa
 
         return ($response['results']['is_on_whatsapp'] ?? false) === true;
     }
-
-    /** @return array<string, mixed> */
-    public function createDevice(WhatsAppSetting $settings): array
-    {
-        // Payload contains only the documented custom device_id. No webhook/inbound setup.
-        try {
-            return $this->result($this->client($settings)->post('/devices', ['device_id' => $settings->device_id]));
-        } catch (ConnectionException) {
-            throw new GowaException('Device creation could not be confirmed. Check the saved slot before retrying.');
-        }
-    }
-
-    public function qrImage(WhatsAppSetting $settings, string $url): string
-    {
-        $base = rtrim((string) config('gowa.url'), '/');
-        $path = (string) parse_url($url, PHP_URL_PATH);
-        if (! str_starts_with($url, $base.'/statics/images/qrcode/') || parse_url($url, PHP_URL_QUERY) || ! preg_match('~^/statics/images/qrcode/[A-Za-z0-9_.-]+\.png$~D', $path)) {
-            throw new GowaException('Unexpected WhatsApp QR image address.');
-        }
-        try {
-            $response = $this->client($settings)->get($path);
-            if (! $response->successful() || ! str_starts_with((string) $response->header('Content-Type'), 'image/png') || strlen($response->body()) > 1024 * 1024) {
-                throw new GowaException('The WhatsApp QR image is unavailable.');
-            }
-
-            return 'data:image/png;base64,'.base64_encode($response->body());
-        } catch (ConnectionException) {
-            throw new GowaException('The WhatsApp QR image is unavailable.');
-        }
-    }
 }

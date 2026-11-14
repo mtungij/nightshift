@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Domain\TenantContext;
 use App\Models\Company;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -13,6 +14,12 @@ final class TransactionService
     {
         return DB::transaction(function () use ($callback) {
             Company::whereKey(app(TenantContext::class)->companyId())->lockForUpdate()->firstOrFail();
+            // Recheck the actor after the company lock: access configuration may
+            // have changed while this request was waiting for another writer.
+            $actor = app(TenantContext::class)->user();
+            $current = User::where('company_id', $actor->company_id)->whereKey($actor->id)->lockForUpdate()->firstOrFail();
+            abort_unless($current->active && (int) $current->role_id === (int) $actor->role_id && (int) $current->getRawOriginal('terminal_stock_location_id') === (int) $actor->getRawOriginal('terminal_stock_location_id') && (int) $current->terminal_business_unit_id === (int) $actor->terminal_business_unit_id, 403, __('ui.Your operational access changed. Reload and try again.'));
+            $actor->forceFill(['business_units_configured' => $current->business_units_configured, 'counters_configured' => $current->counters_configured])->syncOriginalAttributes(['business_units_configured', 'counters_configured']);
 
             return $callback();
         }, 5);

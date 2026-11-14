@@ -39,7 +39,7 @@ class DatabaseCompatibilityTest extends TestCase
             $this->assertSame(2, (int) $actual->scale_value, $column);
         }
         $triggers = DB::select('SELECT TRIGGER_NAME AS name FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE()');
-        $this->assertCount(16, $triggers);
+        $this->assertCount(24, $triggers);
         $indexes = DB::select('SELECT INDEX_NAME AS name FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()');
         foreach ([...$triggers, ...$indexes] as $identifier) {
             $this->assertLessThanOrEqual(64, strlen($identifier->name));

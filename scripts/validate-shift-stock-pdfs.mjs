@@ -43,8 +43,8 @@ for (const kind of ["desktop", "mobile"]) {
         "18000.00",
         "1000.00",
         kind === "mobile" ? "6000.00" : "0.00",
-        kind === "mobile" ? "990.00" : "1000.00",
-        kind === "mobile" ? "24000.00" : "18000.00",
+        kind === "mobile" ? "21990.00" : "22000.00",
+        kind === "mobile" ? "27000.00" : "21000.00",
     ]) {
         assert.ok(text.includes(expected), kind + ": expected closing/variance/outstanding values");
         checks++;

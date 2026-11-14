@@ -1,0 +1,296 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Domain\TenantContext;
+use App\Http\Middleware\RequireOperationalShift;
+use App\Models\Branch;
+use App\Models\CashHandover;
+use App\Models\Permission;
+use App\Models\Product;
+use App\Models\ProductUnit;
+use App\Models\Role;
+use App\Models\Shift;
+use App\Models\Stock;
+use App\Models\StockLocation;
+use App\Models\Supplier;
+use App\Models\User;
+use App\Services\BusinessUnitService;
+use App\Services\CashHandoverService;
+use App\Services\CounterCashierService;
+use App\Services\GoodsReceiptService;
+use App\Services\OrderService;
+use App\Services\PaymentService;
+use App\Services\ShiftService;
+use App\Services\ShiftStockService;
+use App\Services\UnitOperationalService;
+use App\Services\WorkspaceService;
+use Database\Seeders\NightshiftDemoSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use Tests\Support\CompletesStockCount;
+use Tests\TestCase;
+
+class CounterCashierLimitTest extends TestCase
+{
+    use CompletesStockCount, RefreshDatabase;
+
+    private User $owner;
+
+    private StockLocation $counter;
+
+    private array $cashiers;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(NightshiftDemoSeeder::class);
+        $this->owner = User::where('email', 'admin@nightshift.test')->firstOrFail();
+        $this->actingAs($this->owner);
+        $this->counter = StockLocation::create(['branch_id' => Branch::firstOrFail()->id, 'name' => 'Capacity test counter', 'type' => 'COUNTER']);
+        $unit = app(BusinessUnitService::class)->save(['branch_id' => $this->counter->branch_id, 'name' => 'Capacity unit', 'code' => 'CAPACITY', 'active' => true, 'advanced_locations_enabled' => true, 'max_active_cashiers' => 3]);
+        $this->counter->update(['business_unit_id' => $unit->id]);
+        foreach (Product::all() as $product) {
+            app(BusinessUnitService::class)->product(['product_id' => $product->id, 'business_unit_id' => $unit->id, 'available' => true, 'prices' => []]);
+        }
+        app(UnitOperationalService::class)->adoptDefault($unit, $this->counter);
+        $this->cashiers = [$this->staff('Cashier'), $this->staff('Cashier'), $this->staff('Cashier')];
+    }
+
+    private function staff(string $role): User
+    {
+        $u = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', $role)->firstOrFail()->id]);
+        $u->branches()->attach($this->counter->branch_id, ['company_id' => $u->company_id]);
+
+        if ($u->isPosTerminal()) {
+            $u->forceFill(['terminal_stock_location_id' => $this->counter->id])->save();
+        }
+        app(TenantContext::class)->run($this->owner, fn () => app(BusinessUnitService::class)->assign($u, [$this->counter->business_unit_id]));
+
+        return $u;
+    }
+
+    private function open(int $i): Shift
+    {
+        return app(ShiftService::class)->open(['user_id' => $this->cashiers[$i]->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER']);
+    }
+
+    private function limit(int $max): void
+    {
+        app(CounterCashierService::class)->update($this->counter->id, $max);
+    }
+
+    private function close(Shift $shift): void
+    {
+        $this->completeStockCount($shift);
+        app(ShiftService::class)->close($shift->id, ['actual_cash' => app(ShiftService::class)->expected($shift)]);
+    }
+
+    public function test_new_counter_and_cutover_default_to_one_and_preserve_configured_limits(): void
+    {
+        $this->assertSame(1, $this->counter->max_active_cashiers);
+        $this->assertSame(1, $this->counter->fresh()->max_active_cashiers);
+        $this->limit(2);
+        $m = require database_path('migrations/2026_11_11_000006_add_counter_cashier_limits.php');
+        $m->up();
+        $this->assertSame(2, $this->counter->fresh()->max_active_cashiers);
+        $this->assertSame(1, StockLocation::where('name', 'Main Counter')->firstOrFail()->max_active_cashiers);
+    }
+
+    public function test_first_opens_second_is_blocked_until_first_finalizes(): void
+    {
+        $first = $this->open(0);
+        try {
+            $this->open(1);
+            $this->fail('Capacity bypassed');
+        } catch (ValidationException $e) {
+            $this->assertStringContainsString('maximum number of active cashiers', $e->getMessage());
+        }
+        $this->assertSame(1, $this->counter->active_cashiers);
+        $this->close($first);
+        $this->assertSame('OPEN', $this->open(1)->status);
+        $this->assertSame(1, $this->counter->active_cashiers);
+    }
+
+    public function test_two_allowed_and_third_blocked_without_manager_bypass(): void
+    {
+        $this->limit(2);
+        $this->open(0);
+        $this->open(1);
+        $this->assertSame(2, $this->counter->active_cashiers);
+        $this->expectException(ValidationException::class);
+        $this->open(2);
+    }
+
+    public function test_waiters_do_not_count_and_second_cashier_can_join_an_operating_counter(): void
+    {
+        $this->limit(2);
+        $first = $this->open(0);
+        foreach ([$this->staff('Waiter'), $this->staff('Waiter')] as $u) {
+            $s = app(ShiftService::class)->open(['user_id' => $u->id, 'stock_location_id' => $this->counter->id, 'type' => 'WAITER']);
+            $this->assertSame($first->id, $s->cashier_shift_id);
+        }
+        $this->open(1);
+        $this->assertSame(2, $this->counter->active_cashiers);
+        $this->assertSame(4, Shift::where('stock_location_id', $this->counter->id)->where('status', 'OPEN')->count());
+    }
+
+    public function test_terminal_has_no_shift_and_does_not_occupy_a_slot(): void
+    {
+        $terminal = $this->staff('POS Terminal');
+        $terminal->forceFill(['terminal_stock_location_id' => $this->counter->id])->save();
+        $this->assertSame(0, $this->counter->active_cashiers);
+        $this->getJson('/api/nightshift/bootstrap')->assertOk();
+        $this->open(0);
+        $this->assertSame(1, $this->counter->active_cashiers);
+        $this->expectException(ValidationException::class);
+        app(ShiftService::class)->open(['user_id' => $terminal->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER']);
+    }
+
+    public function test_limit_increase_is_immediate_and_decrease_requires_enough_closed_shifts(): void
+    {
+        $this->open(0);
+        $this->limit(2);
+        $second = $this->open(1);
+        try {
+            $this->limit(1);
+            $this->fail('Unsafe reduction');
+        } catch (ValidationException $e) {
+            $this->assertSame('Close one active cashier shift before reducing the limit to 1.', $e->getMessage());
+        }
+        $this->assertSame(2, $this->counter->fresh()->max_active_cashiers);
+        $this->close($second);
+        $this->limit(1);
+        $this->assertSame(1, $this->counter->fresh()->max_active_cashiers);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'CASHIER_LIMIT_UPDATED', 'reference_id' => (string) $this->counter->id, 'user_id' => $this->owner->id]);
+    }
+
+    public function test_invalid_limits_are_rejected_without_config_or_audit_changes(): void
+    {
+        $before = DB::table('audit_logs')->count();
+        foreach ([0, -1, 1.5, null, 65536] as $max) {
+            $this->postJson('/api/nightshift/commands/catalog-cashier-limit', ['id' => $this->counter->id, 'max_active_cashiers' => $max, 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+        }
+        $this->assertSame(1, $this->counter->fresh()->max_active_cashiers);
+        $this->assertSame($before, DB::table('audit_logs')->count());
+    }
+
+    public function test_store_setting_is_not_applicable_and_no_cashier_can_open_there(): void
+    {
+        $store = StockLocation::where('type', 'STORE')->firstOrFail();
+        $this->postJson('/api/nightshift/commands/catalog-cashier-limit', ['id' => $store->id, 'max_active_cashiers' => 2, 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+        $this->expectException(ValidationException::class);
+        app(ShiftService::class)->open(['user_id' => $this->cashiers[0]->id, 'stock_location_id' => $store->id, 'type' => 'CASHIER']);
+    }
+
+    public function test_occupancy_and_limits_are_in_workspace_and_localized_management_page(): void
+    {
+        $this->open(0);
+        $row = collect(app(WorkspaceService::class)->snapshot()['locations'])->firstWhere('id', $this->counter->id);
+        $this->assertSame(1, $row['active_cashiers']);
+        $this->assertSame(1, $row['max_active_cashiers']);
+        $this->get('/business-units')->assertOk()->assertSee('Maximum Active Cashiers')->assertSee('data-cashier-limit', false);
+        $this->postJson('/settings/language', ['locale' => 'sw'])->assertOk();
+        $this->get('/business-units')->assertSee('Idadi ya Juu ya Makashia')->assertSee('Makashia Wanaofanya Kazi');
+        $this->cashiers[1]->forceFill(['language_preference' => 'sw'])->save();
+        $this->actingAs($this->cashiers[1])->get('/open-shift')->assertOk()->assertSee('data-active-cashiers="1"', false)->assertSee('data-max-active-cashiers="3"', false)->assertSee('Kitengo cha Biashara');
+    }
+
+    public function test_cashier_cannot_configure_and_foreign_company_cannot_be_targeted(): void
+    {
+        $this->withoutMiddleware(RequireOperationalShift::class)->actingAs($this->cashiers[0])->postJson('/api/nightshift/commands/catalog-cashier-limit', ['id' => $this->counter->id, 'max_active_cashiers' => 2, 'idempotency_key' => (string) Str::uuid()])->assertForbidden();
+        $other = User::factory()->create();
+        $location = app(TenantContext::class)->run($other, function () {
+            $branch = Branch::create(['name' => 'Foreign']);
+
+            return StockLocation::create(['branch_id' => $branch->id, 'name' => 'Foreign', 'type' => 'COUNTER']);
+        });
+        $this->actingAs($this->owner)->postJson('/api/nightshift/commands/catalog-cashier-limit', ['id' => $location->id, 'max_active_cashiers' => 2, 'idempotency_key' => (string) Str::uuid()])->assertNotFound();
+    }
+
+    public function test_scoped_manager_cannot_change_other_unit_counter(): void
+    {
+        $other = app(BusinessUnitService::class)->save([
+            'branch_id' => $this->counter->branch_id,
+            'name' => 'Private Restaurant',
+            'code' => 'REST-LIMIT',
+            'active' => true,
+        ]);
+        $counter = StockLocation::create(['branch_id' => $this->counter->branch_id, 'business_unit_id' => $other->id, 'name' => 'Restaurant counter', 'type' => 'COUNTER']);
+        $role = Role::create(['name' => 'Scoped counter manager']);
+        $role->permissions()->attach(Permission::where('name', 'manage-counters')->firstOrFail()->id);
+        $manager = $this->staff('Scoped counter manager');
+        $manager->forceFill(['business_units_configured' => true])->save();
+        $manager->businessUnits()->syncWithoutDetaching([$this->counter->business_unit_id => ['company_id' => $manager->company_id]]);
+        $this->actingAs($manager)->postJson('/api/nightshift/commands/catalog-cashier-limit', ['id' => $counter->id, 'max_active_cashiers' => 2, 'idempotency_key' => (string) Str::uuid()])->assertNotFound();
+    }
+
+    public function test_shared_stock_separate_cash_payments_and_independent_finalizations(): void
+    {
+        $this->limit(2);
+        $unit = ProductUnit::firstOrFail();
+        app(GoodsReceiptService::class)->post(['stock_location_id' => $this->counter->id, 'supplier_id' => Supplier::firstOrFail()->id, 'received_on' => now()->toDateString(), 'items' => [['product_unit_id' => $unit->id, 'quantity' => '20', 'unit_cost' => '1000']]]);
+        $a = $this->open(0);
+        $b = $this->open(1);
+        $waiter = $this->staff('Waiter');
+        $w = app(ShiftService::class)->open(['user_id' => $waiter->id, 'stock_location_id' => $this->counter->id, 'type' => 'WAITER']);
+        foreach ([$a, $b] as $shift) {
+            $this->actingAs($this->owner);
+            $order = app(OrderService::class)->create(['waiter_id' => $waiter->id, 'stock_location_id' => $this->counter->id, 'items' => [['product_unit_id' => $unit->id, 'quantity' => '1']]]);
+            $this->actingAs(User::findOrFail($shift->user_id));
+            app(OrderService::class)->issue($order->id);
+            app(PaymentService::class)->receive($order->id, [['method' => 'Cash', 'amount' => $order->total]]);
+            $this->assertSame($order->total, app(ShiftService::class)->expected($shift));
+            $this->assertDatabaseHas('payments', ['order_id' => $order->id, 'shift_id' => $shift->id]);
+        }
+        $this->assertSame('18.000000', Stock::where('stock_location_id', $this->counter->id)->where('product_id', $unit->product_id)->firstOrFail()->quantity);
+        $this->actingAs($this->owner);
+        app(ShiftService::class)->close($w->id, []);
+        $this->close($a);
+        $this->close($b);
+        $this->assertSame(0, $this->counter->active_cashiers);
+        $this->assertSame(2, CashHandover::whereIn('source_shift_id', [$a->id, $b->id])->count());
+        foreach ([$a, $b] as $shift) {
+            $r = app(ShiftStockService::class)->report($shift->id);
+            $this->assertSame('CLOSED', $r['status']);
+            $this->assertSame(0, $r['totals']['ledger_mismatches']);
+        }
+    }
+
+    public function test_parallel_cash_drawer_handovers_are_applied_only_to_their_receiving_cashier(): void
+    {
+        $this->limit(2);
+        $a = app(ShiftService::class)->open(['user_id' => $this->cashiers[0]->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER', 'opening_cash' => '100', 'opening_reason' => 'Approved first drawer float']);
+        $b = app(ShiftService::class)->open(['user_id' => $this->cashiers[1]->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER', 'opening_cash' => '200', 'opening_reason' => 'Approved second drawer float']);
+        $receivers = [$this->staff('Cashier'), $this->staff('Cashier')];
+        $handovers = [];
+        foreach ([$a, $b] as $index => $shift) {
+            $this->completeStockCount($shift, $shift->opening_cash, false);
+            $handovers[] = app(CashHandoverService::class)->stage($shift->id, ['destination' => 'NEXT_CASHIER', 'to_user_id' => $receivers[$index]->id, 'amount' => $shift->opening_cash]);
+            app(ShiftService::class)->close($shift->id, ['actual_cash' => $shift->opening_cash]);
+        }
+        $this->assertSame(0, $this->counter->active_cashiers);
+        foreach ($receivers as $index => $user) {
+            $this->actingAs($user);
+            $s = app(ShiftService::class)->open(['stock_location_id' => $this->counter->id, 'type' => 'CASHIER', 'handover_id' => $handovers[$index]->id]);
+            $this->assertSame($index === 0 ? '100.00' : '200.00', $s->opening_cash);
+            $this->assertSame($user->id, $s->user_id);
+        }
+        $this->assertSame(2, $this->counter->active_cashiers);
+    }
+
+    public function test_counter_creation_api_accepts_default_and_explicit_capacity_but_store_setting_is_prohibited(): void
+    {
+        foreach ([null, 2] as $max) {
+            $payload = ['name' => 'New capacity '.($max ?? 1), 'branch_id' => $this->counter->branch_id, 'business_unit_id' => $this->counter->business_unit_id, 'type' => 'COUNTER', 'idempotency_key' => (string) Str::uuid()];
+            if ($max !== null) {
+                $payload['max_active_cashiers'] = $max;
+            }
+            $response = $this->postJson('/api/nightshift/commands/catalog-location', $payload)->assertOk();
+            $this->assertSame($max ?? 1, StockLocation::findOrFail($response->json('id'))->max_active_cashiers);
+        }
+        $this->postJson('/api/nightshift/commands/catalog-location', ['name' => 'Store without cashier', 'branch_id' => $this->counter->branch_id, 'business_unit_id' => $this->counter->business_unit_id, 'type' => 'STORE', 'max_active_cashiers' => 2, 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+    }
+}

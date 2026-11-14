@@ -1,0 +1,11 @@
+@component('layouts.nightshift')
+@php($t = fn($text) => \App\Support\UiText::get($text))
+@include('partials.workspace-mount')
+<div class="workspace-admin-page custody-page" data-workspace-page="cash-handovers" data-workspace-group="Finance" hidden data-cash-custody>
+<div class="page-heading"><div><div class="eyebrow">{{ $t('Finance') }}</div><h1>{{ $t('Cash Handovers') }}</h1><p>{{ $t('Confirm only the physical cash you received. Differences require approval.') }}</p></div><div class="heading-actions"><a class="button" data-report-pdf href="{{ request()->fullUrlWithQuery(['pdf'=>1,'page'=>null]) }}">{{ $t('Download PDF') }}</a><a class="button" href="/open-shift">{{ $t('Open shift') }}</a>@can('view-treasury')<a class="button" href="/treasury">{{ $t('Treasury') }}</a>@endcan</div></div><p>{{ $t('Currency') }}: {{ auth()->user()->company->currency === 'TZS' ? 'TSh' : auth()->user()->company->currency }}</p>
+<div data-custody-message role="alert"></div>
+<form class="panel panel-body admin-filters" method="GET"><label class="form-field">{{ $t('Branch') }}<select name="branch_id"><option value="">{{ $t('All branches') }}</option>@foreach($branches as $branch)<option value="{{ $branch->id }}" @selected(request('branch_id') == $branch->id)>{{ $branch->name }}</option>@endforeach</select></label><label class="form-field">{{ $t('Business Unit') }}<select name="business_unit_id"><option value="">{{ $t('All Business Units') }}</option>@foreach($units as $unit)<option value="{{ $unit->id }}" @selected(request('business_unit_id') == $unit->id)>{{ $unit->name }}</option>@endforeach</select></label>@foreach(['from'=>'From','to'=>'To'] as $key=>$label)<label class="form-field">{{ $t($label) }}<input name="{{ $key }}" type="date" value="{{ request($key) }}"></label>@endforeach<button class="button">{{ $t('Filter') }}</button></form>
+<section class="panel panel-body">@include('partials.cash-handover-list')</section>
+<nav class="report-navigation">@if($page > 1)<a class="button" href="{{ request()->fullUrlWithQuery(['page'=>$page-1]) }}">{{ $t('Previous') }}</a>@endif @if($has_more)<a class="button" href="{{ request()->fullUrlWithQuery(['page'=>$page+1]) }}">{{ $t('Next') }}</a>@endif</nav></div>
+<script>window.CashCustodyMessages = @json(\App\Support\UiText::catalog());</script>
+@endcomponent

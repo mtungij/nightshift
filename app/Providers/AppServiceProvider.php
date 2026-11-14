@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Contracts\ReportPdfRenderer;
+use App\Domain\BusinessUnitContext;
 use App\Domain\TenantContext;
 use App\Jobs\WhatsApp\SendOperationalAlertJob;
 use App\Livewire\Settings\Appearance;
@@ -15,6 +17,8 @@ use App\Models\AuditLog;
 use App\Models\User;
 use App\Models\WhatsAppSetting;
 use App\Services\AuditService;
+use App\Services\ChromiumReportPdfRenderer;
+use App\Services\StockService;
 use Carbon\CarbonImmutable;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Support\Facades\Blade;
@@ -36,6 +40,9 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->scoped(TenantContext::class);
+        $this->app->scoped(BusinessUnitContext::class);
+        $this->app->scoped(StockService::class);
+        $this->app->bind(ReportPdfRenderer::class, ChromiumReportPdfRenderer::class);
     }
 
     /**

@@ -111,6 +111,7 @@ if (root) {
         }
         post(event.target, "shift-stock-count", {
             id: data.shift_id,
+            actual_cash: event.target.elements.actual_cash.value,
             basis: data.basis,
             revision: data.revision,
             reason: event.target.elements.reason.value,
@@ -129,11 +130,39 @@ if (root) {
             note: event.target.elements.note.value,
         });
     });
-    root.querySelector("#recon-close-form")?.addEventListener("submit", (event) => {
+    const closeForm = root.querySelector("#recon-close-form");
+    const destination = closeForm?.elements.destination;
+    function recipients() {
+        if (!destination) return;
+        closeForm.querySelector('button').textContent = t(destination.value === 'TREASURY' ? 'Request cash receipt' : 'Confirm and Close Shift');
+        const select = closeForm.elements.to_user_id;
+        for (const option of select.options) {
+            option.disabled = destination.value === 'NEXT_CASHIER' ? option.dataset.cashier !== '1' || Number(option.value) === Number(data.cashier_user_id) : option.dataset.treasury !== '1';
+            option.hidden = option.disabled;
+        }
+        if (select.selectedOptions[0]?.disabled) select.value = [...select.options].find(o => !o.disabled)?.value || '';
+    }
+    destination?.addEventListener('change', recipients);
+    recipients();
+    let staged = Boolean(data.custody);
+    closeForm?.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (destination && !staged) {
+            const button = event.target.querySelector('button');
+            button.disabled = true;
+            try {
+                const response = await fetch('/api/cash-custody/stage', {method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','X-CSRF-TOKEN':document.querySelector('[name=csrf-token]').content},body:JSON.stringify({shift_id:data.shift_id,destination:destination.value,to_user_id:closeForm.elements.to_user_id.value,amount:data.cash.actual,note:closeForm.elements.notes.value,idempotency_key:closeForm.dataset.handoverKey ||= crypto.randomUUID()})});
+                const result = await response.json();
+                if (!response.ok) throw Error(Object.values(result.errors || {}).flat()[0] || result.message);
+                staged = true;
+                closeForm.elements.to_user_id.disabled = true;
+                destination.disabled = true;
+                if (destination.value === 'TREASURY') { location.reload(); return; }
+            } catch (error) { message.textContent = error.message; button.disabled = false; return; }
+        }
         post(event.target, "shift-close", {
             id: data.shift_id,
-            actual_cash: event.target.elements.actual_cash.value,
+            actual_cash: root.querySelector("[name=actual_cash]").value,
             notes: event.target.elements.notes.value,
         });
     });

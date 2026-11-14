@@ -6,8 +6,13 @@
         @if($reprint)<div class="reprint">{{ \App\Support\UiText::get('REPRINT') }}</div>@endif
         <div class="line"></div>
         @foreach(['Invoice' => 'invoice', 'Date/time' => 'issued_at', 'Waiter' => 'waiter', 'Table' => 'table', 'Counter' => 'counter'] as $label => $field)
+            @if($field !== 'counter' || ($ticket['show_location'] ?? true))
             <div class="row"><span>{{ \App\Support\UiText::get($label) }}</span><strong>{{ $ticket[$field] }}</strong></div>
+            @endif
         @endforeach
+        @if(filled($ticket['business_unit'] ?? null))
+            <div class="row meta-row"><span>{{ \App\Support\UiText::get('Business Unit') }}</span><strong>{{ $ticket['business_unit'] }}</strong></div>
+        @endif
         @if(filled($ticket['entered_via'] ?? null))
             <div class="row"><span>{{ \App\Support\UiText::get('Entered via') }}</span><strong>{{ $ticket['entered_via'] }}</strong></div>
         @endif

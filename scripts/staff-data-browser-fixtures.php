@@ -66,6 +66,6 @@ $fixtures['foreign_shift'] = app(TenantContext::class)->run($foreign, function (
 
     $existing = Shift::where('user_id', $foreign->id)->where('status', 'OPEN')->first();
 
-    return ($existing ?? app(ShiftService::class)->open(['user_id' => $foreign->id, 'stock_location_id' => $counter->id, 'type' => 'CASHIER', 'opening_cash' => '765432']))->id;
+    return ($existing ?? app(ShiftService::class)->open(['user_id' => $foreign->id, 'stock_location_id' => $counter->id, 'type' => 'CASHIER', 'opening_cash' => '765432', 'opening_reason' => 'Authorized fixture opening float']))->id;
 });
 echo json_encode($fixtures, JSON_THROW_ON_ERROR)."\n";

@@ -1,0 +1,278 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Contracts\ReportPdfRenderer;
+use App\Domain\TenantContext;
+use App\Models\Branch;
+use App\Models\Order;
+use App\Models\Payment;
+use App\Models\Role;
+use App\Models\Shift;
+use App\Models\StockLocation;
+use App\Models\User;
+use App\Services\AuditService;
+use App\Services\BusinessUnitService;
+use App\Services\ShiftService;
+use Database\Seeders\NightshiftDemoSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Tests\TestCase;
+
+class ReportShiftTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $owner;
+
+    private Shift $shift;
+
+    private Order $base;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(NightshiftDemoSeeder::class);
+        $this->owner = User::where('email', 'admin@nightshift.test')->firstOrFail();
+        $this->actingAs($this->owner);
+        $this->base = Order::whereNotNull('issued_at')->firstOrFail();
+        $this->shift = $this->makeShift();
+    }
+
+    private function makeShift(array $extra = []): Shift
+    {
+        return Shift::create(['company_id' => $this->owner->company_id, 'branch_id' => $this->base->branch_id, 'stock_location_id' => $this->base->stock_location_id, 'user_id' => $this->owner->id, 'number' => 'SHF-REPORT-'.(Shift::count() + 1), 'type' => 'CASHIER', 'status' => 'CLOSED', 'opened_at' => '2026-11-09 18:00:00', 'closed_at' => '2026-11-10 03:20:00', 'opening_cash' => 0, 'expected_cash' => 0, 'actual_cash' => 0, 'cash_difference' => 0, ...$extra]);
+    }
+
+    private function sale(string $number, ?Shift $shift, string $time): Order
+    {
+        $data = $this->base->getAttributes();
+        unset($data['id']);
+
+        return Order::create([...$data, 'invoice_number' => $number, 'issued_shift_id' => $shift?->id, 'issued_at' => $time, 'created_at' => $time, 'status' => 'ISSUED', 'subtotal' => 1000, 'discount' => 0, 'total' => 1000, 'amount_paid' => 0, 'balance' => 1000]);
+    }
+
+    private function url(string $report = 'Daily Sales', array $filters = []): string
+    {
+        return '/api/nightshift/reports/'.rawurlencode($report).'?'.http_build_query(['shift_id' => $this->shift->id, 'from' => '2001-01-01', 'to' => '2001-01-02', ...$filters]);
+    }
+
+    public function test_overnight_uses_stored_identity_and_ignores_dates_and_other_cashiers(): void
+    {
+        $this->sale('BEFORE-MIDNIGHT', $this->shift, '2026-11-09 23:30:00');
+        $this->sale('AFTER-MIDNIGHT', $this->shift, '2026-11-10 02:30:00');
+        $this->sale('OTHER-CASHIER', $this->makeShift(), '2026-11-10 02:30:00');
+        $this->sale('LEGACY', null, '2026-11-10 02:30:00');
+        $data = $this->getJson($this->url())->assertOk()->json();
+        $this->assertSame(['AFTER-MIDNIGHT', 'BEFORE-MIDNIGHT'], array_column($data['rows'], 0));
+        $this->assertSame(2000.0, array_sum(array_column($data['rows'], 3)));
+        $this->assertSame('Closed', $data['shift_context']['status']);
+        $all = $this->getJson($this->url('Daily Sales', ['shift_id' => '', 'from' => '2026-11-09', 'to' => '2026-11-10']))->assertOk()->json();
+        $this->assertContains('LEGACY', array_column($all['rows'], 0));
+    }
+
+    public function test_closed_report_is_stable_after_later_mutable_settlement(): void
+    {
+        $order = $this->sale('FROZEN-REPORT', $this->shift, '2026-11-10 02:30:00');
+        $before = $this->getJson($this->url())->assertOk()->json('rows');
+        $order->update(['amount_paid' => 1000, 'balance' => 0, 'status' => 'PAID']);
+        $this->assertSame($before, $this->getJson($this->url())->assertOk()->json('rows'));
+    }
+
+    public function test_open_shift_is_live_and_next_shift_never_enters(): void
+    {
+        $live = $this->makeShift(['status' => 'OPEN', 'opened_at' => now()->subHours(2), 'closed_at' => null]);
+        $this->sale('LIVE-ONE', $live, now()->subHour()->toDateTimeString());
+        $url = $this->url('Daily Sales', ['shift_id' => $live->id]);
+        $this->assertCount(1, $this->getJson($url)->assertOk()->json('rows'));
+        $this->sale('LIVE-TWO', $live, now()->toDateTimeString());
+        $data = $this->getJson($url)->assertOk()->json();
+        $this->assertCount(2, $data['rows']);
+        $this->assertSame('Open / Live', $data['shift_context']['status']);
+    }
+
+    public function test_picker_is_bounded_searchable_and_counter_scoped(): void
+    {
+        for ($i = 0; $i < 27; $i++) {
+            $this->makeShift();
+        }
+        $url = '/api/nightshift/report-shifts?report=Daily%20Sales';
+        $data = $this->getJson($url)->assertOk()->json();
+        $this->assertCount(25, $data['shifts']);
+        $this->assertNotNull($data['next_before']);
+        $this->assertNotEmpty($data['shifts'][0]['employee']);
+        $this->getJson($url.'&search='.rawurlencode($this->shift->number))->assertOk()->assertJsonCount(1, 'shifts');
+        $this->getJson($url.'&stock_location_id=999999')->assertOk()->assertJsonCount(0, 'shifts');
+        $this->getJson('/api/nightshift/report-shifts?report=Expenses')->assertUnprocessable();
+    }
+
+    public function test_shift_and_location_mismatch_is_rejected_and_unknown_id_not_exposed(): void
+    {
+        $this->getJson($this->url('Daily Sales', ['stock_location_id' => 999999]))->assertNotFound();
+        $this->getJson($this->url('Daily Sales', ['shift_id' => 999999]))->assertNotFound();
+        $this->getJson($this->url('Expenses'))->assertUnprocessable();
+    }
+
+    public function test_all_pages_pdf_csv_and_screen_use_same_shift(): void
+    {
+        for ($i = 0; $i < 105; $i++) {
+            $this->sale('SHIFT-EXPORT-'.$i, $this->shift, '2026-11-10 02:30:00');
+        }
+        $renderer = new class implements ReportPdfRenderer
+        {
+            public string $html = '';
+
+            public function render(string $html, string $orientation): string
+            {
+                $this->html = $html;
+
+                return '%PDF-1.7';
+            }
+        };
+        $this->app->instance(ReportPdfRenderer::class, $renderer);
+        $this->getJson($this->url())->assertOk()->assertJsonCount(100, 'rows')->assertJsonPath('has_more', true);
+        $q = parse_url($this->url(), PHP_URL_QUERY);
+        $csv = $this->get('/api/nightshift/reports/Daily%20Sales/export?'.$q)->assertOk();
+        $csv->assertDownload('Nightshift-Daily-Sales-'.$this->shift->number.'.csv');
+        $this->assertCount(106, array_filter(explode("\n", trim($csv->streamedContent()))));
+        $this->get('/api/nightshift/reports/Daily%20Sales/pdf?'.$q)->assertOk();
+        $this->assertStringContainsString('SHIFT-EXPORT-0', $renderer->html);
+        $this->assertStringContainsString('SHIFT-EXPORT-104', $renderer->html);
+        $this->assertStringContainsString($this->shift->number, $renderer->html);
+        $this->assertStringContainsString('Selected shift; date range is ignored.', $renderer->html);
+    }
+
+    public function test_cashier_cannot_select_another_employees_shift(): void
+    {
+        $cashier = User::whereHas('role', fn ($q) => $q->where('name', 'Cashier'))->firstOrFail();
+        $this->actingAs($cashier);
+        $this->getJson($this->url())->assertForbidden();
+    }
+
+    public function test_audit_only_uses_shift_or_linked_reference_and_dates_are_ignored(): void
+    {
+        $order = $this->sale('AUDIT-REFERENCE', $this->shift, '2026-11-10 02:30:00');
+        app(AuditService::class)->record('REPORT_FIXTURE', 'Reports', 'Order', $order->id, [], [], $order->branch_id);
+        $this->get('/audit-trail?shift_id='.$this->shift->id.'&from=2001-01-01&to=2001-01-01')->assertOk()->assertSee('AUDIT-REFERENCE');
+    }
+
+    public function test_cashier_payments_use_receiver_shift_not_issue_clock_window(): void
+    {
+        $order = $this->sale('PAYMENT-SOURCE', $this->shift, '2026-11-09 23:30:00');
+        $template = (array) DB::table('payments')->first();
+        unset($template['id']);
+        Payment::create([...$template, 'number' => 'SHIFT-PAY-1', 'order_id' => $order->id, 'shift_id' => $this->shift->id, 'received_by' => $this->owner->id, 'amount' => 400, 'method' => 'Cash', 'is_credit' => false, 'created_at' => '2026-11-10 01:00:00']);
+        Payment::create([...$template, 'number' => 'SHIFT-PAY-2', 'order_id' => $order->id, 'shift_id' => $this->makeShift()->id, 'received_by' => $this->owner->id, 'amount' => 600, 'method' => 'Cash', 'is_credit' => false, 'created_at' => '2026-11-10 02:00:00']);
+        $data = $this->getJson($this->url('Payments', ['stock_location_id' => $this->base->stock_location_id]))->assertOk()->json();
+        $this->assertCount(1, $data['rows']);
+        $method = $this->getJson($this->url('Payment Method Report'))->assertOk()->json();
+        $this->assertEquals(400, $method['rows'][0][1]);
+    }
+
+    public function test_waiter_sales_follow_waiter_session_and_not_cashier_session(): void
+    {
+        $waiter = $this->makeShift(['type' => 'WAITER']);
+        $order = $this->sale('WAITER-SOURCE', $this->shift, '2026-11-10 01:00:00');
+        $order->update(['shift_id' => $waiter->id]);
+        $this->sale('DIFFERENT-WAITER', $this->shift, '2026-11-10 02:00:00');
+        $data = $this->getJson($this->url('Order Report', ['shift_id' => $waiter->id]))->assertOk()->json();
+        $this->assertSame(['WAITER-SOURCE'], array_column($data['rows'], 0));
+        $this->getJson($this->url('Waiter Shift', ['shift_id' => $waiter->id]))->assertOk()->assertJsonCount(1, 'rows');
+        $this->getJson($this->url('Cashier Shift'))->assertOk()->assertJsonCount(1, 'rows');
+    }
+
+    public function test_selected_stock_reports_use_existing_reconciliation_and_are_read_only(): void
+    {
+        $businessUnitId = StockLocation::whereKey($this->base->stock_location_id)
+            ->value('business_unit_id');
+
+        $counter = StockLocation::create([
+            'branch_id' => $this->base->branch_id,
+            'business_unit_id' => $businessUnitId,
+            'type' => 'COUNTER',
+            'name' => 'Report stock snapshot',
+        ]);
+
+        $cashier = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => Role::where('name', 'Cashier')->firstOrFail()->id,
+        ]);
+
+        $cashier->branches()->attach($counter->branch_id, [
+            'company_id' => $cashier->company_id,
+        ]);
+
+        $cashier->businessUnits()->syncWithoutDetaching([
+            $businessUnitId => [
+                'company_id' => $cashier->company_id,
+            ],
+        ]);
+
+        $shift = app(ShiftService::class)->open([
+            'type' => 'CASHIER',
+            'user_id' => $cashier->id,
+            'stock_location_id' => $counter->id,
+        ]);
+        $tables = ['orders', 'payments', 'payment_allocations', 'waiter_ledger_entries', 'stock_movements', 'stocks', 'shifts', 'shift_stock_snapshots', 'cash_handovers', 'treasury_entries'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->orderBy('id')->get()->toJson();
+        }
+        $this->getJson($this->url('Opening Stock', ['shift_id' => $shift->id]))->assertOk();
+        $this->getJson($this->url('Closing Stock', ['shift_id' => $shift->id]))->assertOk();
+        $this->getJson($this->url('Stock Movement', ['shift_id' => $shift->id]))->assertOk();
+        foreach ($before as $table => $json) {
+            $this->assertSame($json, DB::table($table)->orderBy('id')->get()->toJson(), $table);
+        }
+    }
+
+    public function test_closed_shift_pdf_is_localized_and_live_pdf_has_context(): void
+    {
+        $renderer = new class implements ReportPdfRenderer
+        {
+            public string $html = '';
+
+            public function render(string $html, string $orientation): string
+            {
+                $this->html = $html;
+
+                return '%PDF-1.7';
+            }
+        };
+        $this->app->instance(ReportPdfRenderer::class, $renderer);
+        $live = $this->makeShift(['status' => 'OPEN', 'opened_at' => now()->subHour(), 'closed_at' => null]);
+        $this->owner->forceFill(['language_preference' => 'sw'])->save();
+        $this->get('/api/nightshift/reports/Daily%20Sales/pdf?shift_id='.$live->id)->assertOk();
+        $this->assertStringContainsString('Ipo Wazi / Inaendelea', $renderer->html);
+        $this->assertStringContainsString($live->number, $renderer->html);
+    }
+
+    public function test_company_branch_unit_and_counter_scopes_reject_tampered_shift_ids(): void
+    {
+        $other = User::factory()->create();
+        $foreign = app(TenantContext::class)->run($other, function () use ($other) {
+            $branch = Branch::create(['name' => 'Foreign report branch']);
+            $counter = StockLocation::create(['branch_id' => $branch->id, 'name' => 'Foreign report counter', 'type' => 'COUNTER']);
+
+            return Shift::create(['branch_id' => $branch->id, 'stock_location_id' => $counter->id, 'user_id' => $other->id, 'number' => 'SHF-FOREIGN', 'type' => 'CASHIER', 'status' => 'CLOSED', 'opened_at' => '2026-11-09 18:00:00', 'closed_at' => '2026-11-10 03:20:00']);
+        });
+        $this->getJson($this->url('Daily Sales', ['shift_id' => $foreign->id]))->assertNotFound();
+        $unit = app(BusinessUnitService::class)->save(['branch_id' => $this->base->branch_id, 'name' => 'Other reporting unit', 'code' => 'REPORT_OTHER', 'active' => true]);
+        $counter = StockLocation::create(['branch_id' => $unit->branch_id, 'business_unit_id' => $unit->id, 'type' => 'COUNTER', 'name' => 'Other unit report counter']);
+        $unitShift = $this->makeShift(['stock_location_id' => $counter->id]);
+        $sameUnitCounter = StockLocation::create(['branch_id' => $this->base->branch_id, 'type' => 'COUNTER', 'name' => 'Unassigned report counter']);
+        $counterShift = $this->makeShift(['stock_location_id' => $sameUnitCounter->id]);
+        $branch = Branch::create(['name' => 'Unassigned report branch']);
+        $branchCounter = StockLocation::create(['branch_id' => $branch->id, 'type' => 'COUNTER', 'name' => 'Unassigned branch counter']);
+        $branchShift = $this->makeShift(['branch_id' => $branch->id, 'stock_location_id' => $branchCounter->id]);
+        $manager = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', 'Manager')->firstOrFail()->id, 'business_units_configured' => true, 'counters_configured' => true]);
+        $manager->branches()->attach($this->base->branch_id, ['company_id' => $manager->company_id]);
+        $manager->businessUnits()->attach($this->shift->business_unit_id, ['company_id' => $manager->company_id]);
+        DB::table('counter_user')->insert(['stock_location_id' => $this->base->stock_location_id, 'user_id' => $manager->id, 'company_id' => $manager->company_id]);
+        $this->actingAs($manager);
+        foreach ([$unitShift, $counterShift, $branchShift] as $denied) {
+            $this->getJson($this->url('Daily Sales', ['shift_id' => $denied->id]))->assertNotFound();
+            $this->getJson('/api/nightshift/report-shifts?report=Daily%20Sales&shift_id='.$denied->id)->assertNotFound();
+        }
+    }
+}

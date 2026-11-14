@@ -1,3 +1,10 @@
+import { mountReportShifts } from "./report-shifts.js";
+import { renderCounterCard } from "./counter-cards.js";
+import { updateCashierOccupancy } from "./counter-cashiers.js";
+import { productSellingUnits } from "./product-selling-units.js";
+import { mountProductAvailability, productAvailabilityPayload } from "./product-availability.js";
+import { downloadPdf } from "./report-pdf.js";
+import { scopePicker, syncStaffScopes } from "./staff-scopes.js";
 import { quantity } from "./quantity.js";
 import { t as tr, html } from "./localization.js";
 
@@ -206,7 +213,13 @@ if (root) {
     const badge = (text, color = "") => html`<span class="badge ${color}">${esc(tr(text))}</span>`;
     const categories = [];
     let db;
-    let screen = location.hash.slice(1);
+    let counterRevision = 0;
+    const workspacePage = document.querySelector("[data-workspace-page]");
+    const initialRoute = workspacePage?.dataset.workspacePage || location.hash.slice(1);
+    let shiftStockId = initialRoute.startsWith("shift-stock/")
+        ? Number(initialRoute.split("/")[1])
+        : null;
+    let screen = shiftStockId ? "shift-stock" : initialRoute;
     if (["cashiers", "users"].includes(screen)) screen = "staff";
     let staffRole = location.hash === "#cashiers" ? "Cashier" : "";
     let staffStatus = "";
@@ -215,6 +228,7 @@ if (root) {
     let search = "";
     let category = "All products";
     let cart = [];
+    let posContextLoading = false;
     const servingRequestKeys = new Map();
     let cartTable = "VIP 04";
     let cartCounter = "Main Counter";
@@ -222,7 +236,7 @@ if (root) {
     let period = "Today";
     let orderPage = 1;
     let modalTrigger = null;
-    const roles = ["Manager", "Cashier", "Waiter", "Store Keeper", "Supervisor"];
+    const roles = ["Manager", "Cashier", "Waiter", "Store Keeper", "Supervisor", "Accountant"];
     const terminal = () => db.role === "POS Terminal";
     const owner = () => ["Company Admin / Owner", "Super Admin"].includes(db.role);
     const navigationPermissions = {
@@ -240,18 +254,29 @@ if (root) {
         reports: "view-reports",
         approvals: "approve-adjustments",
         users: "manage-users",
+        "business-units": "manage-business-units",
+        treasury: "view-treasury",
+        "cash-handovers": null,
         branches: "manage-branches",
         counters: "manage-counters",
         settings: "manage-company",
         setup: "manage-company",
         audit: "view-audit",
+        whatsapp: "whatsapp.view_settings",
         notifications: null,
     };
     const permitted = (name) => db.permissions.includes(name);
     const allowed = (name) =>
         terminal()
             ? ["pos", "orders"].includes(name)
-            : name === "notifications" || permitted(navigationPermissions[name]);
+            : name === "counters" && !db.advanced_locations_available
+              ? false
+              : name === "cash-handovers"
+                ? (permitted("issue-drinks") && permitted("close-shifts")) ||
+                  permitted("view-treasury") ||
+                  permitted("receive-treasury") ||
+                  permitted("review-cash-handovers")
+                : name === "notifications" || permitted(navigationPermissions[name]);
     const managerial = () => permitted("approve-void") || permitted("override-shifts");
     const canIssue = () => permitted("issue-drinks");
     const waiter = (id) =>
@@ -299,41 +324,71 @@ if (root) {
         toast.timer = setTimeout(() => (document.getElementById("toast").innerHTML = ""), 4200);
     }
     const navItems = [
-        ["dashboard", "dashboard", "Overview"],
-        ["pos", "pos", "Point of sale"],
-        ["orders", "orders", "Orders"],
-        ["tables", "tables", "Tables"],
-        ["waiters", "users", "Waiter accounts"],
-        ["staff", "users", "Staff"],
-        ["inventory", "box", "Inventory"],
-        ["shifts", "clock", "Shifts"],
-        ["payments", "wallet", "Payments"],
-        ["suppliers", "truck", "Suppliers"],
-        ["reports", "chart", "Reports"],
-        ["approvals", "shield", "Approvals"],
-        ["branches", "branch", "Branches"],
-        ["counters", "pos", "Counters"],
-        ["settings", "settings", "Settings"],
-        ["setup", "check", "Setup guide"],
-        ["audit", "audit", "Audit trail"],
+        ["dashboard", "dashboard", "Overview", "Business"],
+        ["pos", "pos", "Point of sale", "Business"],
+        ["orders", "orders", "Orders", "Business"],
+        ["tables", "tables", "Tables", "Business"],
+        ["waiters", "users", "Waiter accounts", "Business"],
+        ["shifts", "clock", "Shifts", "Management"],
+        ["staff", "users", "Staff", "Management"],
+        ["business-units", "branch", "Business Units", "Management"],
+        ["inventory", "box", "Inventory", "Management"],
+        ["suppliers", "truck", "Suppliers", "Management"],
+        ["reports", "chart", "Reports", "Management"],
+        ["payments", "wallet", "Payments", "Finance"],
+        ["treasury", "wallet", "Treasury", "Finance"],
+        ["cash-handovers", "wallet", "Cash Handovers", "Finance"],
+        ["audit", "audit", "Audit trail", "Administration"],
+        ["approvals", "shield", "Approvals", "Administration"],
+        ["branches", "branch", "Branches", "Administration"],
+        ["counters", "pos", "Stock Locations", "Advanced Settings"],
+        ["whatsapp", "phone", "WhatsApp Notifications", "Administration"],
+        ["settings", "settings", "Settings", "Administration"],
+        ["setup", "check", "Setup guide", "Administration"],
     ];
+    const pageRoutes = {
+        whatsapp: "/settings/whatsapp",
+        "business-units": "/business-units",
+        treasury: "/treasury",
+        "cash-handovers": "/cash-handovers",
+        audit: "/audit-trail",
+    };
     window.addEventListener("nightshift:theme-error", (event) => toast(event.detail));
     function navigation() {
+        let group = "";
         return navItems
-            .map(
-                ([id, ico, label], i) =>
-                    `${i === 0 ? html`<div class="nav-group">WORKSPACE</div>` : !terminal() && i === 6 ? html`<div class="nav-group">MANAGEMENT</div>` : !terminal() && i === 12 ? html`<div class="nav-group">ADMINISTRATION</div>` : ""}${allowed(id) ? html`<button class="nav-item ${screen === id ? "active" : ""}" data-nav="${id}">${icon(ico)}<span>${tr(label)}</span>${id === "orders" ? html`<span class="nav-count">${branchOrders().filter((o) => !["Paid", "Voided", "Cancelled", "Returned"].includes(o.status)).length}</span>` : id === "approvals" ? html`<span class="nav-count nav-alert">${db.approvals.filter((a) => a.status === "Pending").length}</span>` : ["inventory", "shifts"].includes(id) ? icon("chevron", "chevron") : ""}</button>` : ""}`,
-            )
+            .filter(([id]) => allowed(id))
+            .map(([id, ico, label, section]) => {
+                const heading =
+                    group !== section ? html`<div class="nav-group">${tr(section)}</div>` : "";
+                group = section;
+                return (
+                    heading +
+                    html`<button
+                        class="nav-item ${screen === id ? "active" : ""}"
+                        ${screen === id ? 'aria-current="page"' : ""}
+                        data-nav="${id}"
+                    >
+                        ${icon(ico)}<span>${tr(label)}</span>${id === "orders" ? html`<span class="nav-count">${branchOrders().filter((o) => !["Paid", "Voided", "Cancelled", "Returned"].includes(o.status)).length}</span>` : ""}
+                    </button>`
+                );
+            })
             .join("");
     }
     function shell() {
-        if (!allowed(screen) && screen !== "profile")
+        if (
+            (screen === "shift-stock" && !allowed("shifts")) ||
+            (screen !== "shift-stock" && !allowed(screen) && screen !== "profile")
+        )
             screen =
                 db.role === "Cashier" && allowed("waiters")
                     ? "waiters"
                     : navItems.find(([id]) => allowed(id))?.[0] || "dashboard";
         root.innerHTML = html`<aside class="sidebar" id="sidebar">
-                <a href="#dashboard" class="brand" aria-label="Nightshift home"
+                <a
+                    href="${workspacePage ? "/dashboard#dashboard" : "#dashboard"}"
+                    class="brand"
+                    aria-label="Nightshift home"
                     ><img
                         class="nightshift-brand-mark"
                         src="/nightshift.svg"
@@ -371,7 +426,7 @@ if (root) {
                         ${icon("menu")}
                     </button>
                     <div class="breadcrumb">
-                        ${icon("branch")}<span>Workspace</span>${icon("chevron")}<strong
+                        ${icon("branch")}<span>${tr(workspacePage?.dataset.workspaceGroup || (workspacePage ? "Business" : "Workspace"))}</span>${icon("chevron")}<strong
                             >${esc(tr(navItems.find((n) => n[0] === screen)?.[2] || "Notifications"))}</strong
                         >
                     </div>
@@ -421,7 +476,15 @@ if (root) {
                         </button>
                     </div>
                 </header>
-                <main class="content page-enter" id="main">${renderScreen()}</main>
+                <main class="content page-enter" id="main">
+                    ${
+                        workspacePage
+                            ? ""
+                            : screen === "shift-stock"
+                              ? shiftStockScreen()
+                              : renderScreen()
+                    }
+                </main>
                 <nav class="mobile-bottom" aria-label="Mobile navigation">
                     ${[
                         ["dashboard", "dashboard", "Home"],
@@ -442,9 +505,69 @@ if (root) {
                         .join("")}<button data-action="menu">${icon("menu")}More</button>
                 </nav>
             </div>`;
+        if (workspacePage) {
+            document.getElementById("main").append(workspacePage);
+            workspacePage.hidden = false;
+            const nav = root.querySelector(".nav-scroll"),
+                active = nav?.querySelector(".nav-item.active");
+            if (active)
+                nav.scrollTop = Math.max(
+                    0,
+                    active.offsetTop - nav.offsetTop - nav.clientHeight / 2,
+                );
+        }
         window.NightshiftPwa?.syncControls();
+        if (screen === "reports" && history.state?.nightshiftReport)
+            queueMicrotask(() => openReport(history.state.nightshiftReport, true));
     }
+    function shiftStockScreen() {
+        if (!shiftStockId) {
+            return html`<div class="empty-state">${tr("Stock Reconciliation")} · ${tr("Shift not found")}</div>`;
+        }
+
+        return (
+            heading(
+                "Stock Reconciliation",
+                "Count stock, reconcile cash and close the cashier shift.",
+                html`<button class="button" data-nav="shifts">${tr("Back to Shifts")}</button>`,
+            ) +
+            html`<section class="panel" style="padding:0;overflow:hidden">
+                <iframe
+                    src="/shift-stock/${shiftStockId}?embedded=1"
+                    title="${esc(tr("Stock Reconciliation"))}"
+                    style="display:block;width:100%;height:calc(100vh - 235px);min-height:700px;border:0;background:var(--surface)"
+                ></iframe>
+            </section>`
+        );
+    }
+
     function navigate(next, nextTab = "") {
+        if (next.startsWith("shift-stock/")) {
+            const id = Number(next.split("/")[1]);
+            if (!Number.isInteger(id) || id < 1) {
+                toast("Shift not found");
+                return;
+            }
+
+            shiftStockId = id;
+            screen = "shift-stock";
+            tab = "";
+            search = "";
+            orderPage = 1;
+            history.replaceState(null, "", `#shift-stock/${id}`);
+            shell();
+            window.scrollTo({ top: 0, behavior: "instant" });
+            return;
+        }
+
+        if (pageRoutes[next]) {
+            location.href = pageRoutes[next];
+            return;
+        }
+        if (workspacePage) {
+            location.href = `/dashboard#${next}`;
+            return;
+        }
         if (next === "pos" || next === "inventory") category = "All products";
         if (["cashiers", "users"].includes(next)) {
             staffRole = next === "cashiers" ? "Cashier" : "";
@@ -456,7 +579,34 @@ if (root) {
         search = "";
         orderPage = 1;
         history.replaceState(null, "", `#${next}`);
-        shell();
+        if (next === "pos") {
+            if (!db.pos_context?.locked) {
+                if (
+                    db.pos_unit_options &&
+                    !db.pos_unit_options.some((unit) => unit.id === db.business_unit_id)
+                )
+                    db.business_unit_id = null;
+                if (
+                    !db.locations.some(
+                        (location) =>
+                            location.id === db.location_id &&
+                            location.type === "COUNTER" &&
+                            location.active !== false &&
+                            (!db.pos_unit_options ||
+                                db.pos_unit_options.some(
+                                    (unit) => unit.id === location.business_unit_id,
+                                )),
+                    )
+                )
+                    db.location_id = null;
+            }
+            if (db.pos_context?.locked) {
+                db.branch_id = db.pos_context.branch_id;
+                db.business_unit_id = db.pos_context.business_unit_id;
+                db.location_id = db.pos_context.counter_id;
+            }
+            reload().catch((error) => toast(error.message));
+        } else shell();
         window.scrollTo({ top: 0, behavior: "instant" });
     }
     const heading = (title, description, actions = "", eyebrow = "YOUR BUSINESS, IN CONTROL") =>
@@ -469,9 +619,40 @@ if (root) {
             <div class="heading-actions">${actions}</div>
         </div>`;
     const branchSelect = () =>
-        html`<select class="select-control" data-change="branch" aria-label="Branch">
-            ${[...db.branches.map((b) => b.name), ...(terminal() ? [] : ["All branches"])].map((b) => html`<option value="${esc(b)}" ${b === db.branch ? "selected" : ""}>${b === "All branches" ? tr(b) : esc(b)}</option>`).join("")}
-        </select>`;
+        screen === "pos"
+            ? db.pos_context?.locked || db.branches.length === 1
+                ? badge(db.branch)
+                : html`<select
+                      class="select-control"
+                      data-change="branch"
+                      aria-label="${esc(tr("Branch"))}"
+                  >
+                      ${db.branches
+                          .filter((b) => b.active !== false)
+                          .map(
+                              (b) =>
+                                  html`<option
+                                      value="${esc(b.name)}"
+                                      ${b.id === db.branch_id ? "selected" : ""}
+                                  >
+                                      ${esc(b.name)}
+                                  </option>`,
+                          )
+                          .join("")}
+                  </select>`
+            : html`<select class="select-control" data-change="branch" aria-label="Branch">
+                      ${[...db.branches.map((b) => b.name), ...(terminal() ? [] : ["All branches"])].map((b) => html`<option value="${esc(b)}" ${b === db.branch ? "selected" : ""}>${b === "All branches" ? tr(b) : esc(b)}</option>`).join("")}</select
+                  >${
+                      db.business_units?.length
+                          ? html`<select
+                                class="select-control"
+                                data-change="business-unit"
+                                aria-label="${esc(tr("Business Unit"))}"
+                            >
+                                ${db.business_units.length > 1 ? html`<option value="">${tr(screen === "inventory" ? "All Products" : "All Business Units")}</option>` : ""}${db.business_units.map((u) => html`<option value="${u.id}" ${Number(db.business_unit_id) === u.id || db.business_units.length === 1 ? "selected" : ""}>${esc(db.branches.length > 1 ? (db.branches.find((b) => b.id === u.branch_id)?.name || "") + " / " + u.name : u.name)}</option>`).join("")}
+                            </select>`
+                          : ""
+                  }${permitted("manage-business-units") ? html`<a class="button" href="/business-units">${tr("Business Units")}</a>` : ""}`;
     const dateSelect = () =>
         html`<select class="select-control" data-change="period" aria-label="Reporting period">
             ${["Today", "Yesterday", "This week"].map((p) => html`<option value="${p}" ${p === period ? "selected" : ""}>${p === "Today" ? tr("Today") + ", " + db.date : tr(p)}</option>`).join("")}
@@ -1213,12 +1394,42 @@ if (root) {
             : html`<span class="bottle ${p.style}"></span>`;
     }
     function posScreen() {
-        const list = db.products.filter(
+        const counter = db.locations.find((l) => l.id === db.location_id && l.type === "COUNTER");
+        const posProducts = db.products.filter(
+            (p) => counter && p.available_unit_ids?.includes(counter.business_unit_id),
+        );
+        const list = posProducts.filter(
             (p) =>
                 p.active !== false &&
+                p.available !== false &&
                 (category === "All products" || p.category === category) &&
                 (!search || p.name.toLowerCase().includes(search.toLowerCase())),
         );
+        const posUnits = (db.pos_unit_options || db.business_units).filter(
+            (u) => u.active && u.branch_id === db.branch_id,
+        );
+        const posCounters = db.locations.filter(
+            (l) =>
+                l.type === "COUNTER" &&
+                l.business_unit_id === db.business_unit_id &&
+                l.active !== false,
+        );
+        const contextLocked = terminal() || db.pos_context?.locked;
+        const unitName =
+            posUnits.find((u) => u.id === db.business_unit_id)?.name ||
+            db.operational_context?.business_unit_name ||
+            tr("No Business Units are configured for this branch.");
+        const contextMessage = db.operational_context?.close_only
+            ? "This Business Unit is inactive. Finish closing the existing shift before starting new work."
+            : !posUnits.length
+              ? "No Business Units are configured for this branch."
+              : !posCounters.length
+                ? "No counters are available in this Business Unit."
+                : !counter
+                  ? "Select counter"
+                  : !posProducts.length
+                    ? "No products are available in this Business Unit."
+                    : null;
         const total = cart.reduce((n, it) => n + it.qty * it.price, 0);
         return (
             heading(
@@ -1238,9 +1449,10 @@ if (root) {
                 </div>
                 <div class="pos-layout">
                     <aside class="category-list">
-                        ${categories.map((c) => html`<button data-action="category" data-value="${esc(c)}" class="${c === category ? "active" : ""}">${esc(c === "All products" ? tr(c) : c)}<small>${c === "All products" ? db.products.length : db.products.filter((p) => p.category === c).length}</small></button>`).join("")}
+                        ${categories.map((c) => html`<button data-action="category" data-value="${esc(c)}" class="${c === category ? "active" : ""}">${esc(c === "All products" ? tr(c) : c)}<small>${c === "All products" ? posProducts.length : posProducts.filter((p) => p.category === c).length}</small></button>`).join("")}
                     </aside>
                     <section class="product-grid">
+                        ${contextMessage ? html`<p class="info-box" data-pos-context-message>${tr(contextMessage)}</p>` : ""}
                         ${
                             list
                                 .map(
@@ -1282,24 +1494,53 @@ if (root) {
                                         ${[...db.tables.map((t) => t.name), "Takeaway"].map((t) => html`<option value="${esc(t)}" ${t === cartTable ? "selected" : ""}>${t === "Takeaway" ? tr(t) : esc(t)}</option>`).join("")}
                                     </select>`,
                                 )}${field(
-                                    "Counter",
-                                    "counter",
-                                    html`<select data-change="cart-counter">
-                                        ${db.locations
-                                            .filter((l) => l.type === "COUNTER")
-                                            .map((l) => l.name)
-                                            .map(
-                                                (c) =>
-                                                    html`<option
-                                                        value="${esc(c)}"
-                                                        ${c === cartCounter ? "selected" : ""}
+                                    "Business Unit",
+                                    "business-unit",
+                                    contextLocked || posUnits.length <= 1
+                                        ? html`<input
+                                              value="${esc(unitName)}"
+                                              readonly
+                                              data-pos-unit-fixed
+                                          />`
+                                        : html`<select
+                                              data-change="business-unit"
+                                              aria-label="${esc(tr("Business Unit"))}"
+                                          >
+                                              ${posUnits.map((u) => html`<option value="${u.id}" ${u.id === db.business_unit_id ? "selected" : ""}>${esc(u.name)}</option>`).join("")}
+                                          </select>`,
+                                )}${
+                                    db.operational_context?.advanced_locations_enabled
+                                        ? field(
+                                              "Counter",
+                                              "counter",
+                                              contextLocked ||
+                                                  !posUnits.length ||
+                                                  posCounters.length === 1
+                                                  ? html`<input
+                                                        value="${esc(counter?.name || (!posUnits.length ? "—" : tr("No counters are available in this Business Unit.")))}"
+                                                        readonly
+                                                        data-pos-counter-fixed
+                                                    />`
+                                                  : html`<select
+                                                        data-change="cart-counter"
+                                                        aria-label="${esc(tr("Counter"))}"
                                                     >
-                                                        ${esc(locationLabel(c))}
-                                                    </option>`,
-                                            )
-                                            .join("")}
-                                    </select>`,
-                                )}${field("Branch", "branch", `<input value="${esc(db.locations.find((l) => l.name === cartCounter)?.branch_id ? db.branches.find((b) => b.id === db.locations.find((l) => l.name === cartCounter).branch_id)?.name : db.branch)}" readonly>`)}
+                                                        ${!posCounters.length ? html`<option value="">${tr("No counters are available in this Business Unit.")}</option>` : !db.location_id ? html`<option value="" selected>${tr("Select counter")}</option>` : ""}
+                                                        ${posCounters
+                                                            .map(
+                                                                (c) =>
+                                                                    html`<option
+                                                                        value="${c.id}"
+                                                                        ${c.id === db.location_id ? "selected" : ""}
+                                                                    >
+                                                                        ${esc(locationLabel(c.name))}
+                                                                    </option>`,
+                                                            )
+                                                            .join("")}
+                                                    </select>`,
+                                          )
+                                        : ""
+                                }${field("Branch", "branch", `<input value="${esc(db.locations.find((l) => l.id === db.location_id)?.branch_id ? db.branches.find((b) => b.id === db.locations.find((l) => l.id === db.location_id).branch_id)?.name : db.branch)}" readonly>`)}
                             </div>
                             ${
                                 cart.length
@@ -1487,7 +1728,7 @@ ${esc(cartNote)}</textarea>
             (p) =>
                 (active !== "Low stock" || p.stock < p.min) &&
                 (!search ||
-                    `${p.name} ${p.sku} ${p.category}`
+                    `${p.name} ${p.category}`
                         .toLowerCase()
                         .includes(search.toLowerCase())),
         );
@@ -1517,7 +1758,7 @@ ${esc(cartNote)}</textarea>
                         class="search-field"
                         data-input="search"
                         aria-label="Search inventory"
-                        placeholder="Search product, SKU or category…"
+                        placeholder="Search product or category…"
                         value="${esc(search)}"
                     />${selectControl("category-filter", ["All categories", ...categories.slice(1)], category === "All products" ? "All categories" : category)}${btn("Export", "export-inventory", "", "download")}
                 </div>
@@ -1527,7 +1768,8 @@ ${esc(cartNote)}</textarea>
                             <thead>
                                 <tr>
                                     <th>Product</th>
-                                    <th>SKU / Category</th>
+                                    <th>Category</th>
+                                    <th>Business Units</th>
                                     <th>Cost</th>
                                     <th>Selling price</th>
                                     <th>Available stock</th>
@@ -1555,10 +1797,24 @@ ${esc(cartNote)}</textarea>
                                                         <span>${esc(p.name)}</span>
                                                     </div>
                                                 </td>
+                                                <td>${esc(p.category)}</td>
                                                 <td>
-                                                    ${p.sku}<br /><small style="color:var(--muted)"
-                                                        >${p.category}</small
-                                                    >
+                                                    ${(() => {
+                                                        const names = (p.available_unit_ids || [])
+                                                            .map((id) =>
+                                                                db.business_units.find(
+                                                                    (u) =>
+                                                                        u.id === Number(id) &&
+                                                                        u.active !== false,
+                                                                ),
+                                                            )
+                                                            .filter(Boolean)
+                                                            .map((u) => u.name);
+
+                                                        return names.length
+                                                            ? names.map((name) => esc(name)).join(", ")
+                                                            : "—";
+                                                    })()}
                                                 </td>
                                                 <td>${money(p.cost)}</td>
                                                 <td class="amount">${money(p.price)}</td>
@@ -1742,15 +1998,22 @@ ${esc(cartNote)}</textarea>
             heading(
                 "Inventory control",
                 "Know what’s on your shelves, behind the bar, and on the move.",
-                `${branchSelect()}${select(
-                    "Stock location",
-                    "location-display",
-                    db.locations.map((l) => [l.id, l.name]),
-                    db.location_id,
-                ).replace(
-                    html`<select name="location-display"></select>`,
-                    html`<select class="select-control" data-change="stock-location"></select>`,
-                )}${action}`,
+                `${branchSelect()}${
+                    db.operational_context?.advanced_locations_enabled
+                        ? select(
+                              "Stock location",
+                              "location-display",
+                              db.locations.map((l) => [l.id, l.name]),
+                              db.location_id,
+                          ).replace(
+                              html`<select name="location-display"></select>`,
+                              html`<select
+                                  class="select-control"
+                                  data-change="stock-location"
+                              ></select>`,
+                          )
+                        : ""
+                }${action}`,
             ) +
             tabs(
                 [
@@ -1826,10 +2089,18 @@ ${esc(cartNote)}</textarea>
                 ) +
                 html`<section class="panel">
                     ${simpleTable(
-                        ["Shift", "Counter", "Opened", "Closed", "Status"],
+                        ["Shift", "Business Unit", "Operating date", "Opened", "Closed", "Status"],
                         db.shifts.map((s) => [
                             esc(s.number),
-                            esc(db.locations.find((l) => l.id === s.stock_location_id)?.name || ""),
+                            esc(s.business_unit || "—") +
+                                (s.show_location
+                                    ? " · " +
+                                      esc(
+                                          db.locations.find((l) => l.id === s.stock_location_id)
+                                              ?.name || "",
+                                      )
+                                    : ""),
+                            esc(s.operating_date || "—"),
                             esc(s.opened_at),
                             esc(s.closed_at || "—"),
                             badge(s.status === "OPEN" ? "Active" : "Closed"),
@@ -1857,9 +2128,9 @@ ${esc(cartNote)}</textarea>
                     .filter((s) => s.type === "CASHIER" && s.status === "OPEN")
                     .map(
                         (s) =>
-                            html`<a class="button" href="/shift-stock/${s.id}"
+                            html`<a class="button" href="/dashboard#shift-stock/${s.id}"
                                 >${esc(s.number)} ·
-                                ${esc(db.locations.find((l) => l.id === s.stock_location_id)?.name || "")}</a
+                                ${esc(s.business_unit || "—")}${s.show_location ? " · " + esc(db.locations.find((l) => l.id === s.stock_location_id)?.name || "") : ""}</a
                             >`,
                     )
                     .join("")}
@@ -1887,7 +2158,7 @@ ${esc(cartNote)}</textarea>
                                   money(s.actual_cash),
                                   money(s.cash_difference) +
                                       (s.type === "CASHIER"
-                                          ? `<a class="button small" href="/shift-stock/${s.id}">${tr("Stock Reconciliation")}</a>`
+                                          ? `<a class="button small" href="/dashboard#shift-stock/${s.id}">${tr("Stock Reconciliation")}</a>`
                                           : ""),
                               ]),
                       )}
@@ -1897,7 +2168,9 @@ ${esc(cartNote)}</textarea>
                           <div class="panel-header">
                               <div>
                                   <h2>${esc(db.shift.cashier)} · Cashier shift</h2>
-                                  <p>${esc(cartCounter || "No counter selected")}</p>
+                                  <p>
+                                      ${esc(db.business_units.find((u) => u.id === db.business_unit_id)?.name || db.shifts.find((s) => s.id === db.shift.id)?.business_unit || "—")}${db.operational_context?.advanced_locations_enabled ? " · " + esc(cartCounter) : ""}
+                                  </p>
                               </div>
                               ${badge(db.shift.active ? "Shift active" : "Closed", db.shift.active ? "" : "gray")}
                           </div>
@@ -1985,7 +2258,12 @@ ${esc(cartNote)}</textarea>
         );
     }
     const reportNames = [
+        "Business Unit Performance",
         "Daily Sales",
+        "Order Report",
+        "Paid Orders",
+        "Unpaid Orders",
+        "Payments",
         "Sales by Waiter",
         "Sales by Cashier",
         "Sales by Product",
@@ -2128,51 +2406,8 @@ ${esc(cartNote)}</textarea>
         );
     }
     function auditScreen() {
-        return (
-            heading(
-                "Audit trail",
-                "A clear record of who did what, when, and why.",
-                btn("Export audit log", "export-audit", "", "download"),
-            ) +
-            html`<div class="toolbar">
-                    <input
-                        class="search-field"
-                        data-input="search"
-                        aria-label="Search audit trail"
-                        placeholder="Search action, user or reference…"
-                        value="${esc(search)}"
-                    />
-                </div>
-                <section class="panel">
-                    ${simpleTable(
-                        [
-                            "User",
-                            "Action / Module",
-                            "Reference",
-                            "Previous value",
-                            "New value",
-                            "Date & time",
-                            "Device / terminal",
-                        ],
-                        db.audit
-                            .filter((a) =>
-                                JSON.stringify(a).toLowerCase().includes(search.toLowerCase()),
-                            )
-                            .map((a) => [
-                                esc(a.user),
-                                html`${esc(a.action)}<small style="display:block;color:var(--muted)"
-                                        >${esc(a.module)}</small
-                                    >`,
-                                esc(a.ref),
-                                esc(a.previous),
-                                esc(a.next),
-                                `${esc(a.time)}`,
-                                esc(a.device),
-                            ]),
-                    )}
-                </section>
-                ${footer()}`
-        );
+        location.replace("/audit-trail");
+        return "";
     }
     function notificationsScreen() {
         return (
@@ -2213,7 +2448,11 @@ ${esc(cartNote)}</textarea>
         const steps = [
             ["business", "Business information", "/settings/business"],
             ["branch", "Main branch", "branches"],
-            ["locations", "Counters / stock locations", "counters"],
+            [
+                "locations",
+                db.advanced_locations_available ? "Stock Locations" : "Business Units",
+                db.advanced_locations_available ? "counters" : "/business-units",
+            ],
             ["categories", "Categories", "inventory"],
             ["products", "Add first products", "inventory"],
             ["staff", "Add staff", "users"],
@@ -2396,17 +2635,9 @@ ${esc(cartNote)}</textarea>
                     "The right stock, in the right place.",
                     branchSelect() + btn("Add location", "add-counter", "primary", "plus"),
                 ) +
-                html`<section class="panel">
-                    ${simpleTable(
-                        ["Location", "Type", "Branch", "Status"],
-                        db.locations.map((l) => [
-                            esc(l.name),
-                            tr(l.type),
-                            esc(db.branches.find((b) => b.id === l.branch_id)?.name),
-                            badge(l.active ? "Active" : "Inactive"),
-                        ]),
-                    )}
-                </section>` +
+                html`<div class="counter-cards">
+                    ${db.locations.map((l) => renderCounterCard(l, db.branches.find((b) => b.id === l.branch_id)?.name || "", badge)).join("")}
+                </div>` +
                 footer()
             );
         if (screen === "suppliers")
@@ -2430,6 +2661,7 @@ ${esc(cartNote)}</textarea>
             ["Cashier", "Cashiers"],
             ["Supervisor", "Supervisors"],
             ["Manager", "Manager"],
+            ["Accountant", "Accountant"],
             ["Store Keeper", "Store Keeper"],
             ["POS Terminal", "POS Terminal"],
             ["Supervisor", "Supervisor role"],
@@ -2725,7 +2957,7 @@ ${esc(cartNote)}</textarea>
                                             </div>
                                             <p class="form-help">
                                                 ${esc(date(o.created_at))} ·
-                                                ${esc(o.counter)}${o.table ? " · " + esc(o.table) : ""}
+                                                ${esc(o.business_unit || o.counter)}${o.table ? " · " + esc(o.table) : ""}
                                             </p>
                                             ${view.staff.role === "Cashier" ? html`<p>${tr("Waiter")}: ${esc(o.waiter)}</p>` : ""}${
                                                 o.order_note
@@ -2803,6 +3035,7 @@ ${esc(cartNote)}</textarea>
     }
     function closeModal() {
         clearMyOrders();
+        if (document.getElementById("report-filters")) history.replaceState(null, "");
         document.getElementById("modal-root").innerHTML = "";
         document.body.style.overflow = "";
         modalTrigger?.focus();
@@ -2830,7 +3063,9 @@ ${esc(cartNote)}</textarea>
         /></label>`;
     function cartPayload() {
         return {
-            stock_location_id: db.locations.find((l) => l.name === cartCounter)?.id,
+            branch_id: db.branch_id,
+            business_unit_id: db.business_unit_id,
+            stock_location_id: db.locations.find((l) => l.id === db.location_id)?.id,
             service_table_id: db.tables.find((t) => t.name === cartTable)?.id || null,
             discount: "0",
             order_note: cartNote || null,
@@ -2843,7 +3078,7 @@ ${esc(cartNote)}</textarea>
     function servingModal(draftId = null) {
         if (!draftId && !cart.length) return;
         const draft = db.orders.find((o) => o.id === draftId);
-        const counter = draft?.counter_id || db.locations.find((l) => l.name === cartCounter)?.id;
+        const counter = draft?.counter_id || db.locations.find((l) => l.id === db.location_id)?.id;
         const waiters = (db.servingWaiters || []).filter(
             (w) => w.counter_ids.includes(counter) && (!draft || w.id === draft.waiter),
         );
@@ -3077,7 +3312,8 @@ ${esc(cartNote)}</textarea>
             invoice(o.id),
             html`<div class="toolbar">
                     ${badge(o.status, statusColor(o.status))}<span style="color:var(--muted)"
-                        >${o.time} · ${o.branch} · ${o.counter}</span
+                        >${esc(o.time)} · ${esc(o.branch)} ·
+                        ${esc(db.business_units.find((u) => u.id === o.business_unit_id)?.name || "—")}${db.business_units.find((u) => u.id === o.business_unit_id)?.advanced_locations_enabled || db.business_units.find((u) => u.id === o.business_unit_id)?.default_stock_location_id !== o.counter_id ? " · " + esc(o.counter) : ""}</span
                     >
                 </div>
                 <div class="detail-row">
@@ -3185,8 +3421,19 @@ ${esc(cartNote)}</textarea>
     }
     const submitButton = (label) =>
         html`<button class="button primary" type="submit">${icon("check")}${tr(label)}</button>`;
-    function stockForm(type) {
+    async function stockForm(type) {
+        const simple = !db.operational_context?.advanced_locations_enabled;
         const locations = db.locations.map((l) => [l.id, l.name]);
+        const units = (db.pos_unit_options || db.business_units)
+            .filter((u) => u.active && (!db.branch_id || u.branch_id === db.branch_id))
+            .map((u) => [u.id, u.name]);
+        const contextSelect = (label, name, selected) =>
+            select(
+                simple ? "Business Unit" : label,
+                name,
+                simple ? units : locations,
+                simple ? db.business_unit_id : selected,
+            );
         const selectedProduct = db.products[0];
         const common =
             select("Product", "product", productOptions()) +
@@ -3200,7 +3447,7 @@ ${esc(cartNote)}</textarea>
                         "Supplier",
                         "supplier",
                         db.suppliers.map((s) => [s.id, s.name]),
-                    )}${input("Supplier invoice number (optional)", "reference", "text", "", false)}${select("Receiving location", "location", locations, db.location_id)}${input("Receipt date", "date", "date", db.date)}${common}${input(`Cost per selected unit (${currencyLabel()})`, "cost", "number", 0)}
+                    )}${input("Supplier invoice number (optional)", "reference", "text", "", false)}${contextSelect("Receiving location", "location", db.location_id)}${input("Receipt date", "date", "date", db.date)}${common}${input(`Cost per selected unit (${currencyLabel()})`, "cost", "number", 0)}
                 </div>`,
                 submitButton("Confirm receipt"),
                 false,
@@ -3210,7 +3457,7 @@ ${esc(cartNote)}</textarea>
             modal(
                 "Transfer stock",
                 html`<div class="form-grid">
-                        ${select("From location", "from", locations)}${select("To location", "to", locations, db.location_id)}${common}
+                        ${select(simple ? "From Business Unit" : "From location", "from", simple ? units : locations)}${select(simple ? "To Business Unit" : "To location", "to", simple ? units : locations, simple ? db.business_unit_id : db.location_id)}${common}
                     </div>
                     ${field("Transfer notes", "notes", html`<textarea name="notes" required minlength="8"></textarea>`)}
                     <div class="info-box">
@@ -3225,7 +3472,7 @@ ${esc(cartNote)}</textarea>
             modal(
                 "Stock adjustment request",
                 html`<div class="form-grid">
-                        ${select("Stock location", "location", locations, db.location_id)}${common}${select("Reason", "reason", ["BREAKAGE", "COMPLIMENTARY", "STAFF_CONSUMPTION", "PROMOTION", "EXPIRED", "DAMAGED", "OTHER"])}
+                        ${contextSelect("Stock location", "location", db.location_id)}${common}${select("Reason", "reason", ["BREAKAGE", "COMPLIMENTARY", "STAFF_CONSUMPTION", "PROMOTION", "EXPIRED", "DAMAGED", "OTHER"])}
                     </div>
                     ${field("Notes / justification", "notes", html`<textarea name="notes" required minlength="8"></textarea>`)}
                     <div class="info-box">
@@ -3235,9 +3482,75 @@ ${esc(cartNote)}</textarea>
                 false,
                 "adjustment",
             );
+        const form = document.querySelector(`[data-form="${type}"]`);
+        if (form) {
+            form.dataset.unitStock = simple ? "1" : "0";
+            const helper = document.createElement("p");
+            helper.className = "form-help";
+            helper.dataset.receivingContext = "";
+            form.querySelector(".modal-body").prepend(helper);
+            await updateStockProducts(form, type);
+        }
     }
-    function productForm(id) {
-        const p = product(id);
+    function stockProduct(form, id) {
+        return form.stockProducts?.find((p) => p.id === Number(id));
+    }
+    function updateStockUnit(form) {
+        const p = stockProduct(form, form.elements.product.value),
+            select = form.elements.unit;
+        select.innerHTML = (p?.units || [])
+            .map((u) => html`<option value="${esc(u[0])}">${esc(u[0])}</option>`)
+            .join("");
+    }
+    async function updateStockProducts(form, type) {
+        const location =
+            type === "transfer" ? form.elements.from.value : form.elements.location.value;
+        const sequence = (form.stockSequence || 0) + 1;
+        form.stockSequence = sequence;
+        form.stockLoading = true;
+        const submit = form.querySelector("[type=submit]");
+        submit.disabled = true;
+        try {
+            const data = await api(
+                "location-products?" +
+                    new URLSearchParams({
+                        [form.dataset.unitStock === "1" ? "business_unit_id" : "stock_location_id"]:
+                            location,
+                        purpose: type === "grn" ? "receive" : type,
+                    }),
+            );
+            if (form.stockSequence !== sequence) return;
+            form.stockProducts = data.products;
+            const current = form.elements.product.value;
+            form.elements.product.innerHTML = data.products
+                .map((p) => html`<option value="${p.id}">${esc(p.name)}</option>`)
+                .join("");
+            if (data.products.some((p) => String(p.id) === current))
+                form.elements.product.value = current;
+            updateStockUnit(form);
+            form.querySelector("[data-receiving-context]").textContent = data.location.is_shared
+                ? tr("Shared across Business Units")
+                : tr("Business Unit") + ": " + (data.location.business_unit || "");
+            if (!data.products.length)
+                form.querySelector("[data-receiving-context]").textContent +=
+                    " · " + tr("No products are available at this location.");
+            form.stockLoading = false;
+            submit.disabled = !data.products.length;
+        } catch (error) {
+            toast(error.message);
+        }
+    }
+    let productEditorMaster = null;
+    async function productForm(id) {
+        let configuration;
+        try {
+            configuration = await api("product-configuration" + (id ? "/" + id : ""));
+        } catch (error) {
+            toast(error.message);
+            return;
+        }
+        const p = configuration.product;
+        productEditorMaster = p;
         const productCategories = categories.slice(1);
         if (p?.category && !productCategories.includes(p.category))
             productCategories.push(p.category);
@@ -3245,7 +3558,7 @@ ${esc(cartNote)}</textarea>
             p ? "Edit product" : "Add product",
             html`<input name="id" type="hidden" value="${p?.id || ""}" />
                 <div class="form-grid">
-                    ${input("Product name", "name", "text", p?.name || "")}${input("SKU (optional)", "sku", "text", p?.sku || "", false)}${input("Barcode", "barcode", "text", p?.barcode || "", false)}${select("Category", "category", productCategories, p?.category)}${select(
+                    ${input("Product name", "name", "text", p?.name || "")}${input("Barcode", "barcode", "text", p?.barcode || "", false)}${select("Category", "category", productCategories, p?.category)}${select(
                         "Base unit",
                         "baseUnit",
                         db.unitRecords.map((u) => u.name),
@@ -3264,13 +3577,22 @@ ${esc(cartNote)}</textarea>
                             </div>`,
                     )}
                 </div>
+
                 <h3 style="font-size:12px;margin:5px 0 15px">Optional selling units</h3>
                 <div class="form-grid">
-                    ${input("Bucket price · 6 base units", "bucket", "number", p?.units.find((u) => u[0] === "Bucket")?.[2] || 0, false)}${input("Crate price · 24 base units", "crate", "number", p?.units.find((u) => u[0] === "Crate")?.[2] || 0, false)}
-                </div>`,
+                    ${input(tr("Bucket price · :count base units", { count: quantity(p?.units.find((u) => u[0] === "Bucket")?.[1] || 6) }), "bucket", "number", p?.units.find((u) => u[0] === "Bucket")?.[2] || 0, false)}${input(tr("Crate price · :count base units", { count: quantity(p?.units.find((u) => u[0] === "Crate")?.[1] || 24) }), "crate", "number", p?.units.find((u) => u[0] === "Crate")?.[2] || 0, false)}
+                </div>
+                <section class="product-availability-section" data-product-availability></section>`,
             submitButton("Save product"),
             false,
             "product",
+        );
+        const form = document.querySelector("[data-form=product]");
+        mountProductAvailability(
+            form,
+            configuration,
+            () => productSellingUnits(Object.fromEntries(new FormData(form)), p, db.unitRecords),
+            db.business_unit_id,
         );
     }
     let reportName = "Daily Sales";
@@ -3316,29 +3638,119 @@ ${esc(cartNote)}</textarea>
         );
     }
 
-    function openReport(name) {
+    function openReport(name, restore = false) {
+        if (!restore && history.state?.nightshiftReport !== name)
+            history.pushState({ nightshiftReport: name }, "", "#reports");
         reportName = name;
         modal(
             esc(name),
-            html`<form id="report-filters">
+            html`${
+                    name === "Business Unit Performance"
+                        ? html`<style>
+                              @page {
+                                  size: A4 landscape;
+                                  margin: 10mm;
+                              }
+                              @media print {
+                                  .modal:has(#report-content) {
+                                      width: 100% !important;
+                                      max-width: none !important;
+                                      padding: 0 !important;
+                                  }
+                                  #report-content,
+                                  .table-scroll {
+                                      overflow: visible !important;
+                                      max-width: none !important;
+                                  }
+                                  #report-content table {
+                                      min-width: 0 !important;
+                                      width: 100% !important;
+                                      table-layout: fixed;
+                                  }
+                                  #report-content th,
+                                  #report-content td {
+                                      white-space: normal !important;
+                                      overflow-wrap: anywhere;
+                                      padding: 4px !important;
+                                      font-size: 9px !important;
+                                  }
+                              }
+                          </style>`
+                        : ""
+                }
+                <form id="report-filters">
                     <div class="form-grid">
-                        ${input("Date from", "from", "date", db.date)}${input("Date to", "to", "date", db.date)}${select("Branch", "branch", ["All branches", ...db.branches.map((b) => b.name)], db.branch)}${select("Counter", "counter", [["", "All counters"], ...db.locations.filter((l) => l.type === "COUNTER").map((l) => l.name)])}${select("Waiter", "waiter", [["", "All waiters"], ...db.waiters.map((w) => [w.id, w.short])])}${select(
+                        ${select("Branch", "branch", [["", "All branches"], ...db.branches.map((b) => [b.id, b.name])], db.branch_id || "")}${select("Business Unit", "business_unit", [...(db.business_units.length > 1 ? [["", "All Business Units"]] : []), ...db.business_units.map((u) => [u.id, u.name])], db.business_unit_id || "")}${select("Counter", "counter", [["", "All counters"], ...(db.report_counters || db.locations.filter((l) => l.type === "COUNTER")).map((l) => [l.id, l.name])])}${select("Shift", "shift_id", [["", "All Shifts"]])}
+                        <div class="form-field report-shift-search">
+                            <label>${tr("Find shift")}</label
+                            ><input
+                                type="search"
+                                data-shift-search
+                                placeholder="${tr("Shift or employee")}"
+                            /><button class="button small" type="button" data-shift-more hidden>
+                                ${tr("Earlier shifts")}
+                            </button>
+                        </div>
+                        ${input("Date from", "from", "date", db.date)}${input("Date to", "to", "date", db.date)}${select("Waiter", "waiter", [["", "All waiters"], ...db.waiters.map((w) => [w.id, w.short])])}${select(
                             "Cashier",
                             "cashier",
                             [
                                 ["", "All cashiers"],
                                 ...db.team
                                     .filter((u) => u.role === "Cashier")
-                                    .map((u) => [u.name, u.name]),
+                                    .map((u) => [u.id, u.name]),
                             ],
                         )}${select("Category", "category", [["", "All categories"], ...categories.slice(1)])}${select("Product", "product", [["", "All products"], ...productOptions()])}
                     </div>
+                    <div class="report-shift-summary" data-shift-summary role="status"></div>
                 </form>
+                <p class="form-help">
+                    ${tr("Exports include all pages matching the applied filters.")}
+                </p>
+                ${["Cash Custody Balance", "Waiter Outstanding"].includes(name) ? html`<p class="form-help">${tr(name === "Cash Custody Balance" ? "Current balance includes the full custody history." : "Current balance includes the full ledger history.")}</p>` : ""}
                 <div id="report-content"></div>`,
-            `${btn("Print / PDF", "print", "", "print")}${btn("Excel export", "export-report", "primary", "download")}`,
+            `${btn("Download PDF", "pdf-report", "", "download")}${btn("Excel export", "export-report", "primary", "download")}`,
             true,
         );
-        loadReport().catch((error) => toast(error.message));
+        const supported = db.report_filters?.[name] || db.report_default_filters;
+        const fields = {
+            shift_id: "shift_id",
+            from: "from",
+            to: "to",
+            branch: "branch_id",
+            business_unit: "business_unit_id",
+            counter: "stock_location_id",
+            waiter: "waiter_id",
+            cashier: "issued_by",
+            product: "product_id",
+            category: "category_id",
+        };
+        for (const control of document.querySelectorAll(
+            "#report-filters input,#report-filters select",
+        )) {
+            if (control.name && supported && !supported.includes(fields[control.name])) {
+                control.disabled = true;
+                control.closest(".form-field").hidden = true;
+            }
+        }
+        const form = document.getElementById("report-filters");
+        const saved = JSON.parse(sessionStorage.getItem("nightshift-report:" + name) || "{}");
+        for (const [key, value] of Object.entries(saved))
+            if (form.elements.namedItem(key)) {
+                if (key === "shift_id" && value)
+                    form.elements.shift_id.add(new Option(value, value));
+                form.elements.namedItem(key).value = value;
+            }
+        if (form.elements.shift_id.disabled) {
+            form.elements.shift_id.closest(".form-field").hidden = true;
+            form.querySelector(".report-shift-search").hidden = true;
+        }
+        mountReportShifts(form, name, {
+            units: db.business_units,
+            counters: db.report_counters || db.locations,
+            change: () => loadReport().catch((error) => toast(error.message)),
+        });
+        loadReport(Number(saved.__page) || 1).catch((error) => toast(error.message));
     }
     function exportCsv(name, headers, rows) {
         const quote = (v) =>
@@ -3398,7 +3810,52 @@ ${esc(cartNote)}</textarea>
             pinField() + html`<p class="form-help">Use this PIN for login and POS confirmation.</p>`
         );
     }
-    function newBasicForm(type) {
+    const staffUnitFields = () =>
+        scopePicker(
+            "business_unit_ids",
+            "Business Units",
+            (db.staffAssignmentOptions?.units || db.business_units).map((u) => ({
+                ...u,
+                label: (db.branches.find((b) => b.id === u.branch_id)?.name || "") + " / " + u.name,
+            })),
+            "units",
+        );
+    const staffCounterFields = (kind) =>
+        scopePicker(
+            kind === "terminal" ? "terminal_counter" : "cashier_counter_ids",
+            "Counters",
+            (
+                db.staffAssignmentOptions?.counters ||
+                (kind === "terminal"
+                    ? db.terminalLocations
+                    : db.locations.filter((l) => l.type === "COUNTER"))
+            )
+                .filter(
+                    (l) =>
+                        (db.staffAssignmentOptions?.units || db.business_units).find(
+                            (u) => u.id === l.business_unit_id,
+                        )?.advanced_locations_enabled,
+                )
+                .map((l) => ({
+                    ...l,
+                    label:
+                        ((db.staffAssignmentOptions?.units || db.business_units).find(
+                            (u) => u.id === l.business_unit_id,
+                        )?.name || "") +
+                        " / " +
+                        l.name,
+                })),
+            kind,
+        );
+    async function newBasicForm(type) {
+        if (["add-user", "add-waiter"].includes(type)) {
+            try {
+                db.staffAssignmentOptions = await api("staff-assignment-options");
+            } catch (error) {
+                toast(error.message);
+                return;
+            }
+        }
         const branches = db.branches.map((b) => [b.id, b.name]);
         const configs = {
             "add-waiter": [
@@ -3409,7 +3866,8 @@ ${esc(cartNote)}</textarea>
                     input("Phone", "phone", "tel", "", false) +
                     select("Status", "active", ["Active", "Inactive"]) +
                     html`<div data-staff-credentials>${staffCredentials("Waiter")}</div>` +
-                    select("Branch", "branch", branches),
+                    select("Branch", "branch", branches) +
+                    staffUnitFields(),
                 "Add waiter",
             ],
             "add-user": [
@@ -3427,7 +3885,9 @@ ${esc(cartNote)}</textarea>
                     ) +
                     html`<div data-staff-credentials>${staffCredentials("Cashier")}</div>` +
                     select("Branch", "branch", branches) +
-                    html`<div data-terminal-counter hidden></div>`,
+                    staffUnitFields() +
+                    staffCounterFields("terminal") +
+                    staffCounterFields("cashier"),
                 "Add member",
             ],
             "add-branch": [
@@ -3442,7 +3902,23 @@ ${esc(cartNote)}</textarea>
                 "Add stock location",
                 input("Location name", "name") +
                     select("Location type", "type", ["Bar counter", "Storage"]) +
-                    select("Branch", "branch", branches),
+                    html`<div data-new-counter-limit>
+                        ${input("Maximum Active Cashiers", "max_active_cashiers", "number", 1)}
+                        <p class="form-help">
+                            ${tr("Maximum number of cashier shifts that may be open on this counter at the same time.")}
+                        </p>
+                    </div>` +
+                    select("Branch", "branch", branches) +
+                    select(
+                        "Business Unit",
+                        "business_unit_id",
+                        db.business_units.map((u) => [
+                            u.id,
+                            (db.branches.find((b) => b.id === u.branch_id)?.name || "") +
+                                " / " +
+                                u.name,
+                        ]),
+                    ),
                 "Create location",
             ],
             "add-supplier": [
@@ -3480,6 +3956,14 @@ ${esc(cartNote)}</textarea>
                 false,
                 type,
             );
+        if (type === "add-counter") {
+            const limit = document.querySelector(".modal [name=max_active_cashiers]");
+            limit.min = "1";
+            limit.max = "65535";
+            limit.step = "1";
+        }
+        if (["add-user", "add-waiter"].includes(type))
+            syncStaffScopes(document.querySelector(".modal form"));
     }
     root.addEventListener("submit", (e) => {
         if (e.target.id === "global-search") {
@@ -3579,6 +4063,7 @@ ${esc(cartNote)}</textarea>
                 return shell();
             }
             if (action === "add-cart") {
+                if (posContextLoading) return toast("Please wait for the current save to finish.");
                 const p = product(id),
                     unit = Number(
                         document.querySelector(`[data-change="unit"][data-id="${id}"]`).value,
@@ -3756,6 +4241,22 @@ ${esc(cartNote)}</textarea>
                 );
             if (action === "report") return openReport(value);
             if (action === "report-page") return loadReport(Number(value));
+            if (action === "pdf-report")
+                return downloadPdf(
+                    "/api/nightshift/reports/" +
+                        encodeURIComponent(reportName) +
+                        "/pdf?" +
+                        activeReportFilters,
+                    target,
+                );
+            if (action === "pdf-stock-history")
+                return downloadPdf(
+                    "/api/nightshift/reports/" +
+                        encodeURIComponent(value) +
+                        "/pdf?" +
+                        queryParams({ from: stockDate || db.date, to: stockDate || db.date }),
+                    target,
+                );
             if (action === "export-report") return downloadReport(reportName, activeReportFilters);
             if (action === "export-dashboard") {
                 return downloadReport("Daily Sales", queryParams());
@@ -3766,12 +4267,6 @@ ${esc(cartNote)}</textarea>
             if (action === "export-payments") {
                 return downloadReport("Payment Method Report", queryParams());
             }
-            if (action === "export-audit")
-                return exportCsv(
-                    "Audit",
-                    ["User", "Action", "Reference", "Previous", "New", "Time"],
-                    db.audit.map((a) => [a.user, a.action, a.ref, a.previous, a.next, a.time]),
-                );
             if (action === "print") return window.print();
             if (action === "receipt")
                 return window.open(`/api/nightshift/receipts/${id}`, "_blank", "noopener");
@@ -3894,23 +4389,17 @@ ${esc(cartNote)}</textarea>
             shell();
             return;
         }
-        const staffForm = e.target.closest('[data-form="add-user"]');
-        if (staffForm && ["role", "branch"].includes(e.target.name)) {
-            const container = staffForm.querySelector("[data-terminal-counter]");
-            container.hidden = staffForm.elements.role.value !== "POS Terminal";
-            container.innerHTML = container.hidden
-                ? ""
-                : select(
-                      "Counter",
-                      "terminal_counter",
-                      db.terminalLocations
-                          .filter((l) => l.branch_id === Number(staffForm.elements.branch.value))
-                          .map((l) => [l.id, l.name]),
-                  );
-        }
         if (e.target.name === "role" && e.target.closest('[data-form="add-user"]')) {
             e.target.closest("form").querySelector("[data-staff-credentials]").innerHTML =
                 staffCredentials(e.target.value);
+        }
+        const stockForm = e.target.closest(
+            '[data-form="grn"],[data-form="transfer"],[data-form="adjustment"]',
+        );
+        if (stockForm && ["location", "from", "product"].includes(e.target.name)) {
+            if (e.target.name === "product") updateStockUnit(stockForm);
+            else updateStockProducts(stockForm, stockForm.dataset.form);
+            return;
         }
         if (e.target.name === "product" && e.target.closest("[data-form]")) {
             const unit = e.target.closest("form").querySelector('[name="unit"]');
@@ -3921,19 +4410,56 @@ ${esc(cartNote)}</textarea>
             }
         }
         if (e.target.dataset.change === "stock-location") {
-            db.location_id = Number(e.target.value);
-            cartCounter = db.locations.find((l) => l.id === db.location_id)?.name || "";
-            reload().catch((error) => toast(error.message));
+            if (cart.length) {
+                toast(tr("Clear the current order before changing counter."));
+                shell();
+                return;
+            }
+            switchPosContext(() => {
+                db.location_id = Number(e.target.value);
+                cartCounter = db.locations.find((l) => l.id === db.location_id)?.name || "";
+            });
             return;
         }
 
         if (e.target.matches('[name="method[]"]')) updatePaymentRemaining();
         if (e.target.closest("#report-filters")) {
+            if (
+                ["branch", "business_unit", "counter", "shift_id"].includes(e.target.name) &&
+                !e.target.closest(".form-field").hidden &&
+                !e.target.form.elements.shift_id.disabled
+            )
+                return;
             loadReport().catch((error) => toast(error.message));
             return;
         }
         const action = e.target.dataset.change;
         const value = e.target.value;
+        if (action === "business-unit") {
+            if (cart.length) {
+                const from =
+                    db.business_units.find((u) => u.id === db.business_unit_id)?.name || "—";
+                const to = db.business_units.find((u) => u.id === Number(value))?.name || "—";
+                toast(
+                    tr(
+                        "This order already contains items from :from. Clear the current order before switching to :to.",
+                        { from, to },
+                    ),
+                );
+                shell();
+                return;
+            }
+            clearMyOrders();
+            category = "All products";
+            search = "";
+            switchPosContext(() => {
+                db.business_unit_id = value ? Number(value) : null;
+                const chosen = db.business_units.find((u) => u.id === db.business_unit_id);
+                if (chosen) db.branch_id = chosen.branch_id;
+                db.location_id = null;
+                cart = [];
+            });
+        }
         if (action === "branch") {
             selectBranch(value).catch((error) => toast(error.message));
         }
@@ -3951,9 +4477,17 @@ ${esc(cartNote)}</textarea>
             );
         if (action === "cart-table") cartTable = value;
         if (action === "cart-counter") {
-            cartCounter = value;
-            db.location_id = db.locations.find((l) => l.name === value)?.id;
-            reload().catch((error) => toast(error.message));
+            if (cart.length) {
+                toast(tr("Clear the current order before changing counter."));
+                shell();
+                return;
+            }
+            cart = [];
+            clearMyOrders();
+            switchPosContext(() => {
+                db.location_id = Number(value);
+                cartCounter = db.locations.find((l) => l.id === db.location_id)?.name || "";
+            });
         }
         if (action === "serving-waiter") {
             const form = e.target.closest("form");
@@ -4046,13 +4580,16 @@ ${esc(cartNote)}</textarea>
                 const image = form.querySelector("[name=image]").files[0];
                 if (image) payload.image = image;
             } else if (["grn", "transfer", "adjustment"].includes(type)) {
-                const p = product(data.product),
+                if (form.stockLoading)
+                    throw Error(tr("Wait for the product list to finish loading."));
+                const p = stockProduct(form, data.product),
                     unit = p.units.find((u) => u[0] === data.unit) || p.units[0],
                     line = { product_unit_id: unit[3], quantity: data.quantity };
                 if (type === "grn") {
                     command = "grn";
                     payload = {
-                        stock_location_id: Number(data.location),
+                        [form.dataset.unitStock === "1" ? "business_unit_id" : "stock_location_id"]:
+                            Number(data.location),
                         supplier_id: Number(data.supplier),
                         supplier_invoice: data.reference,
                         received_on: data.date,
@@ -4062,8 +4599,12 @@ ${esc(cartNote)}</textarea>
                     const created = await send(
                         "transfer-create",
                         {
-                            source_location_id: Number(data.from),
-                            destination_location_id: Number(data.to),
+                            [form.dataset.unitStock === "1"
+                                ? "source_business_unit_id"
+                                : "source_location_id"]: Number(data.from),
+                            [form.dataset.unitStock === "1"
+                                ? "destination_business_unit_id"
+                                : "destination_location_id"]: Number(data.to),
                             notes: data.notes,
                             items: [line],
                         },
@@ -4074,7 +4615,8 @@ ${esc(cartNote)}</textarea>
                 } else {
                     command = "adjustment-request";
                     payload = {
-                        stock_location_id: Number(data.location),
+                        [form.dataset.unitStock === "1" ? "business_unit_id" : "stock_location_id"]:
+                            Number(data.location),
                         reason: data.reason,
                         notes: data.notes,
                         items: [line],
@@ -4111,9 +4653,13 @@ ${esc(cartNote)}</textarea>
                 command = "shift-open";
                 payload = {
                     user_id: Number(data.user),
-                    stock_location_id: Number(data.counter),
+                    business_unit_id: Number(data.business_unit_id),
+                    ...(data.stock_location_id
+                        ? { stock_location_id: Number(data.stock_location_id) }
+                        : {}),
                     type: data.type,
-                    opening_cash: data.opening,
+                    opening_cash: data.opening || "0",
+                    opening_reason: data.openingReason || null,
                 };
             } else if (type === "override-shift") {
                 command = "shift-close";
@@ -4144,10 +4690,41 @@ ${esc(cartNote)}</textarea>
                 command = "catalog-location";
                 payload = {
                     name: data.name,
+                    business_unit_id: Number(data.business_unit_id),
                     type: data.type === "Storage" ? "STORE" : "COUNTER",
                     branch_id: Number(data.branch),
+                    ...(data.type !== "Storage"
+                        ? { max_active_cashiers: Number(data.max_active_cashiers) }
+                        : {}),
                 };
             } else if (type === "add-user" || type === "add-waiter") {
+                const unitSelection = [
+                    ...form.querySelectorAll('[name="business_unit_ids"]:checked:not(:disabled)'),
+                ];
+                const counterSelection = [
+                    ...form.querySelectorAll('[name="cashier_counter_ids"]:checked:not(:disabled)'),
+                ];
+                if (!unitSelection.length) return toast("Select business units");
+                if (
+                    data.role === "Cashier" &&
+                    unitSelection.some(
+                        (o) =>
+                            (db.staffAssignmentOptions?.units || db.business_units).find(
+                                (u) => u.id === Number(o.value),
+                            )?.advanced_locations_enabled,
+                    ) &&
+                    !counterSelection.length
+                )
+                    return toast("Select counters");
+                if (
+                    data.role === "POS Terminal" &&
+                    (unitSelection.length !== 1 ||
+                        ((db.staffAssignmentOptions?.units || db.business_units).find(
+                            (u) => u.id === Number(unitSelection[0]?.value),
+                        )?.advanced_locations_enabled &&
+                            !data.terminal_counter))
+                )
+                    return toast("Select one Business Unit and one Counter.");
                 command = "catalog-user";
                 payload = {
                     name: data.name,
@@ -4155,10 +4732,22 @@ ${esc(cartNote)}</textarea>
                     email: data.email,
                     pin: data.pin,
                     role: type === "add-waiter" ? "Waiter" : data.role,
+                    business_unit_ids: Array.from(
+                        form.querySelectorAll('[name="business_unit_ids"]:checked:not(:disabled)'),
+                    ).map((o) => Number(o.value)),
+                    ...(data.role === "Cashier" && counterSelection.length
+                        ? {
+                              counter_ids: Array.from(
+                                  form.querySelectorAll(
+                                      '[name="cashier_counter_ids"]:checked:not(:disabled)',
+                                  ),
+                              ).map((o) => Number(o.value)),
+                          }
+                        : {}),
                     phone: data.phone,
                     active: data.active === "Active",
                     branch_id: Number(data.branch),
-                    ...(data.role === "POS Terminal"
+                    ...(data.role === "POS Terminal" && data.terminal_counter
                         ? { stock_location_id: Number(data.terminal_counter) }
                         : {}),
                 };
@@ -4220,6 +4809,25 @@ ${esc(cartNote)}</textarea>
     });
     window.addEventListener("hashchange", () => {
         const next = location.hash.slice(1);
+
+        if (next.startsWith("shift-stock/")) {
+            if (!allowed("shifts")) {
+                toast("You do not have access to this page.");
+                return;
+            }
+
+            navigate(next);
+            return;
+        }
+
+        if (workspacePage || pageRoutes[next]) {
+            if (next) navigate(next);
+            return;
+        }
+        if (next === "pos" && allowed(next)) {
+            navigate(next);
+            return;
+        }
         if (navItems.some((n) => n[0] === next) || ["cashiers", "users"].includes(next)) {
             if (["cashiers", "users"].includes(next)) {
                 staffRole = next === "cashiers" ? "Cashier" : "";
@@ -4231,15 +4839,26 @@ ${esc(cartNote)}</textarea>
             shell();
         }
     });
+    window.addEventListener("popstate", () => {
+        if (history.state?.nightshiftReport) openReport(history.state.nightshiftReport, true);
+        else if (document.getElementById("report-filters")) closeModal();
+    });
     let activeReportFilters = new URLSearchParams(),
         historicalStock = new Map(),
         stockDate = "",
         activeReport = { headers: [], rows: [] },
         pendingRequests = 0;
     function queryParams(extra = {}) {
-        const values = { period, ...extra };
+        const values = {
+            period,
+            pos_context: screen === "pos" ? 1 : 0,
+            unit_context: screen === "inventory" ? 1 : 0,
+            ...extra,
+        };
         if (db?.branch_id) values.branch_id = db.branch_id;
         else if (db) values.all_branches = 1;
+        if (db?.business_unit_id && !("business_unit_id" in extra))
+            values.business_unit_id = db.business_unit_id;
         if (db?.location_id) values.stock_location_id = db.location_id;
         return new URLSearchParams(
             Object.entries(values).filter(([k, v]) => v !== null && v !== undefined && v !== ""),
@@ -4302,7 +4921,23 @@ ${esc(cartNote)}</textarea>
     });
     async function boot() {
         try {
-            db = normalize(await api("bootstrap"));
+            db = normalize(
+                workspacePage
+                    ? await fetch(
+                          "/api/workspace-shell?page=" +
+                              encodeURIComponent(workspacePage.dataset.workspacePage),
+                          { headers: { Accept: "application/json" }, cache: "no-store" },
+                      ).then(async (r) => {
+                          if (!r.ok) throw Error(tr("The request could not be completed."));
+                          return r.json();
+                      })
+                    : await api(
+                          "bootstrap?pos_context=" +
+                              (screen === "pos" ? "1" : "0") +
+                              "&unit_context=" +
+                              (screen === "inventory" ? "1" : "0"),
+                      ),
+            );
             cartCounter = db.locations.find((l) => l.id === db.location_id)?.name || "";
             cartTable = db.tables[0]?.name || "Takeaway";
             shell();
@@ -4314,20 +4949,67 @@ ${esc(cartNote)}</textarea>
             </div>`;
         }
     }
+    window.addEventListener("nightshift:counter-saving", () => counterRevision++);
+    window.addEventListener("nightshift:counter-updated", (event) => {
+        counterRevision++;
+        const next = event.detail;
+        if (db)
+            db.locations = db.locations.map((location) =>
+                location.id === next.id ? next : location,
+            );
+    });
+    async function switchPosContext(update, load = reload) {
+        if (posContextLoading) return;
+        const oldDb = db;
+        const previous = {
+            branch_id: db.branch_id,
+            business_unit_id: db.business_unit_id,
+            location_id: db.location_id,
+        };
+        posContextLoading = true;
+        try {
+            update();
+            await load();
+        } catch (error) {
+            db = oldDb;
+            Object.assign(db, previous);
+            toast(error.message);
+        } finally {
+            posContextLoading = false;
+            shell();
+        }
+    }
     async function reload() {
         historicalStock.clear();
-        db = normalize(await api("bootstrap?" + queryParams()));
+        const version = counterRevision;
+        const fresh = await api("bootstrap?" + queryParams());
+        if (version !== counterRevision) return;
+        db = normalize(fresh);
+        cartCounter = db.locations.find((l) => l.id === db.location_id)?.name || "";
         shell();
     }
     async function selectBranch(name) {
+        if (cart.length) {
+            toast(tr("Clear the current order before changing branch."));
+            shell();
+            return;
+        }
+        clearMyOrders();
         const branch = db.branches.find((b) => b.name === name);
         const params = new URLSearchParams({
             period,
+            pos_context: screen === "pos" ? 1 : 0,
+            unit_context: screen === "inventory" ? 1 : 0,
             ...(branch ? { branch_id: branch.id } : { all_branches: 1 }),
         });
-        db = normalize(await api("bootstrap?" + params));
-        cartCounter = db.locations.find((l) => l.id === db.location_id)?.name || "";
-        shell();
+        await switchPosContext(
+            () => {},
+            async () => {
+                db = normalize(await api("bootstrap?" + params));
+                cartCounter = db.locations.find((l) => l.id === db.location_id)?.name || "";
+                cartTable = db.tables[0]?.name || "Takeaway";
+            },
+        );
     }
     async function send(command, payload, element = { dataset: {} }) {
         const { pin, ...safePayload } = payload;
@@ -4483,9 +5165,10 @@ ${esc(cartNote)}</textarea>
                   ")"
             : "var(--panel2)";
     }
-    function downloadReport(name, params) {
+    function downloadReport(name, params, format = "export") {
         const link = document.createElement("a");
-        link.href = "/api/nightshift/reports/" + encodeURIComponent(name) + "/export?" + params;
+        link.href =
+            "/api/nightshift/reports/" + encodeURIComponent(name) + "/" + format + "?" + params;
         link.click();
     }
     function historicalStockView(name) {
@@ -4513,7 +5196,7 @@ ${esc(cartNote)}</textarea>
                         type="date"
                         data-change="stock-date"
                         value="${esc(date)}" /></label
-                >${btn("Full report", "report", "", "chart", `data-value="${name}"`)}
+                >${btn("Full report", "report", "", "chart", `data-value="${name}"`)}${btn("Download PDF", "pdf-stock-history", "", "download", `data-value="${name}" ${!result || result.error ? "disabled" : ""}`)}
             </div>
             <section class="panel">
                 ${
@@ -4531,30 +5214,60 @@ ${esc(cartNote)}</textarea>
     async function getReport(name, filters = {}) {
         return api("reports/" + encodeURIComponent(name) + "?" + queryParams(filters));
     }
+    let reportRequestSequence = 0;
     async function loadReport(page = 1) {
+        const sequence = ++reportRequestSequence;
+        const exportButtons = [
+            ...document.querySelectorAll(
+                '[data-action="pdf-report"],[data-action="export-report"]',
+            ),
+        ];
+        exportButtons.forEach((b) => (b.disabled = true));
         const fields = reportFilters();
-        const branch = db.branches.find((b) => b.name === fields.branch),
-            counter = db.locations.find((l) => l.name === fields.counter),
+        const form = document.getElementById("report-filters");
+        const saved = Object.fromEntries(
+            [...form.elements].filter((e) => e.name).map((e) => [e.name, e.value]),
+        );
+        saved.__page = page;
+        sessionStorage.setItem("nightshift-report:" + reportName, JSON.stringify(saved));
+        const branch = db.branches.find((b) => b.id === Number(fields.branch)),
+            counter = (db.report_counters || db.locations).find(
+                (l) => l.id === Number(fields.counter),
+            ),
             categoryRecord = db.categoryRecords.find((c) => c.name === fields.category);
         const filters = {
             page,
-            from: fields.from,
-            to: fields.to,
+            from: fields.from || fields.to,
+            to: fields.to || fields.from,
             branch_id: branch?.id || "",
+            business_unit_id: fields.business_unit || "",
             waiter_id: fields.waiter,
             stock_location_id: counter?.id || "",
             category_id: categoryRecord?.id || "",
             product_id: fields.product,
-            issued_by: db.team.find((u) => u.name === fields.cashier)?.id || "",
+            issued_by: fields.cashier || "",
+            shift_id: fields.shift_id || "",
         };
         const params = new URLSearchParams(Object.entries(filters).filter(([k, v]) => v));
+        const requestedName = reportName;
+        const result = await api("reports/" + encodeURIComponent(requestedName) + "?" + params);
+        if (requestedName !== reportName || sequence !== reportRequestSequence) return;
+        activeReport = result;
         activeReportFilters = params;
-        activeReport = await api("reports/" + encodeURIComponent(reportName) + "?" + params);
         const content = document.getElementById("report-content");
         if (content) content.innerHTML = reportContents();
+        exportButtons.forEach((b) => (b.disabled = false));
     }
     function shiftOpenModal() {
-        const users = permitted("manage-users") ? db.team : [db.user];
+        const users = permitted("manage-users")
+            ? db.team.filter(
+                  (u) =>
+                      u.active &&
+                      ["Cashier", "Manager", "Company Admin / Owner", "Super Admin"].includes(
+                          u.role,
+                      ),
+              )
+            : [db.user];
         modal(
             "Open shift",
             html`<div class="form-grid">
@@ -4563,40 +5276,56 @@ ${esc(cartNote)}</textarea>
                     "user",
                     users.map((u) => [u.id, u.name]),
                     db.user.id,
-                )}${select(
-                    "Counter",
-                    "counter",
-                    (db.shiftLocations?.length ? db.shiftLocations : db.locations)
-                        .filter((l) => l.type === "COUNTER")
-                        .map((l) => [l.id, l.name]),
-                    db.location_id,
-                )}${select("Shift type", "type", ["CASHIER", "WAITER"], permitted("issue-drinks") ? "CASHIER" : "WAITER")}${input(`Opening cash (${currencyLabel()})`, "opening", "number", 0)}
+                )}${field(
+                    "Business Unit",
+                    "business_unit_id",
+                    `<select name="business_unit_id" required data-shift-unit>${db.business_units
+                        .filter((u) => u.active)
+                        .map(
+                            (u) =>
+                                `<option value="${u.id}" data-advanced="${u.advanced_locations_enabled ? "1" : "0"}" data-active-cashiers="${u.active_cashiers || 0}" data-max-active-cashiers="${u.max_active_cashiers}" ${u.id === db.business_unit_id ? "selected" : ""}>${esc(u.name)}</option>`,
+                        )
+                        .join("")}</select>`,
+                )}${html`<label class="form-field" data-advanced-shift-location hidden
+                    ><span>${tr("Stock Locations")}</span
+                    ><select name="stock_location_id" disabled>
+                        ${(db.shiftLocations?.length ? db.shiftLocations : db.locations)
+                            .filter((l) => l.type === "COUNTER" && l.active)
+                            .map(
+                                (l) =>
+                                    `<option value="${l.id}" data-unit="${l.business_unit_id}" data-active-cashiers="${l.active_cashiers || 0}" data-max-active-cashiers="${l.max_active_cashiers}">${esc(l.name)}</option>`,
+                            )
+                            .join("")}
+                    </select></label
+                >`}${select("Shift type", "type", ["CASHIER", "WAITER"], permitted("issue-drinks") ? "CASHIER" : "WAITER")}${permitted("authorize-opening-cash") ? input(`Opening cash (${currencyLabel()})`, "opening", "number", 0) + input("Opening cash reason", "openingReason") : `<p>${tr("Opening cash defaults to zero. Confirmed handover cash is applied automatically.")}</p>`}
             </div>`,
             submitButton("Open shift"),
             false,
             "open-shift",
         );
+        const form = document.querySelector("[data-form=open-shift]");
+        form.dataset.shiftCapacity = "CASHIER";
+        const info = document.createElement("p");
+        info.dataset.cashierOccupancy = "";
+        info.setAttribute("role", "status");
+        form.querySelector(".modal-body").append(info);
+        const message = document.createElement("p");
+        message.dataset.cashierCapacityMessage = "";
+        message.className = "form-help";
+        form.querySelector(".modal-body").append(message);
+        updateCashierOccupancy(form);
     }
     function shiftCloseModal() {
         if (!db.shift.active) return toast("You do not have an open cashier shift.");
-        location.href = `/shift-stock/${db.shift.id}`;
+        navigate(`shift-stock/${db.shift.id}`);
     }
     function productPayload(data) {
         const categoryRecord = db.categoryRecords.find((c) => c.name === data.category),
             base = db.unitRecords.find((u) => u.name === data.baseUnit),
-            existing = product(data.id);
-        const unitName =
-            existing?.units[0]?.[0] || (data.baseUnit === "Bottle" ? "Piece" : data.baseUnit);
-        const unit = db.unitRecords.find((u) => u.name === unitName) || base;
-        const units = [{ unit_id: unit?.id, conversion_quantity: "1", selling_price: data.price }];
-        for (const [name, key, qty] of [
-            ["Bucket", "bucket", "6"],
-            ["Crate", "crate", "24"],
-        ])
-            if (Number(data[key]) > 0) {
-                const u = db.unitRecords.find((u) => u.name === name);
-                units.push({ unit_id: u?.id, conversion_quantity: qty, selling_price: data[key] });
-            }
+            existing = productEditorMaster;
+        const units = productSellingUnits(data, existing, db.unitRecords).map(
+            ({ name, ...unit }) => unit,
+        );
         return {
             id: data.id ? Number(data.id) : null,
             name: data.name,
@@ -4608,17 +5337,10 @@ ${esc(cartNote)}</textarea>
             minimum_stock: data.min,
             active: data.active === "Active",
             units,
+            business_units: productAvailabilityPayload(
+                document.querySelector("[data-form=product]"),
+            ),
         };
     }
-    setInterval(() => {
-        if (
-            db &&
-            !pendingRequests &&
-            !document.querySelector(".modal") &&
-            !document.querySelector("input:focus,select:focus,textarea:focus")
-        )
-            reload().catch(() => {});
-    }, 30000);
-
     boot();
 }

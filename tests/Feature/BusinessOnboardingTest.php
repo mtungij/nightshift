@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Domain\TenantContext;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\Category;
 use App\Models\Permission;
 use App\Models\Role;
@@ -48,7 +49,7 @@ class BusinessOnboardingTest extends TestCase
         $this->post('/register-business', $this->details())->assertSessionHasNoErrors()->assertRedirect('/dashboard#setup');
         $owner = User::where('email', 'one@owner.test')->firstOrFail();
         $this->assertAuthenticatedAs($owner);
-        foreach (['companies' => 1, 'users' => 1, 'branches' => 1, 'stock_locations' => 2, 'categories' => 20, 'units' => count(config('business.units'))] as $table => $count) {
+        foreach (['companies' => 1, 'users' => 1, 'branches' => 1, 'stock_locations' => 0, 'categories' => 20, 'units' => count(config('business.units'))] as $table => $count) {
             $this->assertDatabaseCount($table, $count);
         }
         $this->assertSame('Company Admin / Owner', $owner->role->name);
@@ -65,10 +66,14 @@ class BusinessOnboardingTest extends TestCase
         $this->assertSame('trial', $company->subscription_status);
         $this->assertDatabaseHas('branches', ['company_id' => $company->id, 'name' => 'Main Branch', 'code' => 'MAIN', 'active' => true]);
         $branch = Branch::firstOrFail();
-        $this->assertDatabaseHas('branch_user', ['company_id' => $company->id, 'branch_id' => $branch->id, 'user_id' => $owner->id]);
-        foreach (['Main Store' => 'STORE', 'Main Counter' => 'COUNTER'] as $name => $type) {
-            $this->assertDatabaseHas('stock_locations', ['company_id' => $company->id, 'branch_id' => $branch->id, 'name' => $name, 'type' => $type]);
-        }
+        $this->assertDatabaseHas('branch_user', [
+            'company_id' => $company->id,
+            'branch_id' => $branch->id,
+            'user_id' => $owner->id,
+        ]);
+
+        $this->assertDatabaseCount('business_units', 0);
+        $this->assertDatabaseCount('stock_locations', 0);
         $this->assertSame(config('business.categories'), Category::orderBy('sort_order')->pluck('name')->all());
         $this->assertSame(config('business.units'), Unit::orderBy('id')->pluck('name')->all());
         $this->assertSame(20, Category::where('active', true)->count());
@@ -89,7 +94,7 @@ class BusinessOnboardingTest extends TestCase
         $this->assertSame(20, Category::count());
         $this->assertSame(count(config('business.units')), Unit::count());
         $this->assertSame(1, Branch::count());
-        $this->assertSame(2, StockLocation::count());
+        $this->assertSame(0, StockLocation::count());
         $this->assertSame(2, Category::where('active', true)->count());
         $this->assertSame('#123456', Category::where('name', 'Craft beer')->firstOrFail()->color);
         $this->assertFalse(Category::where('name', 'Beer')->exists());
@@ -142,7 +147,8 @@ class BusinessOnboardingTest extends TestCase
                 $this->assertDatabaseCount('companies', 1);
                 $this->assertDatabaseCount('users', 1);
                 $this->assertDatabaseCount('branches', 1);
-                $this->assertDatabaseCount('stock_locations', 2);
+                $this->assertDatabaseCount('business_units', 0);
+                $this->assertDatabaseCount('stock_locations', 0);
                 throw new \RuntimeException('Simulated default failure');
             }
         });
@@ -156,7 +162,7 @@ class BusinessOnboardingTest extends TestCase
         } finally {
             Category::setEventDispatcher($events);
         }
-        foreach (['companies', 'users', 'branches', 'stock_locations', 'categories', 'units', 'branch_user', 'audit_logs'] as $table) {
+        foreach (['companies', 'users', 'branches', 'business_units', 'stock_locations', 'categories', 'units', 'branch_user', 'audit_logs'] as $table) {
             $this->assertDatabaseCount($table, 0);
         }
         $this->assertSame([], Storage::disk('local')->allFiles('business-logos'));
@@ -168,6 +174,16 @@ class BusinessOnboardingTest extends TestCase
         $before = DB::table('companies')->where('id', $a->company_id)->first();
         $aCategory = app(TenantContext::class)->run($a, fn () => Category::firstOrFail());
         $aBranch = app(TenantContext::class)->run($a, fn () => Branch::firstOrFail());
+
+        $aUnit = app(TenantContext::class)->run($a, function () use ($aBranch) {
+            return BusinessUnit::create([
+                'branch_id' => $aBranch->id,
+                'name' => 'Tenant A Operations',
+                'code' => 'TENANT-A-OPS',
+                'active' => true,
+            ]);
+        });
+
         $b = $this->owner('b');
         $this->assertEquals($before, DB::table('companies')->where('id', $a->company_id)->first());
         foreach ([$a, $b] as $owner) {
@@ -175,7 +191,15 @@ class BusinessOnboardingTest extends TestCase
                 $this->assertSame(20, Category::count());
                 $this->assertSame(count(config('business.units')), Unit::count());
                 $this->assertSame([$owner->company_id], Category::distinct()->pluck('company_id')->all());
-                $this->assertSame([$owner->company_id], StockLocation::distinct()->pluck('company_id')->all());
+
+                $locationCompanies = StockLocation::distinct()
+                    ->pluck('company_id')
+                    ->all();
+
+                $this->assertTrue(
+                    $locationCompanies === [] ||
+                    $locationCompanies === [$owner->company_id]
+                );
             });
         }
         $this->actingAs($b);
@@ -185,7 +209,15 @@ class BusinessOnboardingTest extends TestCase
         $this->command('catalog-category', ['id' => $aCategory->id, 'name' => 'Foreign edit'])->assertNotFound();
         $this->command('catalog-branch', ['id' => $aBranch->id, 'name' => 'Foreign branch'])->assertNotFound();
         $this->command('catalog-category-order', ['ids' => [$aCategory->id]])->assertNotFound();
-        $this->command('catalog-user', ['name' => 'Foreign staff', 'email' => 'foreign@staff.test', 'password' => 'Nightshift!2026', 'pin' => '0123', 'role' => 'Cashier', 'branch_id' => $aBranch->id])->assertNotFound();
+        $this->command('catalog-user', [
+            'name' => 'Foreign staff',
+            'email' => 'foreign@staff.test',
+            'password' => 'Nightshift!2026',
+            'pin' => '0123',
+            'role' => 'Cashier',
+            'branch_id' => $aBranch->id,
+            'business_unit_ids' => [$aUnit->id],
+        ])->assertNotFound();
         $this->assertDatabaseMissing('users', ['email' => 'foreign@staff.test']);
         $this->assertDatabaseHas('categories', ['id' => $aCategory->id, 'name' => 'Beer']);
     }
@@ -231,10 +263,18 @@ class BusinessOnboardingTest extends TestCase
         $owner = $this->owner();
         $this->actingAs($owner);
         $branch = Branch::firstOrFail();
+
+        $unit = app(\App\Services\BusinessUnitService::class)->save([
+            'branch_id' => $branch->id,
+            'name' => 'Operations',
+            'code' => 'OPERATIONS',
+            'active' => true,
+        ]);
+
         foreach (['Cashier', 'Waiter', 'Manager', 'Supervisor', 'Store Keeper'] as $role) {
             $email = str_replace(' ', '', strtolower($role)).'@staff.test';
             $this->actingAs($owner);
-            $this->command('catalog-user', ['name' => $role, 'email' => $email, 'phone' => '+255700000003', 'password' => 'Nightshift!2026', 'pin' => '0123', 'role' => $role, 'branch_id' => $branch->id, 'active' => true])->assertOk();
+            $this->command('catalog-user', ['name' => $role, 'email' => $email, 'phone' => '+255700000003', 'password' => 'Nightshift!2026', 'pin' => '0123', 'role' => $role, 'branch_id' => $branch->id, 'business_unit_ids' => [$unit->id], 'active' => true])->assertOk();
             $staff = User::where('email', $email)->firstOrFail();
             $this->assertSame($owner->company_id, $staff->company_id);
             $this->assertSame($role, $staff->role->name);
@@ -246,24 +286,44 @@ class BusinessOnboardingTest extends TestCase
             if (in_array($role, ['Cashier', 'Waiter'])) {
                 $counter = StockLocation::where('type', 'COUNTER')->firstOrFail();
                 $payload = ['stock_location_id' => $counter->id];
-                if ($role === 'Cashier') {
-                    $payload['opening_cash'] = '0';
-                }
                 $this->post('/open-shift', $payload)->assertSessionHasNoErrors()->assertRedirect('/dashboard#'.($role === 'Waiter' ? 'pos' : 'waiters'));
             }
             $this->get('/dashboard')->assertOk();
             if (in_array($role, ['Cashier', 'Waiter'])) {
                 $this->get('/settings/business')->assertForbidden();
                 $this->command('catalog-category', ['name' => 'Forbidden'])->assertForbidden();
-                $this->command('catalog-user', ['name' => 'Escalate', 'email' => 'bad@staff.test', 'pin' => '0123', 'role' => 'Manager', 'branch_id' => $branch->id])->assertForbidden();
+                $this->command('catalog-user', [
+                    'name' => 'Escalate',
+                    'email' => 'bad@staff.test',
+                    'pin' => '0123',
+                    'role' => 'Manager',
+                    'branch_id' => $branch->id,
+                    'business_unit_ids' => [$unit->id],
+                ])->assertForbidden();
             }
         }
         $this->actingAs($owner);
         foreach (['Super Admin', 'Company Admin / Owner'] as $role) {
-            $this->command('catalog-user', ['name' => 'Escalate', 'email' => 'bad@staff.test', 'password' => 'Nightshift!2026', 'role' => $role, 'branch_id' => $branch->id])->assertUnprocessable();
+            $this->command('catalog-user', [
+                'name' => 'Escalate',
+                'email' => 'bad@staff.test',
+                'password' => 'Nightshift!2026',
+                'role' => $role,
+                'branch_id' => $branch->id,
+                'business_unit_ids' => [$unit->id],
+            ])->assertUnprocessable();
         }
         $this->assertDatabaseMissing('users', ['email' => 'bad@staff.test']);
-        $this->command('catalog-user', ['name' => 'Inactive', 'email' => 'inactive@staff.test', 'password' => 'Nightshift!2026', 'pin' => '0123', 'role' => 'Cashier', 'branch_id' => $branch->id, 'active' => false])->assertOk();
+        $this->command('catalog-user', [
+            'name' => 'Inactive',
+            'email' => 'inactive@staff.test',
+            'password' => 'Nightshift!2026',
+            'pin' => '0123',
+            'role' => 'Cashier',
+            'branch_id' => $branch->id,
+            'business_unit_ids' => [$unit->id],
+            'active' => false,
+        ])->assertOk();
         $this->actingAs(User::where('email', 'inactive@staff.test')->firstOrFail())->get('/dashboard')->assertForbidden();
     }
 

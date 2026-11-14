@@ -27,7 +27,30 @@ class StaffCreationPinTest extends TestCase
 
     private function payload(string $role = 'Waiter'): array
     {
-        return ['idempotency_key' => (string) Str::uuid(), 'name' => 'New staff', 'email' => 'newstaff@test.example', 'branch_id' => Branch::firstOrFail()->id, 'role' => $role, ...($role === 'POS Terminal' ? ['stock_location_id' => StockLocation::where('type', 'COUNTER')->firstOrFail()->id] : [])];
+        $branch = Branch::firstOrFail();
+
+        $businessUnitId = \App\Models\BusinessUnit::where('branch_id', $branch->id)
+            ->where('active', true)
+            ->firstOrFail()
+            ->id;
+
+        return [
+            'idempotency_key' => (string) Str::uuid(),
+            'name' => 'New staff',
+            'email' => 'newstaff@test.example',
+            'branch_id' => $branch->id,
+            'business_unit_ids' => [$businessUnitId],
+            'role' => $role,
+            ...($role === 'POS Terminal'
+                ? [
+                    'stock_location_id' => StockLocation::where('type', 'COUNTER')
+                        ->where('business_unit_id', $businessUnitId)
+                        ->where('active', true)
+                        ->firstOrFail()
+                        ->id,
+                ]
+                : []),
+        ];
     }
 
     public function test_operational_staff_require_pin_and_generate_private_password_atomically(): void

@@ -155,14 +155,12 @@ class WaiterPinWorkflowTest extends TestCase
         $shift = Shift::where('user_id', $this->waiter->id)->where('status', 'OPEN')->firstOrFail();
         $shift->update(['status' => 'CLOSED']);
         $this->command('order-send', $this->payload())->assertUnprocessable();
-        $shift->update(['status' => 'OPEN']);
         $other = StockLocation::where('name', 'VIP Counter')->firstOrFail();
         $this->command('order-send', [...$this->payload(), 'stock_location_id' => $other->id])->assertUnprocessable();
     }
 
-    public function test_send_issues_stock_and_ledger_without_a_cashier_confirmation_or_open_cashier_shift(): void
+    public function test_send_issues_stock_and_ledger_in_current_cashier_operation_without_confirmation(): void
     {
-        Shift::where('type', 'CASHIER')->update(['status' => 'CLOSED']);
         $before = $this->quantity();
         $balance = app(WaiterLedgerService::class)->balance($this->waiter->id);
         $this->actingAs($this->waiter);
@@ -173,7 +171,7 @@ class WaiterPinWorkflowTest extends TestCase
         $this->assertSame(1, WaiterLedgerEntry::where('order_id', $order->id)->where('entry_type', 'ISSUE')->count());
         $this->assertSame(bcadd($balance, $order->total, 2), app(WaiterLedgerService::class)->balance($this->waiter->id));
         $this->assertSame($this->waiter->id, $order->waiter_id);
-        $this->assertSame($order->shift_id, $order->issued_shift_id);
+        $this->assertSame(Shift::where('type', 'CASHIER')->where('stock_location_id', $this->counter->id)->where('status', 'OPEN')->firstOrFail()->id, $order->issued_shift_id);
         $this->assertSame($this->counter->id, $order->stock_location_id);
         $this->assertNotNull($order->issued_at);
     }
@@ -242,7 +240,7 @@ class WaiterPinWorkflowTest extends TestCase
     {
         $this->actingAs($this->waiter);
         $shift = Shift::where('user_id', $this->waiter->id)->where('status', 'OPEN')->firstOrFail();
-        $this->command('shift-close', ['id' => $shift->id])->assertForbidden();
+        $this->command('shift-close', ['id' => $shift->id])->assertUnprocessable();
         $this->command('waiter-payment', ['waiter_id' => $this->waiter->id, 'stock_location_id' => $this->counter->id, 'method' => 'Cash', 'amount' => '1'])->assertForbidden();
         $this->assertSame('OPEN', $shift->fresh()->status);
     }

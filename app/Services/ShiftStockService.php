@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Domain\Decimal as D;
 use App\Domain\TenantContext;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Product;
@@ -15,6 +16,8 @@ use App\Models\Stock;
 use App\Models\StockLocation;
 use App\Models\StockMovement;
 use App\Models\User;
+use App\Models\WaiterLedgerEntry;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 
 final class ShiftStockService
@@ -41,7 +44,7 @@ final class ShiftStockService
 
     private function cursor(int $location): int
     {
-        return (int) (StockMovement::where('stock_location_id', $location)->orderByDesc('id')->lockForUpdate()->first()->id ?? 0);
+        return (int) (StockMovement::withoutGlobalScopes()->where('company_id', app(TenantContext::class)->companyId())->where('stock_location_id', $location)->orderByDesc('id')->lockForUpdate()->first()->id ?? 0);
     }
 
     /** @return array<string, mixed> */
@@ -79,7 +82,10 @@ final class ShiftStockService
     public function report(int $id): array
     {
         return $this->tx->run(function () use ($id) {
-            $report = $this->build($this->accessible($id));
+            $shift = $this->accessible($id);
+            $report = $this->build($shift);
+            $handover = app(CashHandoverService::class)->active($shift);
+            $report['custody'] = $handover ? app(CashHandoverService::class)->present($handover) : null;
             $user = app(TenantContext::class)->user();
             if (! $user->hasPermission('manage-inventory') && ! $user->hasPermission('view-reports')) {
                 foreach ($report['rows'] as &$row) {
@@ -105,7 +111,7 @@ final class ShiftStockService
         foreach ($opening->data['lines'] as $line) {
             $rows[$line['product_id']] = $line + ['added' => '0.000000', 'out' => '0.000000', 'system_sold' => '0.000000', 'returns' => '0.000000'];
         }
-        $movements = StockMovement::where('stock_location_id', $shift->stock_location_id)->where('id', '>', $opening->data['cursor'])->orderBy('id')->lockForUpdate()->get();
+        $movements = StockMovement::withoutGlobalScopes()->where('company_id', $shift->company_id)->where('stock_location_id', $shift->stock_location_id)->where('id', '>', $opening->data['cursor'])->orderBy('id')->lockForUpdate()->get();
         foreach ($movements as $m) {
             if (! isset($rows[$m->product_id])) {
                 $p = Product::with(['category', 'baseUnit', 'sellingUnits.unit'])->findOrFail($m->product_id);
@@ -124,7 +130,9 @@ final class ShiftStockService
             unset($r);
         }
         $cursor = $movements->last()->id ?? $opening->data['cursor'];
-        $basis = hash_hmac('sha256', json_encode([$cursor, $rows], JSON_THROW_ON_ERROR), config('app.key'));
+        $sessions = Shift::where('stock_location_id', $shift->stock_location_id)->where('type', 'WAITER')->where('opened_at', '>=', $shift->opened_at)->orderBy('id')->get(['id', 'status', 'opened_at', 'closed_at'])->toArray();
+        $receipts = Payment::where('shift_id', $shift->id)->orderBy('id')->get(['id', 'amount'])->toArray();
+        $basis = hash_hmac('sha256', json_encode([$cursor, $rows, $sessions, $receipts], JSON_THROW_ON_ERROR), config('app.key'));
         $stale = $count && $count->basis !== $basis;
         $totals = ['sales_value' => '0.00', 'system_sales_value' => '0.00', 'variance_value' => '0.00', 'cost_variance_value' => '0.00', 'variance_count' => 0, 'ledger_mismatches' => 0];
         $currentStock = Stock::where('stock_location_id', $shift->stock_location_id)->orderBy('product_id')->lockForUpdate()->get()->keyBy('product_id');
@@ -141,14 +149,17 @@ final class ShiftStockService
             $r['physical'] = $count?->data['counts'][(string) $pid] ?? null;
             $r['variance'] = $r['physical'] === null ? null : D::sub($r['physical'], $r['expected'], 6);
             $r['physical_sold'] = $r['physical'] === null ? null : D::sub($r['total_available'], $r['physical'], 6);
-            $r['sales_value'] = $r['physical_sold'] === null ? null : D::mul($r['physical_sold'], $r['price']);
+            $r['sales_value'] = D::mul(
+                D::sub($r['system_sold'], $r['returns'], 6),
+                $r['price']
+            );
             $absolute = $r['variance'] === null ? '0' : ltrim($r['variance'], '-');
             $r['variance_value'] = D::mul($absolute, $r['price']);
             $r['cost_variance_value'] = D::mul($absolute, $r['cost']);
             $r['status'] = $r['variance'] === null ? 'Not counted' : (D::cmp($r['variance'], '0') === 0 ? 'Balanced' : (D::cmp($r['variance'], '0') < 0 ? 'Short' : 'Over'));
             $complete = $complete && $r['physical'] !== null;
-            $totals['sales_value'] = D::add($totals['sales_value'], $r['sales_value'] ?? '0');
-            $totals['system_sales_value'] = D::add($totals['system_sales_value'], D::mul(D::sub($r['system_sold'], $r['returns'], 6), $r['price']));
+            $totals['sales_value'] = D::add($totals['sales_value'], $r['sales_value']);
+            $totals['system_sales_value'] = D::add($totals['system_sales_value'], $r['sales_value']);
             $totals['variance_value'] = D::add($totals['variance_value'], $r['variance_value']);
             $totals['cost_variance_value'] = D::add($totals['cost_variance_value'], $r['cost_variance_value']);
             if ($r['variance'] !== null && D::cmp($r['variance'], '0') !== 0) {
@@ -159,7 +170,7 @@ final class ShiftStockService
         $actor = app(TenantContext::class)->user();
         $approved = $count && ! $stale && $count->approved_by !== null;
 
-        return ['shift_id' => $shift->id, 'number' => $shift->number, 'company' => $actor->company->name, 'branch' => Branch::findOrFail($shift->branch_id)->name, 'counter' => StockLocation::findOrFail($shift->stock_location_id)->name, 'opened_by' => User::where('company_id', $shift->company_id)->findOrFail($opening->user_id)->name, 'cashier' => User::where('company_id', $shift->company_id)->findOrFail($shift->user_id)->name, 'opened_at' => $shift->opened_at->toIso8601String(), 'status' => $shift->status,
+        return ['business_unit' => BusinessUnit::withoutGlobalScopes()->where('company_id', $shift->company_id)->whereKey($shift->business_unit_id)->value('name'), 'show_location' => app(UnitOperationalService::class)->showLocation($shift->company_id, $shift->business_unit_id, $shift->stock_location_id), 'shift_id' => $shift->id, 'number' => $shift->number, 'company' => $actor->company->name, 'branch' => Branch::findOrFail($shift->branch_id)->name, 'counter' => StockLocation::withoutGlobalScopes()->where('company_id', $shift->company_id)->findOrFail($shift->stock_location_id)->name, 'opened_by' => User::where('company_id', $shift->company_id)->findOrFail($opening->user_id)->name, 'cashier_user_id' => $shift->user_id, 'cashier' => User::where('company_id', $shift->company_id)->findOrFail($shift->user_id)->name, 'opened_at' => $shift->opened_at->toIso8601String(), 'operating_date' => $shift->operating_date, 'duration_minutes' => (int) $shift->opened_at->diffInMinutes($shift->closed_at ?? now()), 'waiters' => Shift::where(fn ($q) => $q->where('cashier_shift_id', $shift->id)->orWhereIn('id', Order::where('issued_shift_id', $shift->id)->select('shift_id')))->where('type', 'WAITER')->get()->map(fn ($s) => ['shift_id' => $s->id, 'name' => User::where('company_id', $shift->company_id)->findOrFail($s->user_id)->name, 'opened_at' => $s->opened_at->toIso8601String(), 'closed_at' => $s->closed_at?->toIso8601String()])->all(), 'blockers' => app(ShiftService::class)->blockers($shift), 'total_sales' => D::money((string) Order::where('issued_shift_id', $shift->id)->whereNotIn('status', ['VOIDED', 'CANCELLED'])->sum(DB::raw('total - return_total'))), 'status' => $shift->status,
             'rows' => array_values($rows), 'basis' => $basis, 'revision' => $count->revision ?? 0, 'stale' => (bool) $stale, 'complete' => $complete && (bool) $count && ! $stale, 'approved' => (bool) $approved, 'approved_by' => $count?->approved_by, 'approved_name' => $count?->approved_by ? User::where('company_id', $shift->company_id)->findOrFail($count->approved_by)->name : null, 'approved_at' => $count?->approved_at?->toIso8601String(), 'approval_note' => $count?->approval_note, 'reason' => $count?->reason, 'counted_at' => $count?->data['counted_at'] ?? null, 'entered_by' => $count?->user_id, 'entered_name' => $count ? User::where('company_id', $shift->company_id)->findOrFail($count->user_id)->name : null,
             'can_edit' => $shift->status === 'OPEN' && $actor->hasPermission('close-shifts') && ($actor->id === $shift->user_id || $actor->hasPermission('manage-users')), 'can_approve' => $shift->status === 'OPEN' && $actor->hasPermission('override-shifts') && $actor->hasPermission('view-staff-operations'),
             'totals' => $totals, 'cash' => $this->cash($shift), 'captured_at' => now()->toIso8601String()];
@@ -180,7 +191,11 @@ final class ShiftStockService
             $outstanding = D::add($outstanding, $order->balance);
         }
 
-        return ['opening' => $shift->opening_cash, 'methods' => $methods, 'expected' => D::add($shift->opening_cash, $methods['Cash']['net'] ?? '0'), 'actual' => $shift->actual_cash, 'difference' => $shift->cash_difference, 'waiter_outstanding' => $outstanding];
+        $settlements = WaiterLedgerEntry::whereIn('payment_id', Payment::where('shift_id', $shift->id)->where('is_credit', false)->select('id'))
+            ->select('waiter_id')->selectRaw('SUM(credit) - SUM(debit) AS settled')->groupBy('waiter_id')->get()
+            ->map(fn ($entry) => ['name' => User::where('company_id', $shift->company_id)->findOrFail($entry->waiter_id)->name, 'amount' => D::money((string) $entry->getAttribute('settled'))])->all();
+
+        return ['opening' => $shift->opening_cash, 'methods' => $methods, 'expected' => D::add($shift->opening_cash, $methods['Cash']['net'] ?? '0'), 'actual' => ShiftStockCount::where('shift_id', $shift->id)->exists() ? $shift->actual_cash : null, 'difference' => $shift->cash_difference, 'waiter_outstanding' => $outstanding, 'settlements' => $settlements];
     }
 
     /** @param array<string, mixed> $data */
@@ -189,6 +204,9 @@ final class ShiftStockService
         return $this->tx->run(function () use ($id, $data) {
             $shift = $this->accessible($id, true);
             $this->stock->require($shift->status === 'OPEN', 'Finalized reconciliation cannot be edited.');
+            $this->stock->require(app(CashHandoverService::class)->active($shift) === null, __('ui.Cancel the unreceived handover before editing reconciliation.'));
+            $this->stock->require(app(ShiftService::class)->blockers($shift) === [], __('ui.Close all waiter shifts and settle all balances before reconciliation.'));
+            $this->stock->require(isset($data['actual_cash']), __('ui.Enter actual cash before closing the cashier shift.'));
             $report = $this->build($shift);
             abort_unless(hash_equals($report['basis'], $data['basis']), 409, 'Stock changed. Reload and verify every physical count.');
             $counts = [];
@@ -206,6 +224,12 @@ final class ShiftStockService
             $old = ShiftStockCount::where('shift_id', $id)->first();
             abort_unless(($old->revision ?? 0) === (int) $data['revision'], 409, 'Another user changed this count. Reload before saving.');
             $before = $old?->toArray() ?? [];
+            $shift->expected_cash = app(ShiftService::class)->expected($shift);
+            $this->stock->require(D::cmp($data['actual_cash'], '0') >= 0, __('ui.Enter actual cash before closing the cashier shift.'));
+            $shift->actual_cash = D::money($data['actual_cash']);
+            $shift->cash_difference = D::sub($shift->actual_cash, $shift->expected_cash);
+            $shift->save();
+            $this->audit->record('SHIFT_CASH_RECONCILED', 'Shifts', 'Shift', $id, [], ['expected' => $shift->expected_cash, 'actual' => $shift->actual_cash, 'difference' => $shift->cash_difference], $shift->branch_id);
             $count = ShiftStockCount::updateOrCreate(['shift_id' => $id], ['branch_id' => $shift->branch_id, 'stock_location_id' => $shift->stock_location_id, 'user_id' => auth()->id(), 'data' => ['counts' => $counts, 'counted_at' => now()->toIso8601String()], 'basis' => $report['basis'], 'revision' => ($old->revision ?? 0) + 1, 'reason' => $data['reason'] ?? null, 'approved_by' => null, 'approved_at' => null, 'approval_note' => null]);
             $this->audit->record('SHIFT_STOCK_COUNTED', 'Shifts', 'Shift', $id, $before, $count->toArray(), $shift->branch_id);
 
@@ -233,12 +257,25 @@ final class ShiftStockService
     }
 
     // ShiftService calls this before changing status; company lock spans both operations.
-    public function finalize(Shift $shift): void
+    /** @return array<string, mixed> */
+    public function ready(Shift $shift): array
     {
         $report = $this->build($shift);
         $this->stock->require($report['totals']['ledger_mismatches'] === 0, 'Stock balances do not match the ledger. Investigate before closing.');
         $this->stock->require($report['complete'], 'Complete stock reconciliation before closing this shift.');
         $this->stock->require($report['totals']['variance_count'] === 0 || $report['approved'], 'A manager must approve the stock variances before closing.');
+
+        return $report;
+    }
+
+    public function finalize(Shift $shift): void
+    {
+        $report = $this->ready($shift);
+        $handover = app(CashHandoverService::class)->active($shift);
+        $report['cash_disposition'] = $handover ? app(CashHandoverService::class)->present($handover) : null;
+        if ($report['cash_disposition']) {
+            $report['cash_disposition']['source_status'] = 'CLOSED';
+        }
         $report['status'] = 'CLOSED';
         $report['closed_by'] = auth()->user()->name;
         $report['closed_by_id'] = auth()->id();

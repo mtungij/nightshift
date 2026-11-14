@@ -2,8 +2,10 @@
 
 namespace Tests\Support;
 
+use App\Domain\TenantContext;
 use App\Jobs\WhatsApp\SendOperationalAlertJob;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\Category;
 use App\Models\Order;
 use App\Models\Product;
@@ -16,12 +18,14 @@ use App\Models\Unit;
 use App\Models\User;
 use App\Models\WhatsAppRecipient;
 use App\Models\WhatsAppSetting;
+use App\Services\BusinessUnitService;
 use App\Services\GoodsReceiptService;
 use App\Services\OrderService;
 use App\Services\ShiftService;
 use App\Services\WhatsApp\CompanyContext;
 use App\Services\WhatsApp\RecipientService;
 use App\Services\WhatsApp\SettingsService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 
@@ -58,17 +62,63 @@ trait WhatsAppFixtures
         $this->actingAs($this->owner);
         $this->branch = Branch::create(['name' => 'Masaki']);
         $this->otherBranch = Branch::create(['name' => 'Mbezi']);
-        $this->counter = StockLocation::create(['branch_id' => $this->branch->id, 'name' => 'Main Counter', 'type' => 'COUNTER']);
+
+        $businessUnit = app(BusinessUnitService::class)->save([
+            'branch_id' => $this->branch->id,
+            'name' => 'Bar',
+            'code' => 'BAR',
+            'active' => true,
+        ]);
+
+        app(BusinessUnitService::class)->save([
+            'branch_id' => $this->otherBranch->id,
+            'name' => 'Other Branch Unit',
+            'code' => 'OTHER-BRANCH',
+            'active' => true,
+        ]);
+
+        $this->counter = StockLocation::create([
+            'branch_id' => $this->branch->id,
+            'business_unit_id' => $businessUnit->id,
+            'name' => 'Main Counter',
+            'type' => 'COUNTER',
+        ]);
         $category = Category::create(['name' => 'Beer']);
         $unit = Unit::create(['name' => 'Bottle']);
-        $this->product = Product::create(['name' => 'Serengeti', 'sku' => 'WA-TEST', 'category_id' => $category->id, 'base_unit_id' => $unit->id, 'purchase_cost' => '2000', 'minimum_stock' => '24']);
-        $this->piece = ProductUnit::create(['product_id' => $this->product->id, 'unit_id' => $unit->id, 'conversion_quantity' => '1', 'selling_price' => '3000']);
+        $this->product = Product::create([
+            'name' => 'Serengeti',
+            'sku' => 'WA-TEST',
+            'category_id' => $category->id,
+            'base_unit_id' => $unit->id,
+            'purchase_cost' => '2000',
+            'minimum_stock' => '24',
+        ]);
+
+        DB::table('business_unit_products')->updateOrInsert(
+            [
+                'company_id' => $this->owner->company_id,
+                'product_id' => $this->product->id,
+                'business_unit_id' => $businessUnit->id,
+            ],
+            [
+                'available' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]
+        );
+
+        $this->piece = ProductUnit::create([
+            'product_id' => $this->product->id,
+            'unit_id' => $unit->id,
+            'conversion_quantity' => '1',
+            'selling_price' => '3000',
+        ]);
         $supplier = Supplier::create(['name' => 'Test supplier']);
         app(GoodsReceiptService::class)->post(['stock_location_id' => $this->counter->id, 'supplier_id' => $supplier->id, 'received_on' => now()->toDateString(), 'items' => [['product_unit_id' => $this->piece->id, 'quantity' => '100', 'unit_cost' => '2000']]]);
         $this->waiter = $this->whatsAppStaff('Waiter');
         $this->cashier = $this->whatsAppStaff('Cashier');
-        app(ShiftService::class)->open(['user_id' => $this->waiter->id, 'stock_location_id' => $this->counter->id, 'type' => 'WAITER']);
         $this->cashierShift = app(ShiftService::class)->open(['user_id' => $this->cashier->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER']);
+        app(ShiftService::class)->open(['user_id' => $this->waiter->id, 'stock_location_id' => $this->counter->id, 'type' => 'WAITER']);
         $this->settings = app(SettingsService::class)->current();
         $this->settings->update(['device_id' => 'company-'.$this->owner->company_id, 'provisioned' => true, 'connection_status' => 'CONNECTED', 'options' => [...config('whatsapp.defaults'), 'enabled' => true, 'daily_report' => true, 'daily_time' => '00:00']]);
         $this->recipient = app(RecipientService::class)->save(['name' => 'Owner Recipient', 'phone' => '0629123456', 'label' => 'Owner', 'all_branches' => true, 'branch_ids' => [], 'daily_report' => true, 'shift_reports' => true, 'critical_alerts' => true, 'active' => true]);
@@ -76,8 +126,29 @@ trait WhatsAppFixtures
 
     protected function whatsAppStaff(string $role): User
     {
-        $user = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', $role)->firstOrFail()->id]);
-        $user->branches()->attach($this->branch->id, ['company_id' => $this->owner->company_id]);
+        $user = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => Role::where('name', $role)->firstOrFail()->id,
+            'terminal_stock_location_id' => $role === 'POS Terminal'
+                ? $this->counter->id
+                : null,
+        ]);
+
+        $user->branches()->attach($this->branch->id, [
+            'company_id' => $this->owner->company_id,
+        ]);
+
+        $businessUnitId = BusinessUnit::where('branch_id', $this->branch->id)
+            ->where('active', true)
+            ->value('id');
+
+        app(TenantContext::class)->run(
+            $this->owner,
+            fn () => app(BusinessUnitService::class)->assign(
+                $user,
+                [(int) $businessUnitId]
+            )
+        );
 
         return $user;
     }

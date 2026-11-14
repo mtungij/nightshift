@@ -3,6 +3,7 @@
 namespace App\Services\WhatsApp;
 
 use App\Jobs\WhatsApp\SendWhatsAppMessageJob;
+use App\Models\BusinessUnit;
 use App\Models\WhatsAppDeliveryLog;
 use App\Models\WhatsAppRecipient;
 use App\Services\TransactionService;
@@ -19,12 +20,22 @@ final class Outbox
         abort_unless(app(RecipientService::class)->visible($recipient), 403);
         sort($branchIds);
         $settings = app(SettingsService::class)->current();
-        $key = hash('sha256', json_encode([$type, $period, $recipient->id, $branchIds, $referenceType, $referenceId], JSON_THROW_ON_ERROR));
+        if (empty($payload['schedule_id'])) {
+            $legacyKey = hash('sha256', json_encode([$type, $period, $recipient->id, $branchIds, $referenceType, $referenceId], JSON_THROW_ON_ERROR));
+            if ($legacy = WhatsAppDeliveryLog::where('idempotency_key', $legacyKey)->first()) {
+                return $legacy;
+            }
+        }
+        $units = array_values(array_unique($payload['scope_business_unit_ids'] ?? app(RecipientService::class)->units($recipient)));
+        $units = BusinessUnit::whereIn('branch_id', $branchIds)->whereIn('id', $units)->pluck('id')->map(fn ($id) => (int) $id)->all();
+        sort($units);
+        $payload['scope_business_unit_ids'] = $units;
+        $key = hash('sha256', json_encode([$settings->company_id, $type, $period, $recipient->id, $branchIds, $referenceType, $referenceId, $payload['schedule_id'] ?? null, $units, $payload['stock_location_id'] ?? null], JSON_THROW_ON_ERROR));
         $log = app(TransactionService::class)->run(fn () => WhatsAppDeliveryLog::firstOrCreate(['idempotency_key' => $key], [
             'branch_id' => count($branchIds) === 1 ? $branchIds[0] : null,
             'recipient_id' => $recipient->id, 'recipient_name' => $recipient->name, 'recipient_phone' => $recipient->phone,
             'message_type' => $type, 'reference_type' => $referenceType, 'reference_id' => $referenceId,
-            'scope_branch_ids' => $branchIds, 'payload' => $payload, 'message' => $message,
+            'schedule_id' => $payload['schedule_id'] ?? null, 'scope_business_unit_ids' => $units, 'scope_branch_ids' => $branchIds, 'payload' => $payload, 'message' => $message,
             'message_preview' => $message ? mb_substr($message, 0, 500) : null,
             'device_id' => $settings->device_id, 'status' => 'QUEUED', 'queued_at' => now(),
         ]));

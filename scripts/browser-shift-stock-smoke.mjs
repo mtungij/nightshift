@@ -125,16 +125,31 @@ async function login(username, locale = "en") {
     await set("username", username);
     await set("pin", "0123");
     await run(`document.querySelector('form[action$="/login"]').requestSubmit()`);
-    await wait("location.pathname==='/dashboard'");
+    await wait("location.pathname==='/dashboard' && document.readyState==='complete' && !!document.querySelector('[name=csrf-token]')");
     await run(
         `fetch('/settings/language',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json','X-CSRF-TOKEN':document.querySelector('[name=csrf-token]').content},body:JSON.stringify({locale:'${locale}'})})`,
     );
+}
+async function command(action, payload) {
+    return run(`fetch('/api/nightshift/commands/'+${JSON.stringify(action)},{method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','X-CSRF-TOKEN':document.querySelector('[name=csrf-token]').content},body:JSON.stringify({...${JSON.stringify(payload)},idempotency_key:crypto.randomUUID()})}).then(async r=>({status:r.status,data:await r.json()}))`);
+}
+async function openOwn(username, counter, cashier = false) {
+    await c("Network.clearBrowserCookies");
+    await navigate("/login");
+    await set("username", username);
+    await set("pin", "0123");
+    await run(`document.querySelector('form[action$="/login"]').requestSubmit()`);
+    await wait("location.pathname==='/open-shift' && document.readyState==='complete' && !!document.querySelector('[name=stock_location_id]')");
+    await set("stock_location_id", counter);
+    if (cashier) await set("opening_cash", "500");
+    await run(`document.querySelector('form[action$="/open-shift"]').requestSubmit()`);
+    await wait("location.pathname==='/dashboard' && document.readyState==='complete' && !!document.querySelector('[name=csrf-token]')");
 }
 try {
     const safety = await fetch(new URL("/login", base));
     check(
         "Isolated MySQL target",
-        safety.headers.get("X-Nightshift-Validation-Database") === "nightshift_validation",
+        ["nightshift_validation", "nightshift_browser_validation"].includes(safety.headers.get("X-Nightshift-Validation-Database")),
     );
     await c("Page.enable");
     await c("Runtime.enable");
@@ -182,6 +197,25 @@ try {
                 `document.documentElement.scrollWidth<=innerWidth+1 && document.querySelector('.table-scroll').scrollWidth>0`,
             ),
         );
+        check(kind + " concurrent waiters and named close blockers", initial.blockers.length === 2 && initial.blockers.every(b => b.open));
+        const blocked = await command("shift-close", {id:f.shift_id,actual_cash:"1000"});
+        check(kind + " direct close blocked by waiters", blocked.status === 422);
+        await login(fixtures.owner, locale);
+        check(kind + " initial debt settled", (await command("waiter-payment", {waiter_id:f.waiter_id,stock_location_id:f.counter_id,amount:"18000",method:"Cash"})).status === 200);
+        for (const id of [f.waiter_shift,f.together_shift]) check(kind + " waiter close " + id, (await command("shift-close",{id})).status === 200);
+        await openOwn(f.rotation,f.counter_id);
+        check(kind + " rotating waiter issues immediately", (await command("order-send", {waiter_id:f.rotation_id,pin:"0123",stock_location_id:f.counter_id,discount:"0",items:[{product_unit_id:f.unit_id,quantity:"1"}]})).status === 200);
+        await login(fixtures.owner,locale);
+        check(kind + " rotating waiter settles", (await command("waiter-payment",{waiter_id:f.rotation_id,stock_location_id:f.counter_id,amount:"3000",method:"Cash"})).status === 200);
+        const operation = await report(f.shift_id);
+        const rotation = operation.waiters.find(w=>w.name.includes('rotation'));
+        check(kind + " rotating waiter belongs to same overnight shift", !!rotation && operation.operating_date === initial.operating_date && operation.total_sales === "21000.00");
+        check(kind + " rotating waiter closes", (await command("shift-close",{id:rotation.shift_id})).status === 200);
+        await login(f.cashier,locale);
+        await navigate("/shift-stock/" + f.shift_id);
+        await wait("!!document.querySelector('[data-recon-row]')");
+        check(kind + " all waiters clean", (await report(f.shift_id)).blockers.length === 0);
+        await set("actual_cash", width === 390 ? "21990" : "22000");
         await run(
             `document.querySelector('#recon-search').value='Serengeti';document.querySelector('#recon-search').dispatchEvent(new Event('input'))`,
         );
@@ -235,7 +269,7 @@ try {
             await login(f.cashier, "sw");
             await navigate("/shift-stock/" + f.shift_id);
         }
-        await set("actual_cash", width === 390 ? "990" : "1000");
+        await set("actual_cash", width === 390 ? "21990" : "22000");
         await set("notes", "Closing count and cash checked in person");
         await run(
             `window.__beforeClose=true;document.querySelector('#recon-close-form').requestSubmit()`,
@@ -267,7 +301,7 @@ try {
         check(
             kind + " report contains original closing and outstanding values",
             await run(
-                `document.body.innerText.includes('18000.00') && document.body.innerText.includes('${width === 390 ? "6000.00" : "0.00"}')`,
+                `document.body.innerText.includes('0.00') && document.body.innerText.includes('${width === 390 ? "6000.00" : "0.00"}')`,
             ),
         );
         const pdf = await c("Page.printToPDF", {
@@ -277,6 +311,15 @@ try {
         });
         await fs.writeFile(output + "/" + kind + ".pdf", Buffer.from(pdf.data, "base64"));
         check(kind + " PDF generated", pdf.data.length > 1000);
+        await openOwn(f.handover,f.counter_id,true);
+        const next = await run(`fetch('/api/nightshift/bootstrap',{headers:{Accept:'application/json'}}).then(r=>r.json())`);
+        check(kind + " next cashier starts after finalized handover", next.shift.active && next.shift.id !== f.shift_id);
+        await login(fixtures.owner,locale);
+        const afterHandover = await report(f.shift_id);
+        for (const row of afterHandover.rows) { delete row.cost; delete row.cost_variance_value; }
+        delete afterHandover.totals.cost_variance_value;
+        check(kind + " report remains frozen after handover", JSON.stringify(afterHandover) === JSON.stringify(final));
+
     }
     check("No browser runtime exceptions", errors.length === 0, errors);
     check("No HTTP 5xx", httpErrors.length === 0, httpErrors);

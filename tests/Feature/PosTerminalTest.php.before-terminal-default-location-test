@@ -1,0 +1,306 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Domain\TenantContext;
+use App\Models\AuditLog;
+use App\Models\Branch;
+use App\Models\Category;
+use App\Models\Order;
+use App\Models\Payment;
+use App\Models\Product;
+use App\Models\ProductUnit;
+use App\Models\Role;
+use App\Models\SalesTicketBatch;
+use App\Models\ServiceTable;
+use App\Models\Shift;
+use App\Models\Stock;
+use App\Models\StockLocation;
+use App\Models\StockMovement;
+use App\Models\Unit;
+use App\Models\User;
+use App\Models\WaiterLedgerEntry;
+use App\Services\ShiftStockService;
+use App\Services\StaffPinService;
+use Database\Seeders\NightshiftDemoSeeder;
+use Illuminate\Foundation\Testing\DatabaseTruncation;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
+use Tests\TestCase;
+
+class PosTerminalTest extends TestCase
+{
+    use DatabaseTruncation;
+
+    private static bool $prepared = false;
+
+    protected function beforeTruncatingDatabase(): void
+    {
+        if (! self::$prepared || DB::getDriverName() === 'sqlite') {
+            RefreshDatabaseState::$migrated = false;
+            self::$prepared = true;
+        }
+    }
+
+    public static function tearDownAfterClass(): void
+    {
+        RefreshDatabaseState::$migrated = false;
+        parent::tearDownAfterClass();
+    }
+
+    private User $owner;
+
+    private User $terminal;
+
+    private User $asha;
+
+    private User $james;
+
+    private StockLocation $counter;
+
+    private ProductUnit $unit;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(NightshiftDemoSeeder::class);
+        $this->owner = User::where('email', 'admin@nightshift.test')->firstOrFail();
+        $this->actingAs($this->owner);
+        $this->counter = StockLocation::where('name', 'Main Counter')->firstOrFail();
+        $this->unit = ProductUnit::whereHas('product', fn ($q) => $q->where('sku', 'BR-001'))->whereHas('unit', fn ($q) => $q->where('name', 'Piece'))->firstOrFail();
+        $this->asha = User::where('email', 'asha@nightshift.test')->firstOrFail();
+        $this->james = User::where('email', 'james@nightshift.test')->firstOrFail();
+        app(StaffPinService::class)->set($this->asha->id, '0123');
+        app(StaffPinService::class)->set($this->james->id, '6789');
+        $this->terminal = User::factory()->create(['name' => 'Main Counter POS', 'username' => 'pos-main-counter', 'company_id' => $this->owner->company_id, 'role_id' => Role::where('name', 'POS Terminal')->firstOrFail()->id, 'terminal_stock_location_id' => $this->counter->id, 'active' => true, 'operational_pin' => Hash::make('4567')]);
+        $this->terminal->branches()->attach($this->counter->branch_id, ['company_id' => $this->owner->company_id]);
+        $this->actingAs($this->terminal);
+    }
+
+    private function command(string $name, array $data = [], ?string $key = null): TestResponse
+    {
+        return $this->postJson('/api/nightshift/commands/'.$name, [...$data, 'idempotency_key' => $key ?? (string) Str::uuid()]);
+    }
+
+    private function payload(User $waiter, string $pin): array
+    {
+        return ['waiter_id' => $waiter->id, 'pin' => $pin, 'stock_location_id' => $this->counter->id, 'discount' => '0', 'order_note' => 'Mteja karibu na TV', 'items' => [['product_unit_id' => $this->unit->id, 'quantity' => '1']]];
+    }
+
+    private function effects(): array
+    {
+        return [Order::count(), StockMovement::count(), WaiterLedgerEntry::count(), Payment::count(), SalesTicketBatch::count(), Stock::where('stock_location_id', $this->counter->id)->where('product_id', $this->unit->product_id)->value('quantity')];
+    }
+
+    public function test_role_has_only_pos_permissions_and_terminal_login_always_lands_on_pos(): void
+    {
+        $this->assertSame(['create-orders', 'view-orders'], $this->terminal->role->permissions()->orderBy('name')->pluck('name')->all());
+        $this->post('/logout');
+        $this->withSession(['url.intended' => '/settings/business'])->post('/login', ['username' => 'pos-main-counter', 'pin' => '4567'])->assertRedirect('/dashboard#pos');
+        $this->assertAuthenticatedAs($this->terminal);
+        $this->get('/dashboard')->assertOk();
+        $this->assertSame(960, config('session.lifetime'));
+        $this->travel(21)->minutes();
+        $this->get('/dashboard')->assertOk();
+        $this->post('/logout')->assertRedirect('/');
+        $this->assertGuest();
+    }
+
+    public function test_all_management_payment_approval_and_shift_commands_are_denied_before_validation(): void
+    {
+        $before = $this->effects();
+        foreach (['product', 'product-delete', 'catalog-category', 'catalog-unit', 'catalog-supplier', 'catalog-user', 'staff-pin', 'catalog-company', 'catalog-branch', 'catalog-location', 'grn', 'transfer-create', 'transfer-send', 'adjustment-request', 'adjustment-decide', 'payment', 'waiter-payment', 'void-request', 'void-decide', 'shift-open', 'shift-close', 'shift-stock-count', 'shift-stock-approve', 'print-settings', 'order-create', 'order-submit', 'order-issue', 'order-cancel', 'catalog-reservation'] as $command) {
+            $this->command($command, ['id' => 1, 'selling_price' => '1', 'pin' => '0123'])->assertForbidden();
+        }
+        foreach (['/settings/business', '/settings/whatsapp', '/settings/profile', '/settings/security', '/open-shift', '/shift-stock/1', '/shift-stock/1/print', '/api/nightshift/shift-stock/1', '/api/nightshift/reports/Daily%20Sales', '/api/nightshift/reports/Daily%20Sales/export', '/api/nightshift/receipts/1'] as $url) {
+            $this->getJson($url)->assertForbidden();
+        }
+        $this->postJson('/livewire/update', [])->assertForbidden();
+        $this->assertSame($before, $this->effects());
+    }
+
+    public function test_snapshot_is_limited_to_assigned_branch_counter_sellable_products_and_eligible_waiters(): void
+    {
+        $snapshot = $this->getJson('/api/nightshift/bootstrap')->assertOk();
+        $this->assertSame([$this->counter->id], array_column($snapshot->json('locations'), 'id'));
+        $this->assertSame([$this->counter->branch_id], array_column($snapshot->json('branches'), 'id'));
+        $this->assertEqualsCanonicalizing([$this->asha->id, $this->james->id], array_column($snapshot->json('servingWaiters'), 'id'));
+        foreach (['team', 'waiters', 'payments', 'shifts', 'movements', 'audit', 'approvals', 'suppliers', 'notifications', 'reservations', 'terminalLocations', 'orders'] as $field) {
+            $snapshot->assertJsonPath($field, []);
+        }
+        $snapshot->assertJsonPath('metrics', null);
+        foreach ($snapshot->json('products') as $product) {
+            $this->assertTrue((bool) $product['active']);
+            $this->assertSame('0', $product['cost']);
+        }
+    }
+
+    public function test_counter_and_branch_tampering_are_rejected_even_with_extra_branch_assignments(): void
+    {
+        $vip = StockLocation::where('name', 'VIP Counter')->firstOrFail();
+        $otherBranch = Branch::create(['name' => 'Other Branch', 'code' => 'OTHER', 'active' => true]);
+        $this->terminal->branches()->syncWithoutDetaching([$otherBranch->id => ['company_id' => $this->owner->company_id]]);
+        $before = $this->effects();
+        $this->getJson('/api/nightshift/bootstrap?stock_location_id='.$vip->id)->assertForbidden();
+        $this->getJson('/api/nightshift/bootstrap?branch_id='.$otherBranch->id)->assertNotFound();
+        $this->command('order-send', [...$this->payload($this->asha, '0123'), 'stock_location_id' => $vip->id])->assertForbidden();
+        $this->assertSame($before, $this->effects());
+    }
+
+    public function test_inactive_wrong_branch_wrong_counter_and_closed_shift_waiters_are_excluded_and_cannot_order(): void
+    {
+        $shift = Shift::where('user_id', $this->asha->id)->where('status', 'OPEN')->firstOrFail();
+        foreach (['inactive', 'wrong-branch', 'wrong-counter', 'closed'] as $case) {
+            $this->asha->forceFill(['active' => $case !== 'inactive'])->save();
+            $this->asha->branches()->sync($case === 'wrong-branch' ? [] : [$this->counter->branch_id => ['company_id' => $this->owner->company_id]]);
+            $shift->update(['status' => $case === 'closed' ? 'CLOSED' : 'OPEN', 'stock_location_id' => $case === 'wrong-counter' ? StockLocation::where('name', 'VIP Counter')->value('id') : $this->counter->id]);
+            $before = $this->effects();
+            $ids = array_column($this->getJson('/api/nightshift/bootstrap?all_branches=1')->assertOk()->json('servingWaiters'), 'id');
+            $this->assertNotContains($this->asha->id, $ids, $case);
+            $response = $this->command('order-send', $this->payload($this->asha, '0123'));
+            $this->assertContains($response->status(), [403, 422], $case);
+            $this->assertSame($before, $this->effects(), $case);
+        }
+    }
+
+    public function test_foreign_company_waiter_product_location_and_table_ids_are_rejected(): void
+    {
+        $foreign = User::factory()->create(['role_id' => $this->asha->role_id, 'operational_pin' => Hash::make('0123')]);
+        $before = $this->effects();
+        $this->command('order-send', $this->payload($foreign, '0123'))->assertNotFound();
+        $foreignIds = app(TenantContext::class)->run($foreign, function () {
+            $branch = Branch::create(['name' => 'Foreign branch', 'code' => 'FOREIGN']);
+            $location = StockLocation::create(['name' => 'Foreign counter', 'branch_id' => $branch->id, 'type' => 'COUNTER']);
+            $category = Category::create(['name' => 'Foreign category']);
+            $unit = Unit::create(['name' => 'Foreign piece']);
+            $product = Product::create(['name' => 'Foreign drink', 'sku' => 'FOREIGN', 'purchase_cost' => '1000', 'category_id' => $category->id, 'base_unit_id' => $unit->id]);
+            $selling = ProductUnit::create(['product_id' => $product->id, 'unit_id' => $unit->id, 'conversion_quantity' => '1', 'selling_price' => '3000']);
+            $table = ServiceTable::create(['branch_id' => $branch->id, 'name' => 'Foreign table', 'area' => 'Foreign area']);
+
+            return ['branch' => $branch->id, 'location' => $location->id, 'unit' => $selling->id, 'table' => $table->id];
+        });
+        $this->getJson('/api/nightshift/bootstrap?branch_id='.$foreignIds['branch'])->assertNotFound();
+        $this->command('order-send', [...$this->payload($this->asha, '0123'), 'stock_location_id' => $foreignIds['location']])->assertNotFound();
+        $this->command('order-send', [...$this->payload($this->asha, '0123'), 'service_table_id' => $foreignIds['table']])->assertNotFound();
+        $data = $this->payload($this->asha, '0123');
+        $data['items'][0]['product_unit_id'] = $foreignIds['unit'];
+        $this->command('order-send', $data)->assertNotFound();
+        $this->assertSame($before, $this->effects());
+    }
+
+    public function test_selected_waiter_pin_is_isolated_and_lockout_has_no_business_side_effects(): void
+    {
+        $before = $this->effects();
+        foreach ([[$this->asha, '6789'], [$this->james, '0123']] as [$waiter, $pin]) {
+            $this->command('order-send', $this->payload($waiter, $pin))->assertUnprocessable()->assertJsonValidationErrors('pin');
+        }
+        for ($i = 0; $i < 4; $i++) {
+            $this->command('order-send', $this->payload($this->asha, '6789'))->assertUnprocessable();
+        }
+        $this->assertSame(5, $this->asha->fresh()->pin_failed_attempts);
+        $this->assertNotNull($this->asha->fresh()->pin_locked_until);
+        $this->command('order-send', $this->payload($this->asha, '0123'))->assertStatus(429);
+        $this->assertSame($before, $this->effects());
+    }
+
+    public function test_two_waiters_send_sequentially_without_changing_session_with_stock_ledger_audit_and_printing(): void
+    {
+        $before = $this->effects();
+        foreach ([[$this->asha, '0123'], [$this->james, '6789']] as [$waiter, $pin]) {
+            $key = (string) Str::uuid();
+            $result = $this->command('order-send', $this->payload($waiter, $pin), $key)->assertOk()->assertJsonPath('status', 'ISSUED')->assertJsonPath('copies', ['WAITER COPY', 'CASHIER COPY']);
+            $this->command('order-send', $this->payload($waiter, $pin), $key)->assertOk()->assertExactJson($result->json());
+            $order = Order::findOrFail($result->json('id'));
+            $this->assertSame($waiter->id, $order->waiter_id);
+            $this->assertSame($this->terminal->id, $order->created_by);
+            $this->assertSame($this->terminal->id, $order->issued_by);
+            $cashier = Shift::where('stock_location_id', $this->counter->id)->where('type', 'CASHIER')->where('status', 'OPEN')->firstOrFail();
+            $this->assertSame($cashier->id, $order->issued_shift_id);
+            $this->assertSame($cashier->id, StockMovement::where('reference_type', 'Order')->where('reference_id', $order->id)->where('movement_type', 'ISSUE')->value('shift_id'));
+            $this->assertFalse(Shift::where('user_id', $this->terminal->id)->exists());
+            $this->assertSame('Mteja karibu na TV', $order->order_note);
+            $this->assertSame(1, StockMovement::where('reference_type', 'Order')->where('reference_id', $order->id)->where('movement_type', 'ISSUE')->count());
+            $this->assertSame($order->total, WaiterLedgerEntry::where('order_id', $order->id)->where('waiter_id', $waiter->id)->where('entry_type', 'ISSUE')->value('debit'));
+            $audit = AuditLog::where('action', 'ORDER_CREATED')->where('reference_id', $order->id)->firstOrFail();
+            $this->assertSame($this->terminal->id, $audit->user_id);
+            $this->assertSame($waiter->id, $audit->new_values['waiter_id']);
+            $this->assertSame($this->counter->id, $audit->new_values['stock_location_id']);
+            $this->assertSame($this->counter->branch_id, $audit->branch_id);
+            $this->assertNotNull($audit->created_at);
+            $this->get($result->json('print_url'))->assertOk()->assertSee($waiter->name)->assertSee($this->terminal->name)->assertSee('Mteja karibu na TV')->assertSee('WAITER COPY')->assertSee('CASHIER COPY');
+            $this->assertAuthenticatedAs($this->terminal);
+        }
+        $after = $this->effects();
+        $this->assertSame($before[0] + 2, $after[0]);
+        $this->assertSame($before[3], $after[3]);
+        $this->assertSame($before[4] + 2, $after[4]);
+        $this->assertSame(0, bccomp(bcsub($before[5], '2', 6), $after[5], 6));
+        $this->assertCount(2, $this->getJson('/api/nightshift/bootstrap')->json('orders'));
+        $this->assertStringNotContainsString('6789', AuditLog::where('user_id', $this->terminal->id)->get()->toJson());
+    }
+
+    public function test_terminal_cannot_discount_or_read_or_reprint_another_operators_order(): void
+    {
+        $before = $this->effects();
+        $this->command('order-send', [...$this->payload($this->asha, '0123'), 'discount' => '1'])->assertForbidden();
+        $order = Order::where('created_by', '!=', $this->terminal->id)->firstOrFail();
+        $this->get('/api/nightshift/issue-tickets/'.$order->id)->assertForbidden();
+        $this->command('ticket-reprint', ['id' => $order->id])->assertForbidden();
+        $this->command('order-send', ['id' => $order->id, 'waiter_id' => $this->asha->id, 'pin' => '0123'])->assertForbidden();
+        $this->assertSame($before, $this->effects());
+    }
+
+    public function test_owner_creates_terminal_with_hashed_pin_and_valid_counter_but_manager_cannot(): void
+    {
+        $this->actingAs($this->owner);
+        $data = [
+            'name' => 'Side POS',
+            'username' => 'pos-side',
+            'email' => 'pos-side@example.test',
+            'role' => 'POS Terminal',
+            'pin' => '2468',
+            'branch_id' => $this->counter->branch_id,
+            'business_unit_ids' => [$this->counter->business_unit_id],
+            'stock_location_id' => $this->counter->id,
+            'active' => true,
+        ];
+        $response = $this->command('catalog-user', $data)->assertOk();
+        $user = User::findOrFail($response->json('id'));
+        $this->assertTrue($user->isPosTerminal());
+        $this->assertTrue(Hash::check('2468', $user->operational_pin));
+        $this->assertSame($this->counter->id, $user->terminal_stock_location_id);
+        $this->assertSame([$this->counter->branch_id], $user->branches()->pluck('branches.id')->all());
+        $this->command('catalog-user', [...$data, 'username' => 'pos-missing', 'email' => 'missing@example.test', 'stock_location_id' => null])->assertUnprocessable();
+        $this->command('catalog-user', [...$data, 'username' => 'pos-store', 'email' => 'store@example.test', 'stock_location_id' => StockLocation::where('type', 'STORE')->value('id')])->assertNotFound();
+        $this->actingAs(User::where('email', 'manager@nightshift.test')->firstOrFail());
+        $this->command('catalog-user', [...$data, 'username' => 'pos-manager', 'email' => 'manager-pos@example.test'])->assertForbidden();
+    }
+
+    public function test_terminal_sales_contribute_to_existing_cashier_stock_reconciliation(): void
+    {
+        $this->actingAs($this->owner);
+        $shift = Shift::where('type', 'CASHIER')->where('stock_location_id', $this->counter->id)->where('status', 'OPEN')->firstOrFail();
+        $before = app(ShiftStockService::class)->report($shift->id);
+        $row = collect($before['rows'])->firstWhere('product_id', $this->unit->product_id);
+        $this->actingAs($this->terminal);
+        $this->command('order-send', $this->payload($this->asha, '0123'))->assertOk();
+        $this->actingAs($this->owner);
+        $after = app(ShiftStockService::class)->report($shift->id);
+        $updated = collect($after['rows'])->firstWhere('product_id', $this->unit->product_id);
+        $this->assertSame(bcadd($row['out'], '1', 6), $updated['out']);
+        $this->assertSame(bcadd($row['system_sold'], '1', 6), $updated['system_sold']);
+        $this->assertSame(bcsub($row['expected'], '1', 6), $updated['expected']);
+        $this->assertSame(0, $after['totals']['ledger_mismatches']);
+    }
+
+    public function test_inactive_or_unassigned_terminal_fails_closed_and_can_still_logout(): void
+    {
+        $this->terminal->forceFill(['terminal_stock_location_id' => null])->save();
+        $this->getJson('/api/nightshift/bootstrap')->assertForbidden();
+        $this->command('order-send', $this->payload($this->asha, '0123'))->assertForbidden();
+        $this->post('/logout')->assertRedirect('/');
+    }
+}

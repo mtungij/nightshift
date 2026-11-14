@@ -315,3 +315,23 @@ select:focus[data-flux-control] {
         padding: 24px 20px;
     }
 }
+
+/* Keep the internal identifier selectable without expanding the connection card. */
+.whatsapp-page [data-whatsapp-device] {
+    text-overflow: ellipsis;
+}
+#whatsapp-connection .form-field,
+#whatsapp-connection .form-help {
+    max-width: 42rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* Long product and operational-area names must fit mobile cart notices. */
+.nightshift #toast > div > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.nightshift #toast .icon {
+    flex-shrink: 0;
+}

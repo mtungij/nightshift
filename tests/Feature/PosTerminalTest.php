@@ -217,6 +217,10 @@ class PosTerminalTest extends TestCase
             $this->assertSame($waiter->id, $order->waiter_id);
             $this->assertSame($this->terminal->id, $order->created_by);
             $this->assertSame($this->terminal->id, $order->issued_by);
+            $cashier = Shift::where('stock_location_id', $this->counter->id)->where('type', 'CASHIER')->where('status', 'OPEN')->firstOrFail();
+            $this->assertSame($cashier->id, $order->issued_shift_id);
+            $this->assertSame($cashier->id, StockMovement::where('reference_type', 'Order')->where('reference_id', $order->id)->where('movement_type', 'ISSUE')->value('shift_id'));
+            $this->assertFalse(Shift::where('user_id', $this->terminal->id)->exists());
             $this->assertSame('Mteja karibu na TV', $order->order_note);
             $this->assertSame(1, StockMovement::where('reference_type', 'Order')->where('reference_id', $order->id)->where('movement_type', 'ISSUE')->count());
             $this->assertSame($order->total, WaiterLedgerEntry::where('order_id', $order->id)->where('waiter_id', $waiter->id)->where('entry_type', 'ISSUE')->value('debit'));
@@ -252,15 +256,56 @@ class PosTerminalTest extends TestCase
     public function test_owner_creates_terminal_with_hashed_pin_and_valid_counter_but_manager_cannot(): void
     {
         $this->actingAs($this->owner);
-        $data = ['name' => 'Side POS', 'username' => 'pos-side', 'email' => 'pos-side@example.test', 'role' => 'POS Terminal', 'pin' => '2468', 'branch_id' => $this->counter->branch_id, 'stock_location_id' => $this->counter->id, 'active' => true];
+        $data = [
+            'name' => 'Side POS',
+            'username' => 'pos-side',
+            'email' => 'pos-side@example.test',
+            'role' => 'POS Terminal',
+            'pin' => '2468',
+            'branch_id' => $this->counter->branch_id,
+            'business_unit_ids' => [$this->counter->business_unit_id],
+            'stock_location_id' => $this->counter->id,
+            'active' => true,
+        ];
         $response = $this->command('catalog-user', $data)->assertOk();
         $user = User::findOrFail($response->json('id'));
         $this->assertTrue($user->isPosTerminal());
         $this->assertTrue(Hash::check('2468', $user->operational_pin));
         $this->assertSame($this->counter->id, $user->terminal_stock_location_id);
         $this->assertSame([$this->counter->branch_id], $user->branches()->pluck('branches.id')->all());
-        $this->command('catalog-user', [...$data, 'username' => 'pos-missing', 'email' => 'missing@example.test', 'stock_location_id' => null])->assertUnprocessable();
-        $this->command('catalog-user', [...$data, 'username' => 'pos-store', 'email' => 'store@example.test', 'stock_location_id' => StockLocation::where('type', 'STORE')->value('id')])->assertNotFound();
+        $missing = $this->command('catalog-user', [
+            ...$data,
+            'username' => 'pos-missing',
+            'email' => 'missing@example.test',
+            'stock_location_id' => null,
+        ])->assertOk();
+
+        $missingTerminal = User::findOrFail($missing->json('id'));
+
+        $this->assertSame(
+            $this->counter->business_unit_id,
+            $missingTerminal->terminal_business_unit_id
+        );
+
+        $this->assertNotNull($missingTerminal->terminal_stock_location_id);
+        $store = StockLocation::create([
+            'branch_id' => $this->counter->branch_id,
+            'business_unit_id' => $this->counter->business_unit_id,
+            'name' => 'POS invalid store',
+            'type' => 'STORE',
+            'active' => true,
+        ]);
+
+        $this->command('catalog-user', [
+            ...$data,
+            'username' => 'pos-store',
+            'email' => 'store@example.test',
+            'stock_location_id' => $store->id,
+        ])->assertUnprocessable();
+
+        $this->assertDatabaseMissing('users', [
+            'email' => 'store@example.test',
+        ]);
         $this->actingAs(User::where('email', 'manager@nightshift.test')->firstOrFail());
         $this->command('catalog-user', [...$data, 'username' => 'pos-manager', 'email' => 'manager-pos@example.test'])->assertForbidden();
     }

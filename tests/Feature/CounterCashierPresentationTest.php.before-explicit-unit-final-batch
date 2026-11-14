@@ -1,0 +1,124 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Role;
+use App\Models\StockLocation;
+use App\Models\User;
+use App\Services\ShiftService;
+use App\Services\WorkspaceService;
+use App\Support\CounterLocationPresenter;
+use Database\Seeders\NightshiftDemoSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Tests\TestCase;
+
+class CounterCashierPresentationTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $owner;
+
+    private StockLocation $counter;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(NightshiftDemoSeeder::class);
+        $this->owner = User::where('email', 'admin@nightshift.test')->firstOrFail();
+        $this->actingAs($this->owner);
+        $this->counter = StockLocation::where('name', 'Main Counter')->firstOrFail();
+    }
+
+    private function updateLimit(mixed $value)
+    {
+        return $this->postJson('/api/nightshift/commands/catalog-cashier-limit', ['id' => $this->counter->id, 'max_active_cashiers' => $value, 'idempotency_key' => (string) Str::uuid()]);
+    }
+
+    public function test_default_one_and_saved_two_are_authoritative_complete_workspace_values(): void
+    {
+        $data = app(WorkspaceService::class)->snapshot();
+        $one = collect($data['locations'])->firstWhere('id', $this->counter->id);
+        $this->assertSame(1, $one['active_cashier_count']);
+        $this->assertSame(1, $one['max_active_cashiers']);
+        $this->assertSame('General', $one['business_unit_name']);
+        $response = $this->updateLimit(2)->assertOk()->assertJsonPath('location.active_cashier_count', 1)->assertJsonPath('location.max_active_cashiers', 2)->assertJsonPath('location.business_unit_name', 'General');
+        $this->assertSame(2, $this->counter->fresh()->max_active_cashiers);
+        $two = collect(app(WorkspaceService::class)->snapshot()['locations'])->firstWhere('id', $this->counter->id);
+        $this->assertSame(2, $two['max_active_cashiers']);
+    }
+
+    public function test_legacy_null_or_missing_display_values_use_default_without_writing_or_mutating_model(): void
+    {
+        $before = DB::table('stock_locations')->where('id', $this->counter->id)->first();
+        $audits = DB::table('audit_logs')->count();
+        foreach ([null, 0] as $legacy) {
+            $location = $this->counter->fresh();
+            $location->setAttribute('max_active_cashiers', $legacy);
+            $this->assertSame($legacy, $location->toArray()['max_active_cashiers']);
+            $presented = app(CounterLocationPresenter::class)->present($location);
+            $this->assertSame(1, $presented['max_active_cashiers']);
+            $this->assertSame(1, $presented['active_cashier_count']);
+            $this->assertSame($legacy, $location->max_active_cashiers);
+        }
+        $missing = $this->counter->fresh();
+        unset($missing['max_active_cashiers']);
+        $this->assertSame(1, app(CounterLocationPresenter::class)->present($missing)['max_active_cashiers']);
+        $this->assertEquals($before, DB::table('stock_locations')->where('id', $this->counter->id)->first());
+        $this->assertSame($audits, DB::table('audit_logs')->count());
+    }
+
+    public function test_empty_counter_is_zero_over_one_and_shared_store_has_no_misleading_unit(): void
+    {
+        $empty = StockLocation::create(['branch_id' => $this->counter->branch_id, 'name' => 'Empty', 'type' => 'COUNTER']);
+        $row = app(CounterLocationPresenter::class)->present($empty);
+        $this->assertSame(0, $row['active_cashier_count']);
+        $this->assertSame(1, $row['max_active_cashiers']);
+        $shared = StockLocation::create(['branch_id' => $this->counter->branch_id, 'name' => 'Shared', 'type' => 'STORE', 'is_shared' => true]);
+        $row = app(CounterLocationPresenter::class)->present($shared);
+        $this->assertTrue($row['is_shared']);
+        $this->assertNull($row['business_unit_name']);
+    }
+
+    public function test_rejected_reduction_preserves_saved_value_and_workspace_denominator(): void
+    {
+        $this->updateLimit(2)->assertOk();
+        $u = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', 'Cashier')->firstOrFail()->id]);
+        $u->branches()->attach($this->counter->branch_id, ['company_id' => $u->company_id]);
+        app(ShiftService::class)->open(['user_id' => $u->id, 'type' => 'CASHIER', 'stock_location_id' => $this->counter->id]);
+        $this->updateLimit(1)->assertUnprocessable();
+        $this->assertSame(2, $this->counter->fresh()->max_active_cashiers);
+        $row = collect(app(WorkspaceService::class)->snapshot()['locations'])->firstWhere('id', $this->counter->id);
+        $this->assertSame(2, $row['active_cashier_count']);
+        $this->assertSame(2, $row['max_active_cashiers']);
+    }
+
+    public function test_invalid_limits_do_not_change_saved_display_values(): void
+    {
+        foreach (['', 0, -1, '1.5', 'invalid', null] as $value) {
+            $this->updateLimit($value)->assertUnprocessable();
+        }
+        $this->assertSame(1, $this->counter->fresh()->max_active_cashiers);
+    }
+
+    public function test_server_rendered_editor_prefills_default_and_configured_limits_in_both_languages(): void
+    {
+        $this->get('/business-units')->assertOk()->assertSee('data-saved-limit="1"', false)->assertSee('name="max_active_cashiers" type="number" min="1" max="65535" step="1" required value="1"', false);
+        $this->updateLimit(2)->assertOk();
+        $this->postJson('/settings/language', ['locale' => 'sw'])->assertOk();
+        $this->get('/business-units')->assertOk()->assertSee('data-saved-limit="2"', false)->assertSee('Idadi ya Juu ya Makashia')->assertSee('Idadi ya makashia imefikia kiwango cha juu');
+    }
+
+    public function test_partially_selected_location_loads_actual_saved_limit_and_count_without_updating(): void
+    {
+        $this->updateLimit(2)->assertOk();
+        $partial = StockLocation::select('id', 'name')->findOrFail($this->counter->id);
+        $before = $partial->getAttributes();
+        $data = app(CounterLocationPresenter::class)->present($partial);
+        $this->assertSame(2, $data['max_active_cashiers']);
+        $this->assertSame(1, $data['active_cashier_count']);
+        $this->assertSame('General', $data['business_unit_name']);
+        $this->assertSame($before, $partial->getAttributes());
+    }
+}

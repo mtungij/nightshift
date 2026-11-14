@@ -18,7 +18,7 @@ use Illuminate\Support\Str;
 require __DIR__.'/../tests/bootstrap-mysql.php';
 $app = require __DIR__.'/../bootstrap/app.php';
 $app->make(Kernel::class)->bootstrap();
-if (! app()->environment('testing') || config('database.default') !== 'mysql_validation' || DB::connection()->getDatabaseName() !== 'nightshift_validation' || (int) config('database.connections.mysql_validation.port') !== 3340) {
+if (! app()->environment('testing') || config('database.default') !== 'mysql_validation' || ! in_array(DB::connection()->getDatabaseName(), ['nightshift_validation', 'nightshift_browser_validation'], true) || (int) config('database.connections.mysql_validation.port') !== 3340) {
     throw new RuntimeException('Reconciliation fixtures require the isolated validation database on port 3340.');
 }
 $app->make(Kernel::class)->call('migrate', ['--force' => true]);
@@ -33,7 +33,7 @@ $result = app(TenantContext::class)->run($owner, function () use ($owner) {
         $suffix = strtolower(Str::random(8));
         $counter = StockLocation::create(['branch_id' => $branch, 'name' => 'Reconciliation '.$kind.' '.$suffix, 'type' => 'COUNTER']);
         $users = [];
-        foreach (['cashier' => 'Cashier', 'waiter' => 'Waiter'] as $slug => $role) {
+        foreach (['cashier' => 'Cashier', 'waiter' => 'Waiter', 'together' => 'Waiter', 'rotation' => 'Waiter', 'handover' => 'Cashier'] as $slug => $role) {
             $user = new User;
             $user->forceFill(['company_id' => $owner->company_id, 'role_id' => Role::where('name', $role)->firstOrFail()->id, 'name' => 'Reconciliation '.$slug.' '.$suffix, 'username' => 'recon-'.$slug.'-'.$suffix, 'email' => $slug.'-'.$suffix.'@recon.test', 'password' => Str::password(64), 'active' => true])->save();
             $user->branches()->attach($branch, ['company_id' => $owner->company_id]);
@@ -41,13 +41,15 @@ $result = app(TenantContext::class)->run($owner, function () use ($owner) {
             $users[$slug] = $user;
         }
         app(GoodsReceiptService::class)->post(['stock_location_id' => $counter->id, 'supplier_id' => Supplier::firstOrFail()->id, 'supplier_invoice' => 'recon-'.$suffix, 'received_on' => now()->toDateString(), 'items' => [['product_unit_id' => $unit->id, 'quantity' => '48', 'unit_cost' => '1200']]]);
-        $shift = app(ShiftService::class)->open(['user_id' => $users['cashier']->id, 'stock_location_id' => $counter->id, 'type' => 'CASHIER', 'opening_cash' => '1000']);
-        app(ShiftService::class)->open(['user_id' => $users['waiter']->id, 'stock_location_id' => $counter->id, 'type' => 'WAITER']);
+        $shift = app(ShiftService::class)->open(['user_id' => $users['cashier']->id, 'stock_location_id' => $counter->id, 'type' => 'CASHIER', 'opening_cash' => '1000', 'opening_reason' => 'Authorized fixture opening float']);
+        $shift->update(['opened_at' => now()->subDay()->setTime(18, 0)]);
+        $waiterShift = app(ShiftService::class)->open(['user_id' => $users['waiter']->id, 'stock_location_id' => $counter->id, 'type' => 'WAITER']);
+        $togetherShift = app(ShiftService::class)->open(['user_id' => $users['together']->id, 'stock_location_id' => $counter->id, 'type' => 'WAITER']);
         app(TenantContext::class)->run($users['cashier'], function () use ($counter, $users, $unit) {
             $order = app(OrderService::class)->create(['stock_location_id' => $counter->id, 'waiter_id' => $users['waiter']->id, 'items' => [['product_unit_id' => $unit->id, 'quantity' => '6']]]);
             app(OrderService::class)->issue($order->id);
         });
-        $fixtures['cases'][$kind] = ['shift_id' => $shift->id, 'cashier' => $users['cashier']->username, 'product_id' => $unit->product_id, 'counter_id' => $counter->id];
+        $fixtures['cases'][$kind] = ['shift_id' => $shift->id, 'cashier' => $users['cashier']->username, 'product_id' => $unit->product_id, 'counter_id' => $counter->id, 'waiter_id' => $users['waiter']->id, 'waiter_shift' => $waiterShift->id, 'together_shift' => $togetherShift->id, 'rotation' => $users['rotation']->username, 'rotation_id' => $users['rotation']->id, 'handover' => $users['handover']->username, 'unit_id' => $unit->id];
     }
     $fixtures['before'] = ['movements' => DB::table('stock_movements')->count(), 'ledger' => DB::table('waiter_ledger_entries')->count(), 'payments' => DB::table('payments')->count()];
 

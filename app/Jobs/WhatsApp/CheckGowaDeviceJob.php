@@ -5,12 +5,20 @@ namespace App\Jobs\WhatsApp;
 use App\Services\WhatsApp\CompanyContext;
 use App\Services\WhatsApp\GowaException;
 use App\Services\WhatsApp\SettingsService;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
-final class CheckGowaDeviceJob implements ShouldQueue
+final class CheckGowaDeviceJob implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
+
+    public int $uniqueFor = 900;
+
+    public function uniqueId(): string
+    {
+        return (string) $this->companyId;
+    }
 
     public int $tries = 3;
 

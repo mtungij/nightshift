@@ -15,9 +15,11 @@ use App\Models\Shift;
 use App\Models\StockLocation;
 use App\Models\Supplier;
 use App\Models\User;
+use App\Services\BusinessUnitService;
 use App\Services\GoodsReceiptService;
 use App\Services\OrderService;
 use App\Services\ShiftService;
+use App\Services\TransactionService;
 use App\Services\WaiterLedgerService;
 use Database\Seeders\NightshiftDemoSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -25,12 +27,14 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Tests\Support\CompletesStockCount;
+use Tests\Support\SettlesCounterWaiters;
 use Tests\TestCase;
 
 class StaffDataAuthorizationTest extends TestCase
 {
     use CompletesStockCount;
     use RefreshDatabase;
+    use SettlesCounterWaiters;
 
     private User $owner;
 
@@ -62,8 +66,34 @@ class StaffDataAuthorizationTest extends TestCase
 
     private function staff(string $role, int $branch): User
     {
-        $user = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', $role)->firstOrFail()->id, 'operational_pin' => Hash::make('0123')]);
-        $user->branches()->attach($branch, ['company_id' => $user->company_id]);
+        $user = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => Role::where('name', $role)->firstOrFail()->id,
+            'operational_pin' => Hash::make('0123'),
+        ]);
+
+        $user->branches()->attach($branch, [
+            'company_id' => $user->company_id,
+        ]);
+
+        $unit = \App\Models\BusinessUnit::where('branch_id', $branch)
+            ->where('active', true)
+            ->first();
+
+        if (! $unit) {
+            $unit = \App\Models\BusinessUnit::create([
+                'branch_id' => $branch,
+                'name' => 'Operations '.$branch,
+                'code' => 'OPS-'.$branch,
+                'active' => true,
+            ]);
+        }
+
+        $user->businessUnits()->syncWithoutDetaching([
+            $unit->id => [
+                'company_id' => $user->company_id,
+            ],
+        ]);
 
         return $user;
     }
@@ -121,7 +151,21 @@ class StaffDataAuthorizationTest extends TestCase
     public function test_cashier_sees_only_own_reconciliation_and_payment_activity_and_minimal_balances(): void
     {
         $otherCashier = $this->staff('Cashier', $this->main->branch_id);
-        $otherShift = app(ShiftService::class)->open(['user_id' => $otherCashier->id, 'stock_location_id' => $this->main->id, 'type' => 'CASHIER', 'opening_cash' => '98765']);
+
+        $otherCounter = StockLocation::create([
+            'branch_id' => $this->main->branch_id,
+            'business_unit_id' => $this->main->business_unit_id,
+            'name' => 'Other cashier counter',
+            'type' => 'COUNTER',
+        ]);
+
+        $otherShift = app(ShiftService::class)->open([
+            'user_id' => $otherCashier->id,
+            'stock_location_id' => $otherCounter->id,
+            'type' => 'CASHIER',
+            'opening_cash' => '98765',
+            'opening_reason' => 'Authorized fixture opening float',
+        ]);
         $this->actingAs($this->cashier);
         $data = $this->getJson('/api/nightshift/bootstrap')->assertOk()->json();
         $this->assertSame([$this->cashier->id], array_values(array_unique(array_column($data['shifts'], 'user_id'))));
@@ -169,9 +213,23 @@ class StaffDataAuthorizationTest extends TestCase
     public function test_manager_supervisor_are_branch_scoped_and_owner_is_company_wide(): void
     {
         $branch = Branch::create(['name' => 'Private second branch']);
-        $counter = StockLocation::create(['branch_id' => $branch->id, 'name' => 'Private counter', 'type' => 'COUNTER']);
+
+        $unit = \App\Models\BusinessUnit::create([
+            'branch_id' => $branch->id,
+            'name' => 'Private Operations',
+            'code' => 'PRIVATE-'.$branch->id,
+            'active' => true,
+        ]);
+
+        $counter = StockLocation::create([
+            'branch_id' => $branch->id,
+            'business_unit_id' => $unit->id,
+            'name' => 'Private counter',
+            'type' => 'COUNTER',
+        ]);
+
         $private = $this->staff('Cashier', $branch->id);
-        $privateShift = app(ShiftService::class)->open(['user_id' => $private->id, 'stock_location_id' => $counter->id, 'type' => 'CASHIER', 'opening_cash' => '456789']);
+        $privateShift = app(ShiftService::class)->open(['user_id' => $private->id, 'stock_location_id' => $counter->id, 'type' => 'CASHIER', 'opening_cash' => '456789', 'opening_reason' => 'Authorized fixture opening float']);
         $manager = User::where('email', 'manager@nightshift.test')->firstOrFail();
         $supervisor = $this->staff('Supervisor', $this->main->branch_id);
         foreach ([$manager, $supervisor] as $actor) {
@@ -198,9 +256,38 @@ class StaffDataAuthorizationTest extends TestCase
         $foreign = User::factory()->create();
         [$branch, $shift] = app(TenantContext::class)->run($foreign, function () use ($foreign) {
             $branch = Branch::create(['name' => 'Foreign staff branch']);
-            $foreign->branches()->attach($branch->id, ['company_id' => $foreign->company_id]);
-            $counter = StockLocation::create(['branch_id' => $branch->id, 'name' => 'Foreign counter', 'type' => 'COUNTER']);
-            $shift = app(ShiftService::class)->open(['user_id' => $foreign->id, 'stock_location_id' => $counter->id, 'type' => 'CASHIER', 'opening_cash' => '99999']);
+
+            $unit = \App\Models\BusinessUnit::create([
+                'branch_id' => $branch->id,
+                'name' => 'Foreign Operations',
+                'code' => 'FOREIGN-'.$branch->id,
+                'active' => true,
+            ]);
+
+            $foreign->branches()->attach($branch->id, [
+                'company_id' => $foreign->company_id,
+            ]);
+
+            $foreign->businessUnits()->syncWithoutDetaching([
+                $unit->id => [
+                    'company_id' => $foreign->company_id,
+                ],
+            ]);
+
+            $counter = StockLocation::create([
+                'branch_id' => $branch->id,
+                'business_unit_id' => $unit->id,
+                'name' => 'Foreign counter',
+                'type' => 'COUNTER',
+            ]);
+
+            $shift = app(ShiftService::class)->open([
+                'user_id' => $foreign->id,
+                'stock_location_id' => $counter->id,
+                'type' => 'CASHIER',
+                'opening_cash' => '99999',
+                'opening_reason' => 'Authorized fixture opening float',
+            ]);
 
             return [$branch, $shift];
         });
@@ -218,10 +305,15 @@ class StaffDataAuthorizationTest extends TestCase
         $this->getJson('/api/nightshift/bootstrap')->assertStatus(409)->assertJsonMissingPath('orders');
         $this->get('/open-shift')->assertOk()->assertSee($this->vip->name);
         $this->command('order-send', ['waiter_id' => $this->a->id, 'pin' => '0123', 'stock_location_id' => $this->main->id, 'discount' => '0', 'items' => [['product_unit_id' => $this->unit->id, 'quantity' => '1']]])->assertStatus(409);
+        $this->actingAs($this->owner);
+        $this->settleCounterWaiters($this->main->id);
+        $vipShift = Shift::where('stock_location_id', $this->vip->id)->where('type', 'CASHIER')->firstOrFail();
+        $this->completeStockCount($vipShift);
+        app(ShiftService::class)->close($vipShift->id, ['actual_cash' => app(ShiftService::class)->expected($vipShift)]);
         $this->actingAs($this->cashier);
         $own = Shift::where('user_id', $this->cashier->id)->firstOrFail();
         $this->completeStockCount($own);
-        $this->command('shift-close', ['id' => $own->id, 'actual_cash' => $own->opening_cash])->assertOk();
+        $this->command('shift-close', ['id' => $own->id, 'actual_cash' => app(ShiftService::class)->expected($own)])->assertOk();
         $this->getJson('/api/nightshift/bootstrap')->assertStatus(409);
         $this->assertSame([$this->main->id], app(StaffVisibility::class)->counters());
         $this->get('/open-shift')->assertOk()->assertSee($this->vip->name);
@@ -250,15 +342,60 @@ class StaffDataAuthorizationTest extends TestCase
     public function test_branch_manager_reads_scoped_balance_without_changing_lifetime_accounting(): void
     {
         $branch = Branch::create(['name' => 'Other ledger branch']);
-        $counter = StockLocation::create(['branch_id' => $branch->id, 'name' => 'Other ledger counter', 'type' => 'COUNTER']);
+
+        $branchUnit = \App\Models\BusinessUnit::create([
+            'branch_id' => $branch->id,
+            'name' => 'Other Ledger Operations',
+            'code' => 'LEDGER-'.$branch->id,
+            'active' => true,
+        ]);
+
+        $counter = StockLocation::create([
+            'branch_id' => $branch->id,
+            'business_unit_id' => $branchUnit->id,
+            'name' => 'Other ledger counter',
+            'type' => 'COUNTER',
+        ]);
+        // This test intentionally sells the shared master in the newly created branch.
+        app(TransactionService::class)->run(fn () => app(BusinessUnitService::class)->product(['product_id' => $this->unit->product_id, 'business_unit_id' => $counter->business_unit_id, 'available' => true, 'prices' => []]));
         $waiter = $this->staff('Waiter', $this->main->branch_id);
-        $waiter->branches()->attach($branch->id, ['company_id' => $waiter->company_id]);
+
+        $waiter->branches()->attach($branch->id, [
+            'company_id' => $waiter->company_id,
+        ]);
+
+        $waiter->businessUnits()->syncWithoutDetaching([
+            $branchUnit->id => [
+                'company_id' => $waiter->company_id,
+            ],
+        ]);
         $firstShift = app(ShiftService::class)->open(['user_id' => $waiter->id, 'stock_location_id' => $this->main->id, 'type' => 'WAITER']);
         $send = fn (int $counter) => app(OrderService::class)->send(['waiter_id' => $waiter->id, 'pin' => '0123', 'stock_location_id' => $counter, 'discount' => '0', 'items' => [['product_unit_id' => $this->unit->id, 'quantity' => '1']]], (string) Str::uuid());
         $send($this->main->id);
-        app(ShiftService::class)->close($firstShift->id, ['override_reason' => 'Approved transfer to second branch']);
+        // Historical overrides remain visible; new shifts cannot recreate this debt carryover.
+        $firstShift->update(['status' => 'CLOSED', 'closed_at' => now(), 'override_reason' => 'Historical branch transfer']);
         app(GoodsReceiptService::class)->post(['supplier_invoice' => 'SCOPE-BRANCH-OPENING', 'supplier_id' => Supplier::firstOrFail()->id, 'stock_location_id' => $counter->id, 'received_on' => now()->toDateString(), 'items' => [['product_unit_id' => $this->unit->id, 'quantity' => '5', 'unit_cost' => '2000']]]);
-        app(ShiftService::class)->open(['user_id' => $waiter->id, 'stock_location_id' => $counter->id, 'type' => 'WAITER']);
+        $cashier = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => $this->owner->role_id,
+        ]);
+
+        $cashier->branches()->attach($branch->id, [
+            'company_id' => $cashier->company_id,
+        ]);
+
+        $cashier->businessUnits()->syncWithoutDetaching([
+            $branchUnit->id => [
+                'company_id' => $cashier->company_id,
+            ],
+        ]);
+
+        app(ShiftService::class)->open([
+            'user_id' => $cashier->id,
+            'stock_location_id' => $counter->id,
+            'type' => 'CASHIER',
+        ]);
+        Shift::create(['user_id' => $waiter->id, 'branch_id' => $branch->id, 'stock_location_id' => $counter->id, 'number' => 'LEGACY-TRANSFER', 'type' => 'WAITER', 'status' => 'OPEN', 'opened_at' => now()]);
         $otherOrder = $send($counter->id);
         $manager = User::where('email', 'manager@nightshift.test')->firstOrFail();
         $this->actingAs($manager);

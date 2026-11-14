@@ -2,6 +2,7 @@ import { t } from "./localization.js";
 
 const page = document.querySelector(".whatsapp-page");
 if (page) {
+    page.dataset.configuredDevice = page.querySelector("[data-whatsapp-device]").value;
     const notice = (message, error = false) => {
         const node = document.getElementById("whatsapp-notice");
         node.hidden = false;
@@ -51,13 +52,18 @@ if (page) {
     }
     async function connection(action, payload = {}) {
         const data = await request(`/connection/${action}`, payload);
+        if (action === "device") page.dataset.deviceSaved = "true";
+        page.dataset.configuredDevice = data.device_id || "";
         if (data.device_id) page.querySelector("[data-whatsapp-device]").value = data.device_id;
         if (data.status) {
             const statuses = {
                 CONNECTED: "Connected",
+                NEEDS_RELINKING: "Needs relinking",
                 CONNECTING: "Connecting",
                 DISCONNECTED: "Disconnected",
                 NOT_CONFIGURED: "Not configured",
+                NOT_FOUND: "Not Found",
+                PROVIDER_ERROR: "Provider Error",
             };
             page.querySelectorAll("[data-whatsapp-status]").forEach(
                 (node) => (node.textContent = t(statuses[data.status] || "Disconnected")),
@@ -69,22 +75,86 @@ if (page) {
             page.querySelector("[data-whatsapp-jid]").textContent = data.jid || "—";
             notice(statuses[data.status] || "Disconnected");
         }
-        const result = document.getElementById("whatsapp-link-result");
-        if (data.qr_image) {
-            result.replaceChildren();
-            const image = new Image();
-            image.src = data.qr_image;
-            image.alt = t("Scan to link this bar’s WhatsApp");
-            result.append(image);
-            setTimeout(() => {
-                if (image.isConnected) {
-                    image.remove();
-                    notice("QR code expired. Get a new QR code.");
-                }
-            }, data.expires_in * 1000);
-        }
-        if (data.pair_code) result.textContent = data.pair_code;
+        page.querySelector("[data-whatsapp-connection-jid]").textContent = data.jid || "—";
+        page.querySelector("[data-whatsapp-connection-checked]").textContent = data.last_checked_at
+            ? new Date(data.last_checked_at).toLocaleString()
+            : "—";
+        const warning = page.querySelector("[data-whatsapp-connection-warning]");
+        warning.hidden = data.status === "CONNECTED";
+        warning.textContent = t(
+            data.status === "NOT_FOUND"
+                ? "Device ID was not found on the WhatsApp server."
+                : "Manage device linking on the WhatsApp server, then test the connection here.",
+        );
     }
+    function updateRecipient(form) {
+        const allBranches = form.elements.all_branches?.checked || false;
+        const selected = new Set(
+            [...form.querySelectorAll('[name="branch_ids[]"]:checked')].map((e) => e.value),
+        );
+        form.querySelectorAll('[name="branch_ids[]"]').forEach((e) => (e.disabled = allBranches));
+        form.querySelectorAll('[name="business_unit_ids[]"]').forEach((e) => {
+            const allowed = allBranches || selected.has(e.dataset.branch);
+            e.disabled = !allowed || form.elements.all_business_units?.checked || false;
+            e.closest("label").hidden = !allowed;
+            if (!allowed) e.checked = false;
+        });
+    }
+    page.querySelectorAll('[data-whatsapp-form="recipient"]').forEach(updateRecipient);
+    page.addEventListener("change", (event) => {
+        const form = event.target.closest('[data-whatsapp-form="recipient"]');
+        if (form) updateRecipient(form);
+    });
+    function updateSchedule(form) {
+        const kind = form.elements.scope.value,
+            branch = form.elements.branch_id,
+            unit = form.elements.business_unit_id,
+            counter = form.elements.stock_location_id;
+        form.querySelectorAll("[data-schedule-frequency]").forEach(
+            (e) => (e.hidden = e.dataset.scheduleFrequency !== form.elements.report_type.value),
+        );
+        branch.disabled = kind === "COMPANY";
+        branch.required = !branch.disabled;
+        unit.disabled = kind !== "UNIT" || !branch.value;
+        unit.required = kind === "UNIT";
+        form.querySelectorAll("[data-schedule-scope-field]").forEach(
+            (e) =>
+                (e.hidden =
+                    kind === "COMPANY" ||
+                    (e.dataset.scheduleScopeField === "business_unit_id" && kind !== "UNIT")),
+        );
+        for (const control of [unit, counter]) {
+            for (const option of control.options) {
+                const incompatible =
+                    option.value &&
+                    ((!branch.disabled && branch.value && option.dataset.branch !== branch.value) ||
+                        (control === counter &&
+                            !unit.disabled &&
+                            unit.value &&
+                            option.dataset.unit !== unit.value));
+                option.disabled = Boolean(incompatible);
+                option.hidden = Boolean(incompatible);
+            }
+            if (control.selectedOptions[0]?.disabled) control.value = "";
+        }
+        counter.disabled = kind === "COMPANY" || !branch.value || (kind === "UNIT" && !unit.value);
+        const advanced = unit.selectedOptions[0]?.dataset.advanced === "1";
+        counter.closest("[data-schedule-scope-field]").hidden = !advanced;
+        if (!advanced) {
+            counter.disabled = true;
+            counter.value = "";
+        }
+    }
+    page.querySelectorAll('[data-whatsapp-form="schedule"]').forEach(updateSchedule);
+    page.addEventListener("change", (event) => {
+        const form = event.target.closest('[data-whatsapp-form="schedule"]');
+        if (form) updateSchedule(form);
+    });
+    page.querySelector("[data-whatsapp-device]").addEventListener("input", () => {
+        page.querySelectorAll('[data-whatsapp-connection="status"]').forEach(
+            (button) => (button.disabled = true),
+        );
+    });
     let busy = false;
     async function perform(button, callback) {
         if (busy) return;
@@ -105,6 +175,12 @@ if (page) {
             busy = false;
             page.setAttribute("aria-busy", "false");
             buttons.forEach((item) => (item.disabled = disabled.get(item)));
+            if (page.dataset.deviceSaved) {
+                page.querySelectorAll('[data-whatsapp-connection="status"]').forEach(
+                    (button) => (button.disabled = false),
+                );
+                delete page.dataset.deviceSaved;
+            }
         }
     }
     page.addEventListener("click", (event) => {
@@ -123,7 +199,7 @@ if (page) {
         perform(button, async () => {
             const data = Object.fromEntries(new FormData(form));
             form.querySelectorAll("input[type=checkbox]").forEach((input) => {
-                if (input.name !== "branch_ids[]") data[input.name] = input.checked;
+                if (!input.name.endsWith("[]")) data[input.name] = input.checked;
             });
             const type = form.dataset.whatsappForm;
             if (type === "settings") {
@@ -133,14 +209,35 @@ if (page) {
                 data.branch_ids = [...form.querySelectorAll('[name="branch_ids[]"]:checked')].map(
                     (i) => Number(i.value),
                 );
+                for (const key of ["business_unit_ids", "enabled_types"]) {
+                    data[key] = [...form.querySelectorAll(`[name="${key}[]"]:checked`)].map((i) =>
+                        key === "enabled_types" ? i.value : Number(i.value),
+                    );
+                    delete data[key + "[]"];
+                }
+                data.all_business_units ??= false;
                 delete data["branch_ids[]"];
                 data.all_branches ??= false;
                 await request(`/recipients/${form.dataset.recipientId || ""}`, data);
-                location.hash = "recipients";
+                history.replaceState(null, "", "#recipients");
                 location.reload();
-            } else if (type === "pairing") await connection("code", { phone: data.phone });
+            } else if (type === "schedule") {
+                data.recipient_ids = [
+                    ...form.querySelectorAll('[name="recipient_ids[]"]:checked'),
+                ].map((i) => Number(i.value));
+                delete data["recipient_ids[]"];
+                for (const key of ["branch_id", "business_unit_id", "stock_location_id"])
+                    data[key] = data[key] ? Number(data[key]) : null;
+                await request(`/schedules/${form.dataset.scheduleId || ""}`, data);
+                history.replaceState(null, "", "#reports");
+                location.reload();
+            } else if (type === "device") await connection("device", { device_id: data.device_id });
             else {
-                const fingerprint = JSON.stringify({ type: button.value, ...data });
+                const fingerprint = JSON.stringify({
+                    device_id: page.dataset.configuredDevice,
+                    type: button.value,
+                    ...data,
+                });
                 form.requestKeys ||= new Map();
                 if (!form.requestKeys.has(fingerprint))
                     form.requestKeys.set(fingerprint, crypto.randomUUID());

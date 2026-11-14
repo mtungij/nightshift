@@ -6,6 +6,7 @@ use App\Domain\OperationalShift;
 use App\Domain\StaffVisibility;
 use App\Domain\TenantContext;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\Order;
 use App\Models\ServiceTable;
 use App\Models\Shift;
@@ -31,7 +32,7 @@ final class MyOrdersService
         $request->session()->forget(self::SESSION_KEY);
         $counter = $this->counter($request, $counterId);
         $view = Str::random(64);
-        $request->session()->put(self::SESSION_KEY, ['view_hash' => hash('sha256', $view), 'actor_id' => $request->user()->id, 'company_id' => $request->user()->company_id, 'branch_id' => $counter->branch_id, 'counter_id' => $counter->id, 'expires_at' => now()->addSeconds(self::LIFETIME_SECONDS)->getTimestamp()]);
+        $request->session()->put(self::SESSION_KEY, ['view_hash' => hash('sha256', $view), 'actor_id' => $request->user()->id, 'company_id' => $request->user()->company_id, 'branch_id' => $counter->branch_id, 'business_unit_id' => $counter->business_unit_id, 'counter_id' => $counter->id, 'expires_at' => now()->addSeconds(self::LIFETIME_SECONDS)->getTimestamp()]);
 
         return ['view' => $view, 'staff' => $this->eligible($request, $counter)->get()->filter(fn (User $user) => $this->operational($user))->map(fn (User $user) => ['id' => $user->id, 'name' => $user->name, 'role' => $user->role->name])->values()->all()];
     }
@@ -45,6 +46,7 @@ final class MyOrdersService
         unset($state['token_hash'], $state['staff_id'], $state['pin_fingerprint'], $state['shift_id']);
         $request->session()->put(self::SESSION_KEY, $state);
         $counter = $this->counter($request, $state['counter_id']);
+        abort_unless(($state['business_unit_id'] ?? null) === $counter->business_unit_id, 403, 'Reopen My Orders for the current Business Unit.');
         $staff = $this->staff($request, $counter, $staffId);
         try {
             $verified = $this->pins->verify($staff->id, $pin);
@@ -80,6 +82,7 @@ final class MyOrdersService
         $state = $this->state($request);
         abort_unless(isset($state['token_hash'], $state['staff_id']) && hash_equals($state['token_hash'], hash('sha256', (string) $request->header('X-My-Orders-Token'))), 403, 'Verify your PIN to view My Orders.');
         $counter = $this->counter($request, $state['counter_id']);
+        abort_unless(($state['business_unit_id'] ?? null) === $counter->business_unit_id, 403, 'Reopen My Orders for the current Business Unit.');
         $staff = $this->staff($request, $counter, $state['staff_id']);
         if ($staff->pin_locked_until?->isFuture() || ! hash_equals($state['pin_fingerprint'], $this->fingerprint($staff)) || $this->shift($staff, $counter)->id !== $state['shift_id']) {
             $request->session()->forget(self::SESSION_KEY);
@@ -88,12 +91,12 @@ final class MyOrdersService
 
         // Change only Eloquent's read scope. Laravel's authenticated user stays the workstation.
         return $this->context->withUserScope($staff, function () use ($staff, $counter, $filter, $page, $orderId) {
-            $query = Order::where('company_id', $staff->company_id)->where('branch_id', $counter->branch_id)->where('stock_location_id', $counter->id);
+            $query = Order::where('company_id', $staff->company_id)->where('branch_id', $counter->branch_id)->when(! $this->simple($counter), fn ($q) => $q->where('stock_location_id', $counter->id))->whereExists(fn ($q) => $q->selectRaw('1')->from('operational_unit_contexts as pos_unit')->whereColumn('pos_unit.record_id', 'orders.id')->whereColumn('pos_unit.company_id', 'orders.company_id')->where('pos_unit.record_type', 'orders')->where('pos_unit.business_unit_id', $counter->business_unit_id));
             if ($staff->role->name === 'Waiter') {
                 $query->where('waiter_id', $staff->id);
             } else {
                 // Preserve the existing cashier settlement/ownership rules, including paid history.
-                $query = $this->visibility->orders($query);
+                $query = $this->visibility->orders($query, $this->simple($counter) ? $counter->business_unit_id : null);
             }
             if ($orderId !== null) {
                 $order = (clone $query)->with('waiter')->findOrFail($orderId);
@@ -134,7 +137,7 @@ final class MyOrdersService
             ->whereHas('branches', fn ($q) => $q->where('branches.id', $counter->branch_id))
             ->where(function ($q) use ($counter) {
                 foreach (['Waiter' => 'WAITER', 'Cashier' => 'CASHIER'] as $role => $type) {
-                    $q->orWhere(fn ($q) => $q->whereHas('role', fn ($q) => $q->where('name', $role))->whereIn('id', Shift::where('branch_id', $counter->branch_id)->where('stock_location_id', $counter->id)->where('status', 'OPEN')->where('type', $type)->select('user_id')));
+                    $q->orWhere(fn ($q) => $q->whereHas('role', fn ($q) => $q->where('name', $role))->whereIn('id', $this->shiftScope(Shift::where('branch_id', $counter->branch_id), $counter)->where('status', 'OPEN')->where('type', $type)->select('user_id')));
                 }
             });
         if (in_array($actor->role->name, ['Waiter', 'Cashier'], true)) {
@@ -152,7 +155,7 @@ final class MyOrdersService
     private function staff(Request $request, StockLocation $counter, int $id): User
     {
         $staff = $this->eligible($request, $counter)->findOrFail($id);
-        abort_unless($this->operational($staff), 403);
+        abort_unless($this->operational($staff) && $staff->canAccessBusinessUnit($counter->business_unit_id), 403);
         $this->shift($staff, $counter);
 
         return $staff;
@@ -160,7 +163,24 @@ final class MyOrdersService
 
     private function shift(User $staff, StockLocation $counter): Shift
     {
-        return Shift::where('company_id', $staff->company_id)->where('branch_id', $counter->branch_id)->where('stock_location_id', $counter->id)->where('user_id', $staff->id)->where('status', 'OPEN')->where('type', $staff->role->name === 'Waiter' ? 'WAITER' : 'CASHIER')->firstOrFail();
+        return $this->shiftScope(Shift::where('company_id', $staff->company_id)->where('branch_id', $counter->branch_id), $counter)->where('user_id', $staff->id)->where('status', 'OPEN')->where('type', $staff->role->name === 'Waiter' ? 'WAITER' : 'CASHIER')->firstOrFail();
+    }
+
+    private function simple(StockLocation $counter): bool
+    {
+        return BusinessUnit::withoutGlobalScopes()->where('company_id', $counter->company_id)->whereKey($counter->business_unit_id)->where('advanced_locations_enabled', false)->exists();
+    }
+
+    /** @param Builder<Shift> $query
+     * @return Builder<Shift>
+     */
+    private function shiftScope(Builder $query, StockLocation $counter): Builder
+    {
+        if (! $this->simple($counter)) {
+            return $query->where('stock_location_id', $counter->id);
+        }
+
+        return $query->whereExists(fn ($q) => $q->selectRaw('1')->from('operational_unit_contexts as my_unit')->whereColumn('my_unit.company_id', 'shifts.company_id')->whereColumn('my_unit.record_id', 'shifts.id')->where('my_unit.record_type', 'shifts')->where('my_unit.business_unit_id', $counter->business_unit_id));
     }
 
     /** @return array<string, mixed> */
@@ -182,12 +202,25 @@ final class MyOrdersService
 
     private function securityEvent(string $event, Request $request, User $staff, StockLocation $counter): void
     {
-        $this->audit->record($event, 'Security', 'User', $staff->id, [], ['selected_staff_id' => $staff->id, 'terminal_user_id' => $request->user()->id, 'stock_location_id' => $counter->id], $counter->branch_id);
+        $this->audit->record(
+            $event,
+            'Security',
+            'User',
+            $staff->id,
+            [],
+            [
+                'selected_staff_id' => $staff->id,
+                'terminal_user_id' => $request->user()->id,
+                'business_unit_id' => $counter->business_unit_id,
+                'stock_location_id' => $counter->id,
+            ],
+            $counter->branch_id,
+        );
     }
 
     /** @return array<string, mixed> */
     private function present(Order $order, StockLocation $counter): array
     {
-        return ['id' => $order->id, 'invoice' => $order->invoice_number, 'created_at' => $order->created_at?->toIso8601String(), 'table' => ServiceTable::whereKey($order->service_table_id)->value('name'), 'counter' => $counter->name, 'waiter' => $order->waiter->name, 'order_note' => $order->order_note, 'total' => $order->total, 'amount_paid' => $order->amount_paid, 'balance' => $order->balance, 'status' => $order->status];
+        return ['business_unit' => BusinessUnit::whereKey($order->business_unit_id)->value('name'), 'id' => $order->id, 'invoice' => $order->invoice_number, 'created_at' => $order->created_at?->toIso8601String(), 'table' => ServiceTable::whereKey($order->service_table_id)->value('name'), 'counter' => $counter->name, 'waiter' => $order->waiter->name, 'order_note' => $order->order_note, 'total' => $order->total, 'amount_paid' => $order->amount_paid, 'balance' => $order->balance, 'status' => $order->status];
     }
 }

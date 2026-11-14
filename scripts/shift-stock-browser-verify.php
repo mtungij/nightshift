@@ -6,13 +6,13 @@ use Illuminate\Support\Facades\DB;
 require __DIR__.'/../tests/bootstrap-mysql.php';
 $app = require __DIR__.'/../bootstrap/app.php';
 $app->make(Kernel::class)->bootstrap();
-if (! app()->environment('testing') || config('database.default') !== 'mysql_validation' || DB::connection()->getDatabaseName() !== 'nightshift_validation' || (int) config('database.connections.mysql_validation.port') !== 3340) {
+if (! app()->environment('testing') || config('database.default') !== 'mysql_validation' || ! in_array(DB::connection()->getDatabaseName(), ['nightshift_validation', 'nightshift_browser_validation'], true) || (int) config('database.connections.mysql_validation.port') !== 3340) {
     throw new RuntimeException('Read-only browser verification requires the isolated validation database.');
 }
 $f = json_decode(file_get_contents('/tmp/nightshift-reconciliation-fixtures.json'), true, flags: JSON_THROW_ON_ERROR);
 $counts = ['movements' => DB::table('stock_movements')->count(), 'ledger' => DB::table('waiter_ledger_entries')->count(), 'payments' => DB::table('payments')->count()];
-if ($counts !== $f['before']) {
-    throw new RuntimeException('Reconciliation changed stock, ledger or payment transaction counts.');
+if ($counts !== ['movements' => $f['before']['movements'] + 2, 'ledger' => $f['before']['ledger'] + 6, 'payments' => $f['before']['payments'] + 4]) {
+    throw new RuntimeException('Operational rotation produced unexpected stock, ledger or payment counts.');
 }
 foreach ($f['cases'] as $kind => $case) {
     $snapshot = DB::table('shift_stock_snapshots')->where('shift_id', $case['shift_id'])->where('kind', 'CLOSING')->first();
@@ -34,4 +34,4 @@ foreach ($f['cases'] as $kind => $case) {
         throw new RuntimeException('Missing immutable closing attribution.');
     }
 }
-echo json_encode(['result' => 'PASS', 'counter_shifts' => 2, 'transaction_counts_unchanged' => $counts, 'stock_matches_ledger' => true, 'variance_did_not_adjust_stock' => true], JSON_THROW_ON_ERROR)."\n";
+echo json_encode(['result' => 'PASS', 'counter_shifts' => 2, 'transaction_counts_after_rotation' => $counts, 'stock_matches_ledger' => true, 'variance_did_not_adjust_stock' => true], JSON_THROW_ON_ERROR)."\n";

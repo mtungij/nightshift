@@ -4,10 +4,12 @@ namespace Tests\Feature;
 
 use App\Domain\OperationalShift;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\Role;
 use App\Models\Shift;
 use App\Models\StockLocation;
 use App\Models\User;
+use App\Services\BusinessUnitService;
 use App\Services\ShiftService;
 use Database\Seeders\NightshiftDemoSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -32,7 +34,16 @@ class OperationalShiftRoutingTest extends TestCase
         $this->seed(NightshiftDemoSeeder::class);
         $this->owner = User::where('email', 'admin@nightshift.test')->firstOrFail();
         $this->actingAs($this->owner);
-        $this->counter = StockLocation::where('name', 'VIP Counter')->firstOrFail();
+
+        $branch = Branch::firstOrFail();
+        $bar = BusinessUnit::where('branch_id', $branch->id)->where('code', 'BAR')->firstOrFail();
+
+        $this->counter = StockLocation::create([
+            'branch_id' => $branch->id,
+            'business_unit_id' => $bar->id,
+            'name' => 'Routing counter',
+            'type' => 'COUNTER',
+        ]);
     }
 
     public static function staffRoles(): array
@@ -42,8 +53,42 @@ class OperationalShiftRoutingTest extends TestCase
 
     private function staff(string $role): User
     {
-        $user = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', $role)->firstOrFail()->id, 'operational_pin' => Hash::make('0123')]);
-        $user->branches()->attach($this->counter->branch_id, ['company_id' => $user->company_id]);
+        $user = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => Role::where('name', $role)->firstOrFail()->id,
+            'operational_pin' => Hash::make('0123'),
+        ]);
+
+        $user->branches()->syncWithoutDetaching([
+            $this->counter->branch_id => ['company_id' => $user->company_id],
+        ]);
+
+        app(BusinessUnitService::class)->assign(
+            $user,
+            [(int) $this->counter->business_unit_id]
+        );
+
+        if ($role === 'Waiter' && ! Shift::where('stock_location_id', $this->counter->id)->where('type', 'CASHIER')->exists()) {
+            $cashier = User::factory()->create([
+                'company_id' => $this->owner->company_id,
+                'role_id' => Role::where('name', 'Cashier')->firstOrFail()->id,
+            ]);
+
+            $cashier->branches()->syncWithoutDetaching([
+                $this->counter->branch_id => ['company_id' => $cashier->company_id],
+            ]);
+
+            app(BusinessUnitService::class)->assign(
+                $cashier,
+                [(int) $this->counter->business_unit_id]
+            );
+
+            app(ShiftService::class)->open([
+                'user_id' => $cashier->id,
+                'stock_location_id' => $this->counter->id,
+                'type' => 'CASHIER',
+            ]);
+        }
 
         return $user;
     }
@@ -65,7 +110,7 @@ class OperationalShiftRoutingTest extends TestCase
     public function test_existing_open_shift_goes_to_work_area_and_cannot_overlap(string $role, string $type, string $screen): void
     {
         $user = $this->staff($role);
-        $shift = app(ShiftService::class)->open(['user_id' => $user->id, 'stock_location_id' => $this->counter->id, 'type' => $type, 'opening_cash' => '75000']);
+        $shift = app(ShiftService::class)->open(['user_id' => $user->id, 'stock_location_id' => $this->counter->id, 'type' => $type, 'opening_cash' => $type === 'CASHIER' ? '75000' : '0', 'opening_reason' => 'Authorized fixture opening float']);
         auth()->forgetUser();
         $this->post('/login', ['username' => $user->username, 'pin' => '0123'])->assertRedirect('/dashboard#'.$screen);
         $this->get('/open-shift')->assertRedirect('/dashboard#'.$screen);
@@ -87,8 +132,7 @@ class OperationalShiftRoutingTest extends TestCase
         $this->actingAs($user);
         $payload = ['stock_location_id' => $this->counter->id];
         if ($role === 'Cashier') {
-            $this->post('/open-shift', $payload)->assertSessionHasErrors('opening_cash');
-            $payload['opening_cash'] = '25000.50';
+            $this->post('/open-shift', [...$payload, 'opening_cash' => '25000.50'])->assertSessionHasErrors('opening_cash');
         }
         $this->post('/open-shift', $payload)->assertSessionHasNoErrors()->assertRedirect('/dashboard#'.$screen);
         $this->get('/dashboard')->assertOk();
@@ -108,30 +152,89 @@ class OperationalShiftRoutingTest extends TestCase
         $user = $this->staff('Cashier');
         $this->actingAs($user);
         $this->get('/open-shift')->assertOk()->assertDontSee('Unassigned counter');
-        $this->post('/open-shift', ['stock_location_id' => $outside->id, 'opening_cash' => '0'])->assertNotFound();
+        $this->post('/open-shift', ['stock_location_id' => $outside->id])->assertNotFound();
         $this->post('/open-shift', ['stock_location_id' => $this->counter->id, 'opening_cash' => '-1'])->assertSessionHasErrors('opening_cash');
         $this->post('/open-shift', ['stock_location_id' => $this->counter->id, 'opening_cash' => '0', 'user_id' => $this->owner->id])->assertSessionHasErrors('user_id');
         $this->postJson('/api/nightshift/commands/shift-open', ['idempotency_key' => (string) Str::uuid(), 'stock_location_id' => $this->counter->id, 'type' => 'WAITER', 'opening_cash' => '0'])->assertUnprocessable();
         $this->assertSame(0, Shift::where('user_id', $user->id)->count());
     }
 
-    public function test_stale_branch_assignment_cannot_hide_an_overlapping_shift(): void
+    public function test_active_shift_blocks_branch_and_unit_reassignment_until_closed(): void
     {
         $user = $this->staff('Cashier');
-        app(ShiftService::class)->open(['user_id' => $user->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER']);
+
+        $shift = app(ShiftService::class)->open([
+            'user_id' => $user->id,
+            'stock_location_id' => $this->counter->id,
+            'type' => 'CASHIER',
+        ]);
+
+        $this->actingAs($this->owner);
+
         $branch = Branch::create(['name' => 'Reassigned branch']);
-        $counter = StockLocation::create(['branch_id' => $branch->id, 'name' => 'Reassigned counter', 'type' => 'COUNTER']);
-        $user->branches()->sync([$branch->id => ['company_id' => $user->company_id]]);
-        $this->actingAs($user);
-        $this->assertNull(app(OperationalShift::class)->active($user));
-        $this->post('/open-shift', ['stock_location_id' => $counter->id, 'opening_cash' => '0'])->assertSessionHasErrors('transaction');
-        $this->assertSame(1, Shift::withoutGlobalScopes()->where('user_id', $user->id)->where('status', 'OPEN')->count());
+
+        $unit = app(BusinessUnitService::class)->save([
+            'branch_id' => $branch->id,
+            'name' => 'Reassigned Unit',
+            'code' => 'REASSIGNED',
+            'active' => true,
+        ]);
+
+        $counter = StockLocation::create([
+            'branch_id' => $branch->id,
+            'business_unit_id' => $unit->id,
+            'name' => 'Reassigned counter',
+            'type' => 'COUNTER',
+        ]);
+
+        $user->branches()->syncWithoutDetaching([
+            $branch->id => ['company_id' => $user->company_id],
+        ]);
+
+        try {
+            app(BusinessUnitService::class)->assign($user, [$unit->id]);
+            $this->fail('Active shift allowed unit reassignment.');
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $this->assertStringContainsString(
+                'Close active shifts before removing unit access.',
+                $e->getMessage()
+            );
+        }
+
+        $this->assertSame(
+            1,
+            Shift::withoutGlobalScopes()
+                ->where('user_id', $user->id)
+                ->where('status', 'OPEN')
+                ->count()
+        );
+
+        $this->assertTrue(
+            $user->fresh()->businessUnits()
+                ->whereKey($this->counter->business_unit_id)
+                ->exists()
+        );
+
+        $this->assertFalse(
+            $user->fresh()->businessUnits()
+                ->whereKey($unit->id)
+                ->exists()
+        );
+
+        $this->assertSame(
+            $shift->id,
+            Shift::withoutGlobalScopes()->whereKey($shift->id)->value('id')
+        );
+
+        $this->assertSame($counter->business_unit_id, $unit->id);
     }
 
     public function test_management_routing_is_unchanged_and_inactive_counter_is_not_a_work_shift(): void
     {
         foreach (['Company Admin / Owner', 'Manager', 'Supervisor', 'Store Keeper'] as $role) {
+            $this->actingAs($this->owner);
             $user = $this->staff($role);
+
             $this->actingAs($user)->get('/dashboard')->assertOk();
             $this->get('/open-shift')->assertRedirect('/dashboard');
         }
@@ -140,6 +243,6 @@ class OperationalShiftRoutingTest extends TestCase
         app(ShiftService::class)->open(['user_id' => $user->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER']);
         $this->counter->update(['active' => false]);
         $this->actingAs($user)->get('/dashboard')->assertRedirect('/open-shift');
-        $this->get('/open-shift')->assertDontSee('VIP Counter');
+        $this->get('/open-shift')->assertDontSee('Routing counter');
     }
 }

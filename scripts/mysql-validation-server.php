@@ -9,12 +9,12 @@ use Illuminate\Support\Facades\DB;
 require __DIR__.'/../tests/bootstrap-mysql.php';
 $app = require __DIR__.'/../bootstrap/app.php';
 $app->make(Kernel::class)->bootstrap();
-if (! app()->environment('testing') || config('database.default') !== 'mysql_validation' || DB::connection()->getDatabaseName() !== 'nightshift_validation' || DB::getDriverName() !== 'mysql') {
+if (! app()->environment('testing') || config('database.default') !== 'mysql_validation' || ! in_array(DB::connection()->getDatabaseName(), ['nightshift_validation', 'nightshift_browser_validation', 'nightshift_treasury_browser_validation'], true) || DB::getDriverName() !== 'mysql') {
     http_response_code(503);
     exit('Validation server requires nightshift_validation on mysql_validation.');
 }
 $identity = DB::selectOne('SELECT DATABASE() AS db, CURRENT_USER() AS account');
-if ($identity->db !== 'nightshift_validation' || ! str_starts_with($identity->account, 'nightshift_user@')) {
+if (! in_array($identity->db, ['nightshift_validation', 'nightshift_browser_validation', 'nightshift_treasury_browser_validation'], true) || ! str_starts_with($identity->account, 'nightshift_user@')) {
     http_response_code(503);
     exit('Unexpected validation database/account.');
 }

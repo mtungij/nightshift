@@ -16,7 +16,7 @@ final class StockMovementPresenter
     /** @return array<string, string|null> */
     public static function present(StockMovement $movement): array
     {
-        $location = StockLocation::whereKey($movement->stock_location_id)->first()?->name;
+        $location = StockLocation::withoutGlobalScopes()->where('company_id', $movement->company_id)->whereKey($movement->stock_location_id)->first()?->name;
         $from = str_starts_with($movement->quantity, '-') ? $location : null;
         $to = str_starts_with($movement->quantity, '-') ? null : $location;
         $reference = $movement->reference_type.' #'.$movement->reference_id;
@@ -29,8 +29,8 @@ final class StockMovementPresenter
         } elseif ($movement->reference_type === 'StockTransfer') {
             $transfer = StockTransfer::whereKey($movement->reference_id)->first();
             if ($transfer) {
-                $from = StockLocation::whereKey($transfer->source_location_id)->first()?->name;
-                $to = StockLocation::whereKey($transfer->destination_location_id)->first()?->name;
+                $from = StockLocation::withoutGlobalScopes()->where('company_id', $transfer->company_id)->whereKey($transfer->source_location_id)->first()?->name;
+                $to = StockLocation::withoutGlobalScopes()->where('company_id', $transfer->company_id)->whereKey($transfer->destination_location_id)->first()?->name;
                 $reference = $transfer->number;
             }
         }

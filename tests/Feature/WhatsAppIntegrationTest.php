@@ -3,10 +3,13 @@
 namespace Tests\Feature;
 
 use App\Domain\Decimal as D;
+use App\Domain\TenantContext;
 use App\Jobs\WhatsApp\SendWhatsAppMessageJob;
+use App\Models\Shift;
 use App\Models\Supplier;
 use App\Models\User;
 use App\Models\WhatsAppDeliveryLog;
+use App\Models\WhatsAppSetting;
 use App\Services\AdjustmentService;
 use App\Services\GoodsReceiptService;
 use App\Services\Gowa;
@@ -20,6 +23,7 @@ use App\Services\WhatsApp\ReportBuilder;
 use App\Services\WhatsApp\Scheduler;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -36,7 +40,31 @@ class WhatsAppIntegrationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        $this->travelTo(CarbonImmutable::parse('2026-11-14 12:00:00', 'Africa/Dar_es_Salaam'));
+
         $this->setupWhatsApp();
+    }
+
+    public function test_connection_identifies_editable_manual_device_in_both_languages(): void
+    {
+        config(['gowa.webhook_secret' => 'UI-SECRET-WEBHOOK']);
+        foreach (['en', 'sw'] as $locale) {
+            $this->post('/settings/language', ['locale' => $locale])->assertRedirect();
+            $response = $this->get('/settings/whatsapp')->assertOk();
+            $response->assertSee($locale === 'en' ? 'WhatsApp Device ID' : 'Kitambulisho cha Kifaa cha WhatsApp');
+            $response->assertSee($locale === 'en' ? 'Create and link your WhatsApp device' : 'Tengeneza na unganisha kifaa');
+            $response->assertSee($locale === 'en' ? 'Save Device ID' : 'Hifadhi Device ID');
+            $response->assertDontSee('data-whatsapp-connection="qr"', false)->assertDontSee('data-whatsapp-form="pairing"', false);
+            $html = $response->getContent();
+            preg_match('/<input[^>]*name="device_id"[^>]*>/', $html, $device);
+            $this->assertNotEmpty($device);
+            $this->assertStringNotContainsString('readonly', $device[0]);
+            $this->assertSame(2, substr_count($html, 'data-whatsapp-status'));
+            foreach (['fake-password-not-for-real-use', 'fake-user', 'UI-SECRET-WEBHOOK', 'Authorization: Basic'] as $secret) {
+                $response->assertDontSee($secret);
+            }
+        }
     }
 
     public function test_company_devices_recipients_logs_and_actions_are_isolated(): void
@@ -51,23 +79,56 @@ class WhatsAppIntegrationTest extends TestCase
         app(Gowa::class)->deviceStatus($this->settings);
     }
 
-    public function test_device_slot_is_generated_for_current_company_and_link_fields_are_backend_only(): void
+    public function test_manual_device_save_trim_edit_and_retired_provisioning(): void
     {
         $this->settings->update(['device_id' => null, 'provisioned' => false]);
-        Http::fake(['notify.buildcore.site/devices' => Http::response(['code' => 'SUCCESS', 'results' => []]), 'notify.buildcore.site/devices/*/login/code*' => Http::response(['code' => 'SUCCESS', 'results' => ['pair_code' => 'ABCD-1234']])]);
-        $this->postJson('/settings/whatsapp/connection/code', ['phone' => '0629123456'])->assertOk()->assertJsonPath('pair_code', 'ABCD-1234');
-        $device = $this->settings->fresh()->device_id;
-        $this->assertStringStartsWith('nightshift-'.$this->owner->company_id.'-', $device);
-        Http::assertSent(fn ($r) => $r->url() === 'https://notify.buildcore.site/devices' && $r['device_id'] === $device && $r->hasHeader('X-Device-Id', $device));
-        $this->get('/settings/whatsapp')->assertOk()->assertDontSee('fake-password-not-for-real-use')->assertDontSee('fake-user');
+        Http::fake(['notify.buildcore.site/devices/*/status' => Http::response(['code' => 'SUCCESS', 'results' => ['is_connected' => true, 'is_logged_in' => true]])]);
+        $this->postJson('/settings/whatsapp/connection/device', ['device_id' => '  kongwa-device-001  '])->assertOk()->assertJsonPath('status', 'CONNECTED');
+        $this->assertSame('kongwa-device-001', $this->settings->fresh()->device_id);
+        $this->assertTrue($this->settings->fresh()->provisioned);
+        $this->postJson('/settings/whatsapp/connection/device', ['device_id' => 'hotel-device-002'])->assertOk();
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/devices/hotel-device-002/status') && $r->hasHeader('X-Device-Id', 'hotel-device-002'));
+        foreach (['qr', 'code', 'reconnect'] as $action) {
+            $this->postJson('/settings/whatsapp/connection/'.$action)->assertNotFound();
+        }
+        Http::assertNotSent(fn ($r) => $r->method() !== 'GET');
     }
 
-    public function test_qr_is_proxied_without_credentials_and_cross_origin_images_are_rejected(): void
+    public function test_manual_device_validation_company_uniqueness_and_permissions(): void
     {
-        Http::fake(['notify.buildcore.site/devices/*/login' => Http::response(['code' => 'SUCCESS', 'results' => ['qr_link' => 'https://notify.buildcore.site/statics/images/qrcode/scan.png', 'qr_duration' => 30]]), 'notify.buildcore.site/statics/images/qrcode/scan.png' => Http::response('fake-png-for-proxy', 200, ['Content-Type' => 'image/png'])]);
-        $this->postJson('/settings/whatsapp/connection/qr')->assertOk()->assertJsonPath('expires_in', 30)->assertJsonPath('qr_image', 'data:image/png;base64,'.base64_encode('fake-png-for-proxy'));
-        $this->expectException(GowaException::class);
-        app(Gowa::class)->qrImage($this->settings, 'https://attacker.test/scan.png');
+        foreach (['', 'https://attacker.test', '../other', 'bad id', str_repeat('a', 101)] as $device) {
+            $this->postJson('/settings/whatsapp/connection/device', ['device_id' => $device])->assertUnprocessable();
+        }
+        $other = User::factory()->create();
+        app(TenantContext::class)->run($other, fn () => WhatsAppSetting::create(['device_id' => 'reserved-device']));
+        $this->postJson('/settings/whatsapp/connection/device', ['device_id' => 'reserved-device'])->assertUnprocessable();
+        foreach (['Manager', 'Cashier', 'Waiter', 'POS Terminal'] as $role) {
+            $this->actingAs($this->whatsAppStaff($role));
+            $this->postJson('/settings/whatsapp/connection/device', ['device_id' => 'unauthorized'])->assertForbidden();
+        }
+    }
+
+    public function test_manual_device_missing_disconnected_provider_error_and_enable_guard(): void
+    {
+        Http::fake(['*' => Http::sequence()->push(['code' => 'ERROR', 'message' => 'secret-provider-body'], 404)->push(['code' => 'ERROR', 'message' => 'secret-provider-body'], 503)->push(['code' => 'SUCCESS', 'results' => ['is_connected' => false, 'is_logged_in' => false]])]);
+        foreach ([404 => 'NOT_FOUND', 503 => 'PROVIDER_ERROR'] as $http => $status) {
+            $this->postJson('/settings/whatsapp/connection/device', ['device_id' => 'existing-device'])->assertOk()->assertJsonPath('status', $status)->assertDontSee('secret-provider-body');
+        }
+        $this->postJson('/settings/whatsapp/connection/status')->assertOk()->assertJsonPath('status', 'DISCONNECTED');
+        $this->settings->update(['device_id' => null]);
+        $this->postJson('/settings/whatsapp', $this->settings->preferences())->assertUnprocessable();
+        $this->postJson('/settings/whatsapp/send/test', ['recipient_id' => $this->recipient->id, 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+    }
+
+    public function test_late_status_response_cannot_verify_a_replacement_device(): void
+    {
+        Http::fake(function () {
+            DB::table('whatsapp_settings')->where('id', $this->settings->id)->update(['device_id' => 'replacement-during-check', 'connection_status' => 'NOT_CONFIGURED', 'jid' => null]);
+
+            return Http::response(['code' => 'SUCCESS', 'results' => ['is_connected' => true, 'is_logged_in' => true]]);
+        });
+        $this->postJson('/settings/whatsapp/connection/status')->assertOk()->assertJsonPath('device_id', 'replacement-during-check')->assertJsonPath('status', 'NOT_CONFIGURED');
+        $this->assertSame('NOT_CONFIGURED', $this->settings->fresh()->connection_status);
     }
 
     public function test_managers_can_only_manage_recipients_and_reports_in_assigned_branches(): void
@@ -176,14 +237,14 @@ class WhatsAppIntegrationTest extends TestCase
         $this->assertSame(0, D::cmp('3000', $data['collected']));
         $this->assertSame(0, D::cmp('1500', $data['outstanding']));
         $this->assertSame(0, D::cmp('1.5', $data['units'], 6));
-        $logs = app(Scheduler::class)->daily($this->recipient, $date);
+        $logs = app(Scheduler::class)->daily($this->recipient, $date, $this->owner->id);
         $sw = app(ReportBuilder::class)->daily($logs[0]);
-        $this->assertStringContainsString('TAARIFA YA LEO', $sw);
+        $this->assertStringContainsString('TAARIFA YA SIKU', $sw);
         $this->assertStringContainsString('TSh 4,500', $sw);
         $this->assertStringContainsString('Bidhaa Zilizouzwa: 1.5', $sw);
         $log = $logs[0];
         $log->update(['payload' => [...$log->payload, 'language' => 'en']]);
-        $this->assertStringContainsString('DAILY OWNER REPORT', app(ReportBuilder::class)->daily($log));
+        $this->assertStringContainsString('DAILY REPORT', app(ReportBuilder::class)->daily($log));
     }
 
     public function test_consolidated_and_per_branch_reports_respect_recipient_scope(): void
@@ -259,7 +320,8 @@ class WhatsAppIntegrationTest extends TestCase
         $order = $this->issueWhatsAppOrder();
         $this->actingAs($this->cashier);
         app(PaymentService::class)->receive($order->id, [['method' => 'Cash', 'amount' => '6000']]);
-        $this->completeStockCount($this->cashierShift);
+        app(TenantContext::class)->run($this->waiter, fn () => app(ShiftService::class)->close(Shift::where('user_id', $this->waiter->id)->firstOrFail()->id, []));
+        $this->completeStockCount($this->cashierShift, '4000');
         app(ShiftService::class)->close($this->cashierShift->id, ['actual_cash' => '4000', 'notes' => 'Verified cash shortage']);
         $this->actingAs($this->owner);
         $this->scanWhatsApp();
@@ -307,6 +369,7 @@ class WhatsAppIntegrationTest extends TestCase
         $order = $this->issueWhatsAppOrder();
         $this->actingAs($this->cashier);
         app(PaymentService::class)->receive($order->id, [['method' => 'Cash', 'amount' => '6000']]);
+        app(TenantContext::class)->run($this->waiter, fn () => app(ShiftService::class)->close(Shift::where('user_id', $this->waiter->id)->firstOrFail()->id, []));
         $this->completeStockCount($this->cashierShift);
         app(ShiftService::class)->close($this->cashierShift->id, ['actual_cash' => '6000']);
         $this->actingAs($this->owner);

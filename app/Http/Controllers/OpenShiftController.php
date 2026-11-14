@@ -4,8 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Domain\OperationalShift;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
+use App\Models\CashHandover;
 use App\Models\StockLocation;
+use App\Services\CashHandoverService;
 use App\Services\ShiftService;
+use App\Services\UnitOperationalService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -22,10 +26,16 @@ final class OpenShiftController extends Controller
         }
         Gate::authorize('open-shifts');
 
-        return view('open-shift', ['cashier' => $shifts->type($user) === 'CASHIER',
+        $units = BusinessUnit::where('active', true)->orderBy('name')->get()->filter(fn ($unit) => $user->canAccessBusinessUnit($unit->id));
+        foreach ($units as $unit) {
+            app(UnitOperationalService::class)->ensureDefault($unit);
+        }
+
+        return view('open-shift', ['units' => $units, 'unitOperations' => app(UnitOperationalService::class), 'cashier' => $shifts->type($user) === 'CASHIER',
             'counters' => StockLocation::where('active', true)->where('type', 'COUNTER')
                 ->whereIn('branch_id', Branch::where('active', true)->select('id'))->orderBy('name')->get(),
             'branches' => Branch::where('active', true)->pluck('name', 'id'),
+            'handovers' => CashHandover::where('to_user_id', $user->id)->where('destination', 'NEXT_CASHIER')->get()->filter(fn ($h) => in_array(app(CashHandoverService::class)->latest($h)->status, ['PENDING', 'RECEIVED', 'APPROVED', 'DISPUTED'], true))->map(fn ($h) => app(CashHandoverService::class)->present($h))->values(),
         ]);
     }
 
@@ -37,11 +47,11 @@ final class OpenShiftController extends Controller
         if ($shifts->active($user)) {
             return redirect($shifts->destination($user));
         }
-        $data = $request->validate(['stock_location_id' => ['required', 'integer', 'min:1'],
-            'opening_cash' => $shifts->type($user) === 'CASHIER' ? ['required', 'numeric', 'min:0', 'decimal:0,2', 'max:99999999999999.99'] : ['prohibited'],
+        $data = $request->validate(['business_unit_id' => ['required_without:stock_location_id', 'integer', 'min:1'], 'stock_location_id' => ['nullable', 'required_without:business_unit_id', 'integer', 'min:1'],
+            'opening_cash' => ['prohibited'], 'handover_id' => ['nullable', 'integer', 'min:1'],
             'user_id' => ['prohibited'], 'type' => ['prohibited'], 'company_id' => ['prohibited'],
         ]);
-        $service->open(['user_id' => $user->id, 'type' => $shifts->type($user), 'stock_location_id' => $data['stock_location_id'], 'opening_cash' => $data['opening_cash'] ?? '0']);
+        $service->open(['user_id' => $user->id, 'type' => $shifts->type($user), 'business_unit_id' => $data['business_unit_id'] ?? null, 'stock_location_id' => $data['stock_location_id'] ?? null, 'handover_id' => $data['handover_id'] ?? null]);
 
         return redirect($shifts->destination($user));
     }

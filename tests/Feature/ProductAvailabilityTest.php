@@ -1,0 +1,277 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Domain\TenantContext;
+use App\Http\Middleware\RequireOperationalShift;
+use App\Models\Branch;
+use App\Models\BusinessUnit;
+use App\Models\Permission;
+use App\Models\Product;
+use App\Models\Role;
+use App\Models\Stock;
+use App\Models\StockLocation;
+use App\Models\Supplier;
+use App\Models\User;
+use App\Services\BusinessUnitService;
+use App\Services\CatalogService;
+use App\Services\GoodsReceiptService;
+use App\Services\WorkspaceService;
+use Database\Seeders\NightshiftDemoSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use Tests\TestCase;
+
+class ProductAvailabilityTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $owner;
+
+    private BusinessUnit $bar;
+
+    private BusinessUnit $restaurant;
+
+    private StockLocation $counter;
+
+    private Product $master;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(NightshiftDemoSeeder::class);
+        $this->owner = User::where('email', 'admin@nightshift.test')->firstOrFail();
+        $this->actingAs($this->owner);
+        $branch = Branch::firstOrFail();
+        $this->bar = BusinessUnit::where('branch_id', $branch->id)->where('code', 'BAR')->firstOrFail();
+        $this->restaurant = BusinessUnit::where('branch_id', $branch->id)->where('code', 'RESTAURANT')->firstOrFail();
+        $this->counter = StockLocation::create([
+            'branch_id' => $branch->id,
+            'business_unit_id' => $this->restaurant->id,
+            'name' => 'Restaurant counter',
+            'type' => 'COUNTER',
+        ]);
+        $this->master = Product::firstOrFail();
+    }
+
+    private function setting(BusinessUnit $unit, bool $available = true, ?string $price = null): array
+    {
+        return ['business_unit_id' => $unit->id, 'available' => $available, 'prices' => [['unit_id' => $this->master->base_unit_id, 'selling_price' => $price]]];
+    }
+
+    private function payload(array $settings): array
+    {
+        return ['name' => 'Restaurant only meal', 'category_id' => $this->master->category_id, 'base_unit_id' => $this->master->base_unit_id, 'purchase_cost' => '1000', 'minimum_stock' => '2', 'active' => true, 'units' => [['unit_id' => $this->master->base_unit_id, 'conversion_quantity' => '1', 'selling_price' => '3000']], 'business_units' => $settings];
+    }
+
+    private function createMeal(): Product
+    {
+        return app(CatalogService::class)->product($this->payload([$this->setting($this->restaurant, true, '2500')]));
+    }
+
+    public function test_explicit_restaurant_product_has_no_implicit_general_or_bar_and_zero_stock_is_still_available(): void
+    {
+        $p = $this->createMeal();
+        $service = app(BusinessUnitService::class);
+        $this->assertTrue($service->available($p->id, $this->restaurant->id));
+        $this->assertFalse($service->available($p->id, $this->bar->id));
+        $this->assertFalse(Stock::where('product_id', $p->id)->exists());
+        foreach ([$this->bar, $this->restaurant] as $unit) {
+            $snapshot = app(WorkspaceService::class)->snapshot(['business_unit_id' => $unit->id, 'search' => $p->name]);
+            $this->assertSame($unit->is($this->restaurant) ? [$p->id] : [], array_column($snapshot['products'], 'id'));
+        }
+    }
+
+    public function test_edit_enables_multiple_units_then_disables_without_changing_company_price(): void
+    {
+        $p = $this->createMeal();
+        app(CatalogService::class)->product(['id' => $p->id, ...$this->payload([$this->setting($this->bar), $this->setting($this->restaurant, false)])]);
+        $service = app(BusinessUnitService::class);
+        $this->assertTrue($service->available($p->id, $this->bar->id));
+        $this->assertFalse($service->available($p->id, $this->restaurant->id));
+        $this->assertSame('3000.00', $p->sellingUnits()->firstOrFail()->selling_price);
+        $this->assertSame('3000.00', $service->price($p->sellingUnits()->firstOrFail(), $this->bar->id));
+        $this->assertDatabaseHas('audit_logs', ['action' => 'PRODUCT_UNIT_ENABLED', 'reference_id' => (string) $p->id, 'user_id' => $this->owner->id]);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'PRODUCT_UNIT_DISABLED', 'reference_id' => (string) $p->id]);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'BUSINESS_UNIT_PRICE_CHANGED', 'reference_id' => (string) $p->id]);
+    }
+
+    public function test_configuration_uses_company_prices_and_scoped_pos_uses_override(): void
+    {
+        $p = $this->createMeal();
+        $this->getJson('/api/nightshift/product-configuration/'.$p->id)->assertOk()->assertJsonPath('product.price', '3000.00');
+        $snapshot = app(WorkspaceService::class)->snapshot(['business_unit_id' => $this->restaurant->id]);
+        $row = collect($snapshot['products'])->firstWhere('id', $p->id);
+        $this->assertSame('2500.00', $row['price']);
+        $this->assertSame('3000.00', $row['default_price']);
+    }
+
+    public function test_availability_cutover_is_idempotent_without_creating_general_or_changing_explicit_assignments(): void
+    {
+        $p = $this->createMeal();
+
+        $this->assertFalse(
+            BusinessUnit::where('code', 'GENERAL')->exists()
+        );
+
+        $before = DB::table('business_unit_products')
+            ->whereIn('product_id', [$this->master->id, $p->id])
+            ->orderBy('product_id')
+            ->orderBy('business_unit_id')
+            ->get()
+            ->map(fn ($row) => [
+                'product_id' => $row->product_id,
+                'business_unit_id' => $row->business_unit_id,
+                'available' => (bool) $row->available,
+            ])
+            ->all();
+
+        $migration = require database_path(
+            'migrations/2026_11_11_000005_make_product_availability_explicit.php'
+        );
+
+        $migration->up();
+        $migration->up();
+
+        $after = DB::table('business_unit_products')
+            ->whereIn('product_id', [$this->master->id, $p->id])
+            ->orderBy('product_id')
+            ->orderBy('business_unit_id')
+            ->get()
+            ->map(fn ($row) => [
+                'product_id' => $row->product_id,
+                'business_unit_id' => $row->business_unit_id,
+                'available' => (bool) $row->available,
+            ])
+            ->all();
+
+        $this->assertSame($before, $after);
+        $this->assertFalse(BusinessUnit::where('code', 'GENERAL')->exists());
+        $this->assertTrue(
+            app(BusinessUnitService::class)->available($p->id, $this->restaurant->id)
+        );
+        $this->assertFalse(
+            app(BusinessUnitService::class)->available($p->id, $this->bar->id)
+        );
+    }
+
+    public function test_new_product_http_requires_explicit_nonempty_available_choice(): void
+    {
+        $data = $this->payload([]);
+        unset($data['business_units']);
+        $this->postJson('/api/nightshift/commands/product', [...$data, 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+        $this->postJson('/api/nightshift/commands/product', [...$this->payload([]), 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+        $this->assertDatabaseMissing('products', ['name' => 'Restaurant only meal']);
+    }
+
+    public function test_invalid_prices_and_duplicate_choices_roll_back_the_whole_product(): void
+    {
+        foreach ([[$this->setting($this->restaurant, true, '-1')], [$this->setting($this->restaurant), $this->setting($this->restaurant)]] as $settings) {
+            $this->postJson('/api/nightshift/commands/product', [...$this->payload($settings), 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+            $this->assertDatabaseMissing('products', ['name' => 'Restaurant only meal']);
+        }
+    }
+
+    public function test_location_product_selector_and_shared_store_use_positive_assignments(): void
+    {
+        $p = $this->createMeal();
+        $bar = StockLocation::create(['branch_id' => $this->bar->branch_id, 'business_unit_id' => $this->bar->id, 'name' => 'Bar store', 'type' => 'STORE']);
+        $url = '/api/nightshift/location-products?purpose=receive&stock_location_id=';
+        $this->getJson($url.$bar->id)->assertOk()->assertJsonMissing(['name' => $p->name]);
+        $this->getJson($url.$this->counter->id)->assertOk()->assertJsonFragment(['name' => $p->name])->assertJsonPath('location.business_unit', 'Restaurant');
+        $shared = StockLocation::where('type', 'STORE')->where('id', '!=', $bar->id)->firstOrFail();
+        app(BusinessUnitService::class)->location(['id' => $shared->id, 'unit_ids' => [$this->bar->id, $this->restaurant->id], 'is_shared' => true]);
+        $this->getJson($url.$shared->id)->assertOk()->assertJsonFragment(['name' => $p->name])->assertJsonPath('location.is_shared', true);
+        $snapshot = app(WorkspaceService::class)->snapshot(['business_unit_id' => $this->restaurant->id]);
+        $ids = array_column($snapshot['locations'], 'id');
+        $this->assertContains($this->counter->id, $ids);
+        $this->assertContains($shared->id, $ids);
+        $this->assertNotContains($bar->id, $ids);
+    }
+
+    public function test_receiving_unavailable_product_is_rejected_without_stock_or_ledger_changes(): void
+    {
+        $p = $this->createMeal();
+        $location = StockLocation::where('business_unit_id', $this->bar->id)->firstOrFail();
+        $before = DB::table('stock_movements')->count();
+        try {
+            app(GoodsReceiptService::class)->post(['stock_location_id' => $location->id, 'supplier_id' => Supplier::firstOrFail()->id, 'received_on' => '2026-11-11', 'items' => [['product_unit_id' => $p->sellingUnits()->firstOrFail()->id, 'quantity' => '1', 'unit_cost' => '1000']]]);
+            $this->fail('Unavailable receipt accepted');
+        } catch (ValidationException) {
+            $this->assertSame($before, DB::table('stock_movements')->count());
+            $this->assertFalse(Stock::where('product_id', $p->id)->exists());
+        }
+    }
+
+    public function test_cashier_waiter_and_terminal_cannot_manage_product_configuration(): void
+    {
+        foreach (['Cashier', 'Waiter', 'POS Terminal'] as $role) {
+            $actor = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', $role)->firstOrFail()->id, 'terminal_stock_location_id' => $role === 'POS Terminal' ? $this->counter->id : null]);
+            $actor->branches()->attach($this->restaurant->branch_id, ['company_id' => $actor->company_id]);
+            $actor->businessUnits()->attach($this->restaurant->id, ['company_id' => $actor->company_id]);
+            $this->withoutMiddleware(RequireOperationalShift::class)->actingAs($actor)->getJson('/api/nightshift/product-configuration')->assertForbidden();
+        }
+    }
+
+    public function test_cross_company_configuration_tampering_rolls_back_product(): void
+    {
+        $other = User::factory()->create();
+
+        $foreignUnit = app(TenantContext::class)->run($other, function () {
+            $branch = Branch::create(['name' => 'Other company branch']);
+
+            return BusinessUnit::create([
+                'branch_id' => $branch->id,
+                'name' => 'Other Company Unit',
+                'code' => 'OTHER-UNIT',
+                'active' => true,
+            ]);
+        });
+
+        $setting = $this->setting($this->restaurant);
+        $setting['business_unit_id'] = $foreignUnit->id;
+        $this->postJson('/api/nightshift/commands/product', [...$this->payload([$setting]), 'idempotency_key' => (string) Str::uuid()])->assertNotFound();
+        $this->assertDatabaseMissing('products', ['name' => 'Restaurant only meal']);
+    }
+
+    public function test_scoped_product_manager_cannot_assign_other_branch_or_unit_and_preserves_outside_assignments(): void
+    {
+        $p = $this->createMeal();
+        $branch = Branch::create(['name' => 'Restricted branch']);
+
+        $other = app(BusinessUnitService::class)->save([
+            'branch_id' => $branch->id,
+            'name' => 'Restricted Unit',
+            'code' => 'RESTRICTED',
+            'active' => true,
+        ]);
+
+        $role = Role::create(['name' => 'Scoped product editor']);
+        $role->permissions()->attach(Permission::whereIn('name', ['manage-products', 'manage-inventory'])->pluck('id'));
+        $manager = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => $role->id, 'business_units_configured' => true]);
+        $manager->branches()->attach($this->bar->branch_id, ['company_id' => $manager->company_id]);
+        $manager->businessUnits()->attach($this->bar->id, ['company_id' => $manager->company_id]);
+        $this->actingAs($manager);
+        $this->getJson('/api/nightshift/product-configuration/'.$p->id)->assertOk()->assertJsonCount(1, 'units')->assertJsonPath('units.0.id', $this->bar->id);
+        foreach ([$this->restaurant, $other] as $unit) {
+            $this->postJson('/api/nightshift/commands/product', [...$this->payload([$this->setting($unit)]), 'id' => $p->id, 'idempotency_key' => (string) Str::uuid()])->assertNotFound();
+        }
+        $this->postJson('/api/nightshift/commands/product', [...$this->payload([$this->setting($this->bar)]), 'id' => $p->id, 'idempotency_key' => (string) Str::uuid()])->assertOk();
+        $this->assertTrue(app(BusinessUnitService::class)->available($p->id, $this->restaurant->id));
+    }
+
+    public function test_receipt_into_restaurant_changes_only_expected_stock_and_ledger(): void
+    {
+        $p = $this->createMeal();
+        $payments = DB::table('payments')->count();
+        $orders = DB::table('orders')->count();
+        $receipt = app(GoodsReceiptService::class)->post(['stock_location_id' => $this->counter->id, 'supplier_id' => Supplier::firstOrFail()->id, 'received_on' => '2026-11-11', 'items' => [['product_unit_id' => $p->sellingUnits()->firstOrFail()->id, 'quantity' => '2', 'unit_cost' => '1000']]]);
+        $this->assertSame('2000.00', $receipt->total_cost);
+        $this->assertSame('2.000000', Stock::where('product_id', $p->id)->where('stock_location_id', $this->counter->id)->firstOrFail()->quantity);
+        $this->assertDatabaseHas('stock_movements', ['product_id' => $p->id, 'stock_location_id' => $this->counter->id, 'quantity' => '2.000000', 'movement_type' => 'GRN']);
+        $this->assertSame($payments, DB::table('payments')->count());
+        $this->assertSame($orders, DB::table('orders')->count());
+    }
+}

@@ -42,7 +42,11 @@ final class OrderService
 
         return $this->tx->run(function () use ($data, $identifiedWaiter) {
             $actor = app(TenantContext::class)->user();
-            $location = $this->stock->location($data['stock_location_id']);
+            $location = app(UnitOperationalService::class)->resolve($data);
+            foreach (['branch_id' => $location->branch_id, 'business_unit_id' => $location->business_unit_id] as $key => $id) {
+                $this->stock->require(! array_key_exists($key, $data) || (int) $data[$key] === (int) $id, 'Branch, Business Unit and counter must match.');
+            }
+            $this->stock->require($actor->canAccessBusinessUnit($location->business_unit_id) && $actor->canAccessCounter($location->id), 'Counter is outside your operational context.');
             $visibility = app(StaffVisibility::class);
             $visibility->assertOperationalLocation($location->id);
             $this->stock->require($location->type === 'COUNTER', 'Orders must be assigned to a counter.');
@@ -53,9 +57,10 @@ final class OrderService
             if (! $identifiedWaiter && ! $visibility->broad() && ! $visibility->settlementOnly()) {
                 abort_unless($waiter->id === $actor->id, 403);
             }
-            $this->stock->require($waiter->active && $waiter->hasPermission('create-orders') && $waiter->canAccessBranch($location->branch_id), 'Waiter is not available at this branch.');
-            $shift = Shift::where('user_id', $waiter->id)->where('branch_id', $location->branch_id)->when($identifiedWaiter, fn ($q) => $q->where('stock_location_id', $location->id))->where('type', 'WAITER')->where('status', 'OPEN')->lockForUpdate()->first();
+            $this->stock->require($waiter->active && $waiter->hasPermission('create-orders') && $waiter->canAccessBranch($location->branch_id) && $waiter->canAccessBusinessUnit($location->business_unit_id), 'Waiter is not available at this branch.');
+            $shift = Shift::where('user_id', $waiter->id)->where('branch_id', $location->branch_id)->where('stock_location_id', $location->id)->where('type', 'WAITER')->where('status', 'OPEN')->lockForUpdate()->first();
             $this->stock->require((bool) $shift, 'The waiter needs an open shift.');
+            $this->stock->require($shift->business_unit_id === $location->business_unit_id, 'Shift Business Unit and counter must match.');
             $table = isset($data['service_table_id']) ? ServiceTable::whereKey($data['service_table_id'])->firstOrFail() : null;
             $this->stock->require(! $table || $table->branch_id === $location->branch_id, 'Table and counter must belong to the same branch.');
             $items = [];
@@ -64,9 +69,10 @@ final class OrderService
                 $unit = $this->stock->unit($line['product_unit_id']);
                 $qty = D::quantity($line['quantity']);
                 $this->stock->require(D::cmp($qty, '0') > 0, 'Order quantities must be positive.');
-                $total = D::mul($qty, $unit->selling_price);
+                $price = app(BusinessUnitService::class)->price($unit, (int) $location->business_unit_id);
+                $total = D::mul($qty, $price);
                 $subtotal = D::add($subtotal, $total);
-                $items[] = ['branch_id' => $location->branch_id, 'product_id' => $unit->product_id, 'product_unit_id' => $unit->id, 'product_name' => $unit->product->name, 'unit_name' => $unit->unit->name, 'quantity' => $qty, 'base_quantity' => D::mul($qty, $unit->conversion_quantity, 6), 'conversion_quantity' => $unit->conversion_quantity, 'unit_price' => $unit->selling_price, 'purchase_cost' => $unit->product->purchase_cost, 'total' => $total];
+                $items[] = ['branch_id' => $location->branch_id, 'product_id' => $unit->product_id, 'product_unit_id' => $unit->id, 'product_name' => $unit->product->name, 'unit_name' => $unit->unit->name, 'quantity' => $qty, 'base_quantity' => D::mul($qty, $unit->conversion_quantity, 6), 'conversion_quantity' => $unit->conversion_quantity, 'unit_price' => $price, 'purchase_cost' => $unit->product->purchase_cost, 'total' => $total];
             }
             $discount = D::money($data['discount'] ?? '0');
             $this->stock->require(D::cmp($discount, '0') >= 0 && D::cmp($discount, $subtotal) <= 0, 'Discount cannot exceed the subtotal.');
@@ -124,14 +130,18 @@ final class OrderService
     public function send(#[\SensitiveParameter] array $data, string $key): array
     {
         Gate::authorize('create-orders');
-        $locationId = ! empty($data['id']) ? $this->accessible((int) $data['id'], 'create-orders')->stock_location_id : (int) $data['stock_location_id'];
+        $locationId = ! empty($data['id']) ? $this->accessible((int) $data['id'], 'create-orders')->stock_location_id : app(UnitOperationalService::class)->resolve($data)->id;
+        $data['stock_location_id'] = $locationId;
         $location = $this->stock->location($locationId);
+        foreach (['stock_location_id' => $location->id, 'branch_id' => $location->branch_id, 'business_unit_id' => $location->business_unit_id] as $field => $expected) {
+            $this->stock->require(! isset($data[$field]) || (int) $data[$field] === (int) $expected, 'Branch, Business Unit and counter must match.');
+        }
         if (! app(TenantContext::class)->user()->isPosTerminal() && ! app(StaffVisibility::class)->broad() && ! app(StaffVisibility::class)->settlementOnly()) {
             abort_unless((int) $data['waiter_id'] === app(TenantContext::class)->user()->id, 403);
         }
         app(StaffVisibility::class)->assertOperationalLocation($locationId);
         $candidate = User::where('company_id', app(TenantContext::class)->companyId())->findOrFail((int) $data['waiter_id']);
-        abort_unless($candidate->active && $candidate->role->name === 'Waiter' && $candidate->canAccessBranch($location->branch_id), 403);
+        abort_unless($candidate->active && $candidate->role->name === 'Waiter' && $candidate->canAccessBranch($location->branch_id) && $candidate->canAccessBusinessUnit($location->business_unit_id), 403);
         $identified = app(StaffPinService::class)->verify((int) $data['waiter_id'], $data['pin']);
         $fingerprint = hash_hmac('sha256', $data['pin'], config('app.key'));
         unset($data['pin']);
@@ -147,7 +157,7 @@ final class OrderService
                 $order = $this->createOrder([...$data, 'status' => 'WAITING_FOR_ISSUE'], $waiter);
             }
             $location = $this->stock->location($order->stock_location_id);
-            $this->stock->require($waiter->canAccessBranch($location->branch_id), 'Waiter is not available at this branch.');
+            $this->stock->require($waiter->canAccessBranch($location->branch_id) && $waiter->canAccessBusinessUnit($location->business_unit_id), 'Waiter is not available at this branch.');
             $order = $this->issueOrder($order->id, true);
 
             return ['id' => $order->id, 'status' => $order->status, 'ticket_url' => route('nightshift.issue-ticket', $order->id, false)];
@@ -162,11 +172,13 @@ final class OrderService
                 return $o;
             }
             $this->stock->require($o->status === 'WAITING_FOR_ISSUE', 'Only queued orders can be issued.');
+            $this->stock->location($o->stock_location_id);
             $waiterShift = Shift::lockForUpdate()->findOrFail($o->shift_id);
             $this->stock->require($waiterShift->status === 'OPEN', 'The waiter shift is closed.');
             $this->stock->require(! $direct || ($waiterShift->type === 'WAITER' && $waiterShift->user_id === $o->waiter_id && $waiterShift->branch_id === $o->branch_id && $waiterShift->stock_location_id === $o->stock_location_id), 'Waiter shift and counter must match the order.');
-            $issueShift = $direct ? $waiterShift : $this->shifts->activeCashier($o->stock_location_id);
+            $issueShift = $direct ? $this->shifts->counterCashier($o->stock_location_id) : $this->shifts->activeCashier($o->stock_location_id);
             foreach ($o->items()->orderBy('product_id')->get() as $line) {
+                $this->stock->require(app(BusinessUnitService::class)->available($line->product_id, (int) $o->business_unit_id), __('ui.Product is unavailable in this Business Unit.'));
                 $this->stock->change($o->stock_location_id, $line->product_id, D::sub('0', $line->base_quantity, 6), 'ISSUE', 'Order', $o->id, $issueShift->id);
             }
             $o->update(['status' => D::cmp($o->total, '0') === 0 ? 'PAID' : 'ISSUED', 'issued_by' => app(TenantContext::class)->user()->id, 'issued_shift_id' => $issueShift->id, 'issued_at' => now(), 'closed_at' => D::cmp($o->total, '0') === 0 ? now() : null]);

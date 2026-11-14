@@ -1,0 +1,199 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Domain\TenantContext;
+use App\Models\AuditLog;
+use App\Models\Order;
+use App\Models\ProductUnit;
+use App\Models\Role;
+use App\Models\Shift;
+use App\Models\StockLocation;
+use App\Models\User;
+use App\Services\OrderService;
+use App\Services\PaymentService;
+use App\Services\ShiftService;
+use App\Services\ShiftStockService;
+use Database\Seeders\NightshiftDemoSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use Tests\Support\CompletesStockCount;
+use Tests\TestCase;
+
+class StrictShiftLifecycleTest extends TestCase
+{
+    use CompletesStockCount, RefreshDatabase;
+
+    private User $owner;
+
+    private StockLocation $counter;
+
+    private Shift $cashier;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(NightshiftDemoSeeder::class);
+        $this->owner = User::where('email', 'admin@nightshift.test')->firstOrFail();
+        $this->actingAs($this->owner);
+        $this->counter = StockLocation::where('name', 'VIP Counter')->firstOrFail();
+        $this->cashier = Shift::where('stock_location_id', $this->counter->id)->where('type', 'CASHIER')->firstOrFail();
+    }
+
+    private function employee(string $role = 'Waiter'): User
+    {
+        $user = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => Role::where('name', $role)->firstOrFail()->id,
+        ]);
+
+        $user->branches()->attach($this->counter->branch_id, [
+            'company_id' => $user->company_id,
+        ]);
+
+        app(\App\Services\BusinessUnitService::class)->assign(
+            $user,
+            [(int) $this->counter->business_unit_id]
+        );
+
+        return $user;
+    }
+
+    private function open(User $user): Shift
+    {
+        return app(TenantContext::class)->run($user, fn () => app(ShiftService::class)->open(['type' => 'WAITER', 'stock_location_id' => $this->counter->id]));
+    }
+
+    private function issue(User $waiter): Order
+    {
+        $unit = ProductUnit::whereHas('product', fn ($q) => $q->where('sku', 'BR-001'))->whereHas('unit', fn ($q) => $q->where('name', 'Piece'))->firstOrFail();
+        $order = app(OrderService::class)->create(['waiter_id' => $waiter->id, 'stock_location_id' => $this->counter->id, 'items' => [['product_unit_id' => $unit->id, 'quantity' => '1']]]);
+
+        return app(OrderService::class)->issue($order->id);
+    }
+
+    private function rejected(callable $action, string $message): void
+    {
+        try {
+            $action();
+            $this->fail('Expected lifecycle blocker');
+        } catch (ValidationException $e) {
+            $this->assertStringContainsString($message, $e->getMessage());
+        }
+    }
+
+    public function test_manager_open_is_owned_by_cashier_and_audited_and_overlap_is_rejected(): void
+    {
+        $this->completeStockCount($this->cashier);
+        app(ShiftService::class)->close($this->cashier->id, ['actual_cash' => '300000']);
+        $user = $this->employee('Cashier');
+        $shift = app(ShiftService::class)->open(['user_id' => $user->id, 'type' => 'CASHIER', 'stock_location_id' => $this->counter->id, 'opening_cash' => '500', 'opening_reason' => 'Authorized fixture opening float']);
+        $this->assertSame($user->id, $shift->user_id);
+        $this->assertSame($this->owner->id, $shift->opened_by);
+        $this->assertTrue(AuditLog::where('action', 'SHIFT_OPENED')->where('reference_id', $shift->id)->exists());
+        $second = $this->employee('Cashier');
+        $this->rejected(fn () => app(ShiftService::class)->open(['user_id' => $second->id, 'type' => 'CASHIER', 'stock_location_id' => $this->counter->id]), 'maximum number of active cashiers');
+        $this->actingAs($second);
+        $this->postJson('/api/nightshift/commands/shift-open', ['user_id' => $user->id, 'type' => 'CASHIER', 'stock_location_id' => $this->counter->id, 'opening_cash' => '0', 'idempotency_key' => (string) Str::uuid()])->assertForbidden();
+    }
+
+    public function test_many_waiters_and_rotations_share_one_counter_operation(): void
+    {
+        $a = $this->employee();
+        $b = $this->employee();
+        $first = $this->open($a);
+        $second = $this->open($b);
+        $this->assertSame($this->cashier->id, $first->cashier_shift_id);
+        $this->assertSame($first->cashier_shift_id, $second->cashier_shift_id);
+        $this->rejected(fn () => $this->open($a), 'already has an open shift');
+        app(TenantContext::class)->run($a, fn () => app(ShiftService::class)->close($first->id, []));
+        $third = $this->open($this->employee());
+        $this->assertSame($this->cashier->id, $third->cashier_shift_id);
+        $this->rejected(fn () => app(ShiftService::class)->close($this->cashier->id, ['actual_cash' => '300000']), $b->name);
+    }
+
+    public function test_waiter_debt_blocks_close_even_for_manager_and_legacy_debt_blocks_reopen(): void
+    {
+        $waiter = $this->employee();
+        $shift = $this->open($waiter);
+        $order = $this->issue($waiter);
+        $this->rejected(fn () => app(TenantContext::class)->run($waiter, fn () => app(ShiftService::class)->close($shift->id, [])), 'outstanding balance');
+        $this->rejected(fn () => app(ShiftService::class)->close($shift->id, ['override_reason' => 'Manager attempted bypass']), 'outstanding balance');
+        // Simulate an existing historical override; deployment must preserve its debt.
+        $shift->update(['status' => 'CLOSED', 'closed_at' => now()]);
+        $this->rejected(fn () => $this->open($waiter), 'previous shifts');
+        $this->rejected(fn () => app(ShiftService::class)->close($this->cashier->id, ['actual_cash' => '300000']), $waiter->name);
+        app(PaymentService::class)->receive($order->id, [['method' => 'Cash', 'amount' => $order->total]]);
+        $new = $this->open($waiter);
+        $this->assertNotSame($shift->id, $new->id);
+    }
+
+    public function test_overnight_report_and_final_close_are_one_frozen_operation(): void
+    {
+        $this->cashier->update(['opened_at' => now()->setDate(2026, 11, 10)->setTime(18, 0)]);
+        $this->travelTo(now()->setDate(2026, 11, 11)->setTime(3, 0));
+        $waiter = $this->employee();
+        $shift = $this->open($waiter);
+        $order = $this->issue($waiter);
+        $this->assertSame($this->cashier->id, $order->issued_shift_id);
+        app(PaymentService::class)->receive($order->id, [['method' => 'Cash', 'amount' => $order->total]]);
+        app(TenantContext::class)->run($waiter, fn () => app(ShiftService::class)->close($shift->id, []));
+        $this->completeStockCount($this->cashier);
+        app(ShiftService::class)->close($this->cashier->id, ['actual_cash' => '303000']);
+        $report = app(ShiftStockService::class)->report($this->cashier->id);
+        $this->assertSame('2026-11-10', $report['operating_date']);
+        $this->assertSame(540, $report['duration_minutes']);
+        $this->assertSame('3000.00', $report['total_sales']);
+        $this->assertSame($waiter->name, $report['waiters'][0]['name']);
+        $this->assertSame('0.00', $report['cash']['waiter_outstanding']);
+        $this->assertSame('303000.00', $report['cash']['expected']);
+        $this->assertSame([['name' => $waiter->name, 'amount' => '3000.00']], $report['cash']['settlements']);
+        $this->assertSame(0, $report['totals']['ledger_mismatches']);
+        $this->travel(1)->days();
+        $this->assertSame($report, app(ShiftStockService::class)->report($this->cashier->id));
+        $this->rejected(fn () => app(ShiftService::class)->close($this->cashier->id, ['actual_cash' => '303000']), 'already closed');
+        $this->expectException(\LogicException::class);
+        $this->cashier->fresh()->update(['opening_cash' => '0']);
+    }
+
+    public function test_kiswahili_blocker_and_cashier_report_show_named_waiters(): void
+    {
+        $waiter = $this->employee();
+        $this->open($waiter);
+        $this->owner->forceFill(['language_preference' => 'sw'])->save();
+        $this->get('/shift-stock/'.$this->cashier->id)->assertOk()->assertSee('Tarehe ya uendeshaji')->assertSee($waiter->name)->assertSee('Zamu za wahudumu zilizo wazi');
+        app()->setLocale('sw');
+        $this->rejected(fn () => app(ShiftService::class)->close($this->cashier->id, ['actual_cash' => '300000']), 'Huwezi kufunga zamu ya keshia');
+    }
+
+    public function test_explicit_shift_report_ignores_calendar_boundary_and_count_cannot_bypass_waiters(): void
+    {
+        $this->cashier->update(['opened_at' => now()->subDay()->setTime(18, 0)]);
+        $this->getJson('/api/nightshift/reports/Shift%20Report?shift_id='.$this->cashier->id.'&from='.now()->toDateString().'&to='.now()->toDateString())
+            ->assertOk()->assertJsonCount(1, 'rows')->assertJsonPath('rows.0.0', $this->cashier->number);
+        $waiter = $this->employee();
+        $this->open($waiter);
+        $r = app(ShiftStockService::class)->report($this->cashier->id);
+        $this->rejected(fn () => app(ShiftStockService::class)->count($this->cashier->id, ['basis' => $r['basis'], 'revision' => 0, 'actual_cash' => '300000', 'counts' => []]), 'Close all waiter shifts');
+    }
+
+    public function test_no_cashier_operation_blocks_new_waiter_session(): void
+    {
+        $counter = StockLocation::create(['branch_id' => $this->counter->branch_id, 'name' => 'Unopened counter', 'type' => 'COUNTER']);
+        $waiter = $this->employee();
+        $this->rejected(fn () => app(TenantContext::class)->run($waiter, fn () => app(ShiftService::class)->open(['stock_location_id' => $counter->id, 'type' => 'WAITER'])), 'cashier shift');
+    }
+
+    public function test_cash_changes_and_new_waiter_session_invalidate_saved_reconciliation(): void
+    {
+        $this->completeStockCount($this->cashier, null, false);
+        $this->rejected(fn () => app(ShiftService::class)->close($this->cashier->id, ['actual_cash' => '299000', 'notes' => 'Manager reviewed shortage']), 'Cash changed');
+        $waiter = $this->employee();
+        $shift = $this->open($waiter);
+        app(TenantContext::class)->run($waiter, fn () => app(ShiftService::class)->close($shift->id, []));
+        $r = app(ShiftStockService::class)->report($this->cashier->id);
+        $this->assertTrue($r['stale']);
+        $this->rejected(fn () => app(ShiftService::class)->close($this->cashier->id, ['actual_cash' => '300000']), 'Complete stock reconciliation');
+    }
+}

@@ -8,6 +8,6 @@ return [
     'connect_timeout' => 5,
     'timeout' => 20,
     // Deliberately async, even when the application's default connection is sync.
-    'queue_connection' => 'database',
+    'queue_connection' => 'whatsapp',
     'queue' => 'whatsapp',
 ];

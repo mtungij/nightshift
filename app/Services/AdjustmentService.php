@@ -19,7 +19,7 @@ final class AdjustmentService
         Gate::authorize('adjust-stock');
 
         return $this->tx->run(function () use ($data) {
-            $location = $this->stock->location($data['stock_location_id']);
+            $location = app(UnitOperationalService::class)->resolve($data);
             $a = StockAdjustment::create(['branch_id' => $location->branch_id, 'stock_location_id' => $location->id, 'number' => $this->numbers->next('ADJ'), 'reason' => $data['reason'], 'notes' => $data['notes'], 'requested_by' => app(TenantContext::class)->user()->id]);
             foreach ($data['items'] as $line) {
                 $u = $this->stock->unit($line['product_unit_id']);

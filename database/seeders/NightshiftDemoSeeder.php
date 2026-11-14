@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Domain\TenantContext;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\Category;
 use App\Models\Company;
 use App\Models\Order;
@@ -17,10 +18,12 @@ use App\Models\StockLocation;
 use App\Models\Supplier;
 use App\Models\Unit;
 use App\Models\User;
+use App\Services\BusinessUnitService;
 use App\Services\GoodsReceiptService;
 use App\Services\OrderService;
 use App\Services\PaymentService;
 use App\Services\ShiftService;
+use App\Services\UnitOperationalService;
 use Illuminate\Database\Seeder;
 
 final class NightshiftDemoSeeder extends Seeder
@@ -47,10 +50,100 @@ final class NightshiftDemoSeeder extends Seeder
             foreach ($users as $u) {
                 $u->branches()->syncWithoutDetaching([$branch->id => ['company_id' => $company->id]]);
             }
+            $admin = $this->user($users, 'admin');
+
+            $bar = BusinessUnit::firstOrCreate(
+                [
+                    'branch_id' => $branch->id,
+                    'code' => 'BAR',
+                ],
+                [
+                    'name' => 'Bar',
+                    'active' => true,
+                    'created_by' => $admin->id,
+                ],
+            );
+
+            $restaurant = BusinessUnit::firstOrCreate(
+                [
+                    'branch_id' => $branch->id,
+                    'code' => 'RESTAURANT',
+                ],
+                [
+                    'name' => 'Restaurant',
+                    'active' => true,
+                    'created_by' => $admin->id,
+                ],
+            );
+
             $locations = [];
-            foreach (['Main Store' => 'STORE', 'Main Counter' => 'COUNTER', 'VIP Counter' => 'COUNTER', 'Garden Counter' => 'COUNTER'] as $name => $type) {
-                $locations[$name] = StockLocation::firstOrCreate(['branch_id' => $branch->id, 'name' => $name], ['type' => $type]);
-            }
+
+            $locations['Main Store'] = StockLocation::firstOrCreate(
+                [
+                    'branch_id' => $branch->id,
+                    'name' => 'Main Store',
+                ],
+                [
+                    'business_unit_id' => $bar->id,
+                    'type' => 'STORE',
+                    'active' => true,
+                ],
+            );
+
+            $locations['Main Counter'] = StockLocation::firstOrCreate(
+                [
+                    'branch_id' => $branch->id,
+                    'name' => 'Main Counter',
+                ],
+                [
+                    'business_unit_id' => $bar->id,
+                    'type' => 'COUNTER',
+                    'active' => true,
+                ],
+            );
+
+            $locations['VIP Counter'] = StockLocation::firstOrCreate(
+                [
+                    'branch_id' => $branch->id,
+                    'name' => 'VIP Counter',
+                ],
+                [
+                    'business_unit_id' => $bar->id,
+                    'type' => 'COUNTER',
+                    'active' => true,
+                ],
+            );
+
+            $locations['Garden Counter'] = StockLocation::firstOrCreate(
+                [
+                    'branch_id' => $branch->id,
+                    'name' => 'Garden Counter',
+                ],
+                [
+                    'business_unit_id' => $bar->id,
+                    'type' => 'COUNTER',
+                    'active' => true,
+                ],
+            );
+
+            $bar->update([
+                'advanced_locations_enabled' => true,
+                'max_active_cashiers' => 3,
+            ]);
+
+            app(UnitOperationalService::class)->adoptDefault(
+                $bar,
+                $locations['Main Counter']
+            );
+
+            app(UnitOperationalService::class)->ensureDefault($restaurant);
+
+            app(BusinessUnitService::class)->assign($admin, [$bar->id, $restaurant->id]);
+            app(BusinessUnitService::class)->assign($this->user($users, 'manager'), [$bar->id, $restaurant->id]);
+            app(BusinessUnitService::class)->assign($this->user($users, 'cashier'), [$bar->id]);
+            app(BusinessUnitService::class)->assign($this->user($users, 'asha'), [$bar->id]);
+            app(BusinessUnitService::class)->assign($this->user($users, 'james'), [$bar->id]);
+            app(BusinessUnitService::class)->assign($this->user($users, 'storekeeper'), [$bar->id, $restaurant->id]);
             $cats = [];
             foreach (['Beer', 'Wine', 'Whisky', 'Vodka', 'Gin', 'Spirits', 'Champagne', 'Energy Drinks', 'Soft Drinks', 'Water', 'Cocktails', 'Food'] as $name) {
                 $cats[$name] = Category::firstOrCreate(['name' => $name]);
@@ -65,6 +158,26 @@ final class NightshiftDemoSeeder extends Seeder
                     'Food' => 'Portion','Cocktails' => 'Glass','Energy Drinks' => 'Can',default => 'Bottle'
                 };
                 $p = Product::firstOrCreate(['sku' => $sku], ['name' => $name, 'category_id' => $cats[$category]->id, 'base_unit_id' => $units[$base]->id, 'brand' => explode(' ', $name)[0], 'purchase_cost' => $cost, 'minimum_stock' => $minimum, 'visual_style' => $visual]);
+
+                $availableUnits = $category === 'Food'
+                    ? [$restaurant->id]
+                    : [$bar->id];
+
+                foreach ([$bar->id, $restaurant->id] as $businessUnitId) {
+                    \Illuminate\Support\Facades\DB::table('business_unit_products')->updateOrInsert(
+                        [
+                            'company_id' => $company->id,
+                            'product_id' => $p->id,
+                            'business_unit_id' => $businessUnitId,
+                        ],
+                        [
+                            'available' => in_array($businessUnitId, $availableUnits, true),
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ],
+                    );
+                }
+
                 $unitName = $category === 'Beer' ? 'Piece' : $base;
                 $selling[$sku] = ProductUnit::firstOrCreate(['product_id' => $p->id, 'unit_id' => $units[$unitName]->id], ['conversion_quantity' => '1', 'selling_price' => $price]);
                 if ($category === 'Beer') {
@@ -78,8 +191,31 @@ final class NightshiftDemoSeeder extends Seeder
                     continue;
                 }$lines = [];
                 foreach ($selling as $sku => $u) {
-                    $lines[] = ['product_unit_id' => $u->id, 'quantity' => $name === 'Main Store' ? '480' : (in_array($sku, ['WH-001', 'VD-001']) ? '4' : '96'), 'unit_cost' => $u->product->purchase_cost];
-                }app(GoodsReceiptService::class)->post(['stock_location_id' => $location->id, 'supplier_id' => $supplier->id, 'supplier_invoice' => 'OPENING-'.$location->id, 'received_on' => now()->toDateString(), 'items' => $lines]);
+                    if (! app(BusinessUnitService::class)->available(
+                        $u->product_id,
+                        $location->business_unit_id
+                    )) {
+                        continue;
+                    }
+
+                    $lines[] = [
+                        'product_unit_id' => $u->id,
+                        'quantity' => $name === 'Main Store'
+                            ? '480'
+                            : (in_array($sku, ['WH-001', 'VD-001'], true) ? '4' : '96'),
+                        'unit_cost' => $u->product->purchase_cost,
+                    ];
+                }
+
+                if ($lines !== []) {
+                    app(GoodsReceiptService::class)->post([
+                        'stock_location_id' => $location->id,
+                        'supplier_id' => $supplier->id,
+                        'supplier_invoice' => 'OPENING-'.$location->id,
+                        'received_on' => now()->toDateString(),
+                        'items' => $lines,
+                    ]);
+                }
             }
             foreach (['Main Hall' => 'Main', 'VIP' => 'VIP', 'Garden' => 'Garden', 'Pool Area' => 'Pool', 'Rooftop' => 'Rooftop'] as $area => $prefix) {
                 for ($i = 1; $i <= 12; $i++) {
@@ -88,7 +224,7 @@ final class NightshiftDemoSeeder extends Seeder
             }
             foreach (['admin' => 'CASHIER', 'cashier' => 'CASHIER', 'asha' => 'WAITER', 'james' => 'WAITER'] as $slug => $type) {
                 if (! Shift::where('user_id', $this->user($users, $slug)->id)->exists()) {
-                    app(ShiftService::class)->open(['user_id' => $this->user($users, $slug)->id, 'stock_location_id' => $locations['Main Counter']->id, 'type' => $type, 'opening_cash' => $type === 'CASHIER' ? '300000' : '0']);
+                    app(TenantContext::class)->run($this->user($users, $type === 'CASHIER' ? 'admin' : $slug), fn () => app(ShiftService::class)->open(['user_id' => $this->user($users, $slug)->id, 'stock_location_id' => $locations[$slug === 'admin' ? 'VIP Counter' : 'Main Counter']->id, 'type' => $type, 'opening_cash' => $type === 'CASHIER' ? '300000' : '0', 'opening_reason' => 'Authorized demo opening float']));
                 }
             }
             if (! Order::exists()) {

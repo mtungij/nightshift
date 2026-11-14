@@ -2,6 +2,7 @@
 
 namespace App\Services\WhatsApp;
 
+use App\Domain\BusinessUnitContext;
 use App\Domain\TenantContext;
 use App\Models\User;
 
@@ -15,6 +16,15 @@ final class CompanyContext
             throw new GowaException('No active authorized company report administrator.');
         }
 
-        return app(TenantContext::class)->run($owner, $callback);
+        return app(TenantContext::class)->run($owner, function () use ($callback) {
+            $context = app(BusinessUnitContext::class);
+            $selected = $context->selected();
+            $context->select(null);
+            try {
+                return $callback();
+            } finally {
+                $context->select($selected);
+            }
+        });
     }
 }

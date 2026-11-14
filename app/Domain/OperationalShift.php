@@ -34,6 +34,9 @@ final class OperationalShift
 
     public function destination(User $user): string
     {
+        if ($user->hasPermission('view-treasury') && ! $user->hasPermission('view-dashboard')) {
+            return '/treasury';
+        }
         if ($user->isPosTerminal()) {
             return route('dashboard', absolute: false).'#pos';
         }

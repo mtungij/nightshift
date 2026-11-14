@@ -35,4 +35,12 @@ return [
         ],
     ],
 
+    'gowa' => [
+        'url' => env('GOWA_URL'),
+        'username' => env('GOWA_USERNAME'),
+        'password' => env('GOWA_PASSWORD'),
+        'device_id' => env('GOWA_DEVICE_ID'),
+        'webhook_secret' => env('GOWA_WEBHOOK_SECRET'),
+    ],
+
 ];

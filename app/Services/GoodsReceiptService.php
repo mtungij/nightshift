@@ -20,7 +20,7 @@ final class GoodsReceiptService
         Gate::authorize('receive-stock');
 
         return $this->tx->run(function () use ($data) {
-            $location = $this->stock->location($data['stock_location_id']);
+            $location = app(UnitOperationalService::class)->resolve($data);
             $supplier = Supplier::whereKey($data['supplier_id'])->firstOrFail();
             $invoice = trim((string) ($data['supplier_invoice'] ?? ''));
             if ($invoice !== '') {
@@ -30,6 +30,7 @@ final class GoodsReceiptService
             $cost = '0.00';
             foreach ($data['items'] as $line) {
                 $unit = $this->stock->unit($line['product_unit_id']);
+                $this->stock->require(app(BusinessUnitService::class)->availableAtLocation($unit->product_id, $location), __('ui.Product is unavailable in this Business Unit.'));
                 $qty = D::quantity($line['quantity']);
                 $unitCost = D::money($line['unit_cost']);
                 $this->stock->require(D::cmp($qty, '0') > 0 && D::cmp($unitCost, '0') >= 0, 'Invalid receiving quantity or cost.');

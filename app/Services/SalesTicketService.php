@@ -6,6 +6,7 @@ use App\Domain\Decimal as D;
 use App\Domain\StaffVisibility;
 use App\Domain\TenantContext;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\Company;
 use App\Models\Order;
 use App\Models\SalesTicketBatch;
@@ -88,11 +89,11 @@ class SalesTicketService
         $issuedTotal = $issue->debit ?? $order->total;
         $enteredBy = User::where('company_id', $order->company_id)->find($order->created_by);
 
-        return ['order_id' => $order->id, 'business' => $company->trading_name ?: $company->name, 'branch' => Branch::findOrFail($order->branch_id)->name, 'invoice' => $order->invoice_number, 'order_note' => $order->order_note,
+        return ['show_location' => app(UnitOperationalService::class)->showLocation($order->company_id, $order->business_unit_id, $order->stock_location_id), 'business_unit' => BusinessUnit::withoutGlobalScopes()->where('company_id', $order->company_id)->whereKey($order->business_unit_id)->value('name') ?? '—', 'order_id' => $order->id, 'business' => $company->trading_name ?: $company->name, 'branch' => Branch::findOrFail($order->branch_id)->name, 'invoice' => $order->invoice_number, 'order_note' => $order->order_note,
             'issued_at' => $order->issued_at?->copy()->timezone($company->timezone ?: 'Africa/Dar_es_Salaam')->format('d M Y H:i'),
             'entered_via' => $enteredBy?->isPosTerminal() ? $enteredBy->name : null,
             'waiter' => User::where('company_id', $order->company_id)->findOrFail($order->waiter_id)->name,
-            'table' => ServiceTable::find($order->service_table_id)->name ?? '—', 'counter' => StockLocation::findOrFail($order->stock_location_id)->name,
+            'table' => ServiceTable::find($order->service_table_id)->name ?? '—', 'counter' => StockLocation::withoutGlobalScopes()->where('company_id', $order->company_id)->findOrFail($order->stock_location_id)->name,
             'items' => $order->items->map(fn ($item) => $item->only(['product_name', 'quantity', 'unit_name', 'unit_price', 'total']))->all(),
             'subtotal' => $order->subtotal, 'discount' => $order->discount, 'total' => $issuedTotal, 'currency' => $company->currency,
             'outstanding' => $this->outstanding($order),

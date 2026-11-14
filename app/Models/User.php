@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Domain\BusinessUnitContext;
 use Carbon\CarbonInterface;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -12,12 +13,16 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Laravel\Fortify\Contracts\PasskeyUser;
 use Laravel\Fortify\PasskeyAuthenticatable;
 use Laravel\Fortify\TwoFactorAuthenticatable;
 
 /**
+ * @property int|null $terminal_business_unit_id
+ * @property bool $counters_configured
+ * @property bool $business_units_configured
  * @property int $id
  * @property string $username
  * @property string $name
@@ -91,6 +96,52 @@ class User extends Authenticatable implements PasskeyUser
         return $this->belongsToMany(Branch::class)->withPivot('company_id');
     }
 
+    /** @return BelongsToMany<BusinessUnit, $this> */
+    public function businessUnits(): BelongsToMany
+    {
+        return $this->belongsToMany(BusinessUnit::class)->withPivot('company_id');
+    }
+
+    public function canAccessBusinessUnit(?int $id): bool
+    {
+        return app(BusinessUnitContext::class)->can($this, $id);
+    }
+
+    /** Compatibility accessor; persisted legacy configuration remains unchanged. */
+    public function getTerminalStockLocationIdAttribute(mixed $value): ?int
+    {
+        return $this->isPosTerminal() ? $this->operationalTerminalLocationId() : ($value ? (int) $value : null);
+    }
+
+    public function operationalTerminalLocationId(): ?int
+    {
+        if (! $this->isPosTerminal()) {
+            return null;
+        }
+        $legacy = StockLocation::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($this->attributes['terminal_stock_location_id'] ?? null)->first();
+        $unit = BusinessUnit::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($this->terminal_business_unit_id ?: $legacy?->business_unit_id)->first();
+
+        return $unit && ! $unit->advanced_locations_enabled ? ($unit->default_stock_location_id ?: $legacy?->id) : $legacy?->id;
+    }
+
+    public function canAccessCounter(int $id): bool
+    {
+        $location = StockLocation::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($id)->first();
+        if (! $location || ! $this->canAccessBranch($location->branch_id) || ! $this->canAccessBusinessUnit($location->business_unit_id)) {
+            return false;
+        }
+        if ($this->isPosTerminal()) {
+            return $id === (int) $this->operationalTerminalLocationId();
+        }
+
+        $unit = BusinessUnit::withoutGlobalScopes()->where('company_id', $this->company_id)->find($location->business_unit_id);
+        if ($unit && ! $unit->advanced_locations_enabled && $unit->default_stock_location_id === $id) {
+            return true;
+        }
+
+        return ! $this->counters_configured || DB::table('counter_user')->where('company_id', $this->company_id)->where('user_id', $this->id)->where('stock_location_id', $id)->exists();
+    }
+
     public function isPosTerminal(): bool
     {
         return $this->role?->name === 'POS Terminal';
@@ -104,7 +155,7 @@ class User extends Authenticatable implements PasskeyUser
     public function canAccessBranch(int $id): bool
     {
         if ($this->isPosTerminal()) {
-            return StockLocation::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($this->terminal_stock_location_id)->where('branch_id', $id)->where('type', 'COUNTER')->where('active', true)->exists();
+            return StockLocation::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($this->operationalTerminalLocationId())->where('branch_id', $id)->where('type', 'COUNTER')->where('active', true)->exists();
         }
 
         return Branch::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($id)->exists() && ($this->hasPermission('all-branches') || $this->branches()->withoutGlobalScopes()->where('branches.id', $id)->exists());

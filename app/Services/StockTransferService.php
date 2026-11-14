@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Domain\BusinessUnitContext;
 use App\Domain\Decimal as D;
 use App\Domain\TenantContext;
 use App\Models\StockTransfer;
@@ -18,9 +19,10 @@ final class StockTransferService
     {
         Gate::authorize('transfer-stock');
 
-        return $this->tx->run(function () use ($data) {
-            $source = $this->stock->location($data['source_location_id']);
-            $destination = $this->stock->location($data['destination_location_id']);
+        return app(BusinessUnitContext::class)->withoutSelection(fn () => $this->tx->run(function () use ($data) {
+            $source = app(UnitOperationalService::class)->resolve($data, 'source_business_unit_id', 'source_location_id');
+            $destination = app(UnitOperationalService::class)->resolve($data, 'destination_business_unit_id', 'destination_location_id');
+            app(BusinessUnitContext::class)->select(null);
             $this->stock->require($source->id !== $destination->id, 'Choose different source and destination locations.');
             $this->stock->require($source->branch_id === $destination->branch_id, 'Both locations must belong to the same branch.');
             $t = StockTransfer::create(['branch_id' => $source->branch_id, 'source_location_id' => $source->id, 'destination_location_id' => $destination->id, 'number' => $this->numbers->next('TRF'), 'notes' => $data['notes'] ?? null, 'created_by' => app(TenantContext::class)->user()->id]);
@@ -32,15 +34,36 @@ final class StockTransferService
             }
 
             return $t;
-        });
+        }));
+    }
+
+    /** Explicit stock allocation from an idle inactive legacy unit, using normal posted transfers.
+     * @param  array<string,mixed>  $data
+     */
+    public function cutover(array $data): StockTransfer
+    {
+        Gate::authorize('manage-business-units');
+        Gate::authorize('transfer-stock');
+
+        return app(BusinessUnitContext::class)->withoutSelection(fn () => $this->tx->run(fn () => $this->stock->withSupervisedCutover((int) $data['source_location_id'], function () use ($data) {
+            $this->stock->require(mb_strlen(trim($data['notes'] ?? '')) >= 8, __('ui.Explain the supervised stock allocation.'));
+            $transfer = $this->create($data);
+            $this->send($transfer->id);
+            $transfer = $this->receive($transfer->id);
+            $this->audit->record('UNIT_STOCK_CUTOVER', 'Business Units', 'StockTransfer', $transfer->id, [], ['source_location_id' => $transfer->source_location_id, 'destination_location_id' => $transfer->destination_location_id, 'notes' => $data['notes']], $transfer->branch_id);
+
+            return $transfer;
+        })));
     }
 
     public function send(int $id): StockTransfer
     {
         Gate::authorize('transfer-stock');
 
-        return $this->tx->run(function () use ($id) {
+        return app(BusinessUnitContext::class)->withoutSelection(fn () => $this->tx->run(function () use ($id) {
             $t = StockTransfer::lockForUpdate()->findOrFail($id);
+            $this->stock->location($t->source_location_id);
+            $this->stock->location($t->destination_location_id);
             if (in_array($t->status, ['IN_TRANSIT', 'RECEIVED'], true)) {
                 return $t;
             }
@@ -49,18 +72,20 @@ final class StockTransferService
                 $this->stock->change($t->source_location_id, $line->product_id, D::sub('0', $line->base_quantity, 6), 'TRANSFER_SENT', 'StockTransfer', $t->id);
             }
             $t->update(['status' => 'IN_TRANSIT', 'sent_at' => now()]);
-            $this->audit->record('TRANSFER_SENT', 'Inventory', 'StockTransfer', $t->id, ['status' => 'DRAFT'], ['status' => 'IN_TRANSIT'], $t->branch_id);
+            $this->audit->record('TRANSFER_SENT', 'Inventory', 'StockTransfer', $t->id, ['status' => 'DRAFT'], ['status' => 'IN_TRANSIT', 'source_location_id' => $t->source_location_id, 'destination_location_id' => $t->destination_location_id], $t->branch_id);
 
             return $t;
-        });
+        }));
     }
 
     public function receive(int $id): StockTransfer
     {
         Gate::authorize('transfer-stock');
 
-        return $this->tx->run(function () use ($id) {
+        return app(BusinessUnitContext::class)->withoutSelection(fn () => $this->tx->run(function () use ($id) {
             $t = StockTransfer::lockForUpdate()->findOrFail($id);
+            $this->stock->location($t->source_location_id);
+            $this->stock->location($t->destination_location_id);
             if ($t->status === 'RECEIVED') {
                 return $t;
             }
@@ -72,6 +97,6 @@ final class StockTransferService
             $this->audit->record('TRANSFER_RECEIVED', 'Inventory', 'StockTransfer', $t->id, ['status' => 'IN_TRANSIT'], ['status' => 'RECEIVED'], $t->branch_id);
 
             return $t;
-        });
+        }));
     }
 }

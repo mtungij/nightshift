@@ -2,11 +2,14 @@
 
 namespace App\Services\WhatsApp;
 
+use App\Domain\TenantContext;
 use App\Jobs\WhatsApp\CheckGowaDeviceJob;
 use App\Jobs\WhatsApp\SendOperationalAlertJob;
+use App\Models\BusinessUnit;
 use App\Models\Company;
 use App\Models\WhatsAppDeliveryLog;
 use App\Models\WhatsAppRecipient;
+use App\Models\WhatsAppReportSchedule;
 use App\Models\WhatsAppSetting;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
@@ -35,9 +38,18 @@ final class Scheduler
         $options = $settings->preferences();
         $timezone = Company::findOrFail($settings->company_id)->timezone ?: 'Africa/Dar_es_Salaam';
         $local = CarbonImmutable::now($timezone);
-        if ($options['daily_report'] && $local->format('H:i') >= $options['daily_time']) {
-            foreach (WhatsAppRecipient::where('active', true)->where('daily_report', true)->get() as $recipient) {
-                $this->daily($recipient, $local->toDateString());
+        foreach (WhatsAppReportSchedule::where('enabled', true)->get() as $schedule) {
+            $period = app(ScheduleService::class)->due($schedule);
+            if ($period) {
+                app(ScheduleService::class)->enqueue($schedule, $period);
+            }
+        }
+        if (! WhatsAppReportSchedule::where('report_type', 'DAILY')->exists() && $options['daily_report'] && $local->format('H:i') >= $options['daily_time']) {
+            foreach (WhatsAppRecipient::where('active', true)->get()->filter(fn ($r) => app(RecipientService::class)->enabled($r, 'DAILY')) as $recipient) {
+                $due = $local->setTimeFromTimeString($options['daily_time']);
+                if ($local->diffInMinutes($due, true) <= 60) {
+                    $this->daily($recipient, $local->toDateString());
+                }
             }
         }
         if ($settings->device_id && (! $settings->last_health_queued_at || $settings->last_health_queued_at->lte(now()->subMinutes(15)))) {
@@ -63,7 +75,16 @@ final class Scheduler
             if ($ids === []) {
                 continue;
             }
-            $logs[] = app(Outbox::class)->enqueue($recipient, $requestedBy ? 'MANUAL' : 'DAILY', $date, $ids, ['date' => $date, 'language' => $options['language'], 'requested_by' => $requestedBy]);
+            $timezone = app(TenantContext::class)->user()->company->timezone ?: 'Africa/Dar_es_Salaam';
+            $end = CarbonImmutable::parse($date, $timezone)->setTimeFromTimeString($options['operating_cutoff']);
+            // Manual reports select the named operating date; scheduled compatibility reports select the last completed period.
+            if ($requestedBy) {
+                $end = $end->addDay();
+            } elseif ($end > CarbonImmutable::now($timezone)) {
+                $end = $end->subDay();
+            }
+            $units = BusinessUnit::whereIn('id', app(RecipientService::class)->units($recipient))->whereIn('branch_id', $ids)->pluck('id')->map(fn ($id) => (int) $id)->all();
+            $logs[] = app(Outbox::class)->enqueue($recipient, $requestedBy ? 'MANUAL' : 'DAILY', $date, $ids, ['date' => $date, 'scope_business_unit_ids' => $units, 'period_start' => $end->subDay()->toIso8601String(), 'period_end' => $end->toIso8601String(), 'timezone' => $timezone, 'language' => $recipient->language ?? $options['language'], 'requested_by' => $requestedBy]);
         }
 
         return $logs;

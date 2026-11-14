@@ -3262,3 +3262,703 @@ body > .language-switch {
         grid-template-columns: 1fr;
     }
 }
+
+.custody-page {
+    width: 100%;
+    min-width: 0;
+}
+.custody-page > .panel {
+    width: 100%;
+    min-width: 0;
+}
+.custody-page .recon-heading {
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.custody-page .custody-filters {
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-end;
+}
+.custody-page .custody-filters .form-field {
+    min-width: 160px;
+    flex: 1;
+    max-width: 260px;
+}
+@media (max-width: 600px) {
+    .custody-page .form-grid {
+        grid-template-columns: 1fr;
+    }
+    .custody-page .recon-cash {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+}
+
+/* Server-rendered administration content shares the workspace shell and tokens. */
+.business-units-page {
+    max-width: 1120px;
+    margin-inline: auto;
+    min-width: 0;
+}
+.business-units-page[hidden] {
+    display: none;
+}
+.business-units-page .unit-panel {
+    padding: 22px;
+    margin-bottom: 22px;
+}
+.business-units-page .unit-panel h2 {
+    margin: 0 0 18px;
+    font-size: 16px;
+}
+.business-units-page .unit-panel > p {
+    color: var(--muted);
+    font-size: 12px;
+}
+.business-units-page .unit-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 16px;
+    align-items: end;
+    padding-block: 20px;
+    border-top: 1px solid var(--line);
+}
+.business-units-page .unit-create {
+    border-top: 0;
+    padding-top: 0;
+}
+.business-units-page .unit-form > * {
+    min-width: 0;
+    max-width: 100%;
+}
+.business-units-page .unit-form .form-field {
+    margin-bottom: 0;
+}
+.business-units-page .unit-form > .button {
+    justify-self: start;
+}
+.business-units-page .form-field input,
+.business-units-page .form-field select {
+    width: 100%;
+    min-width: 0;
+}
+.business-units-page .unit-identity {
+    display: grid;
+    align-self: center;
+    gap: 5px;
+    overflow-wrap: anywhere;
+}
+.business-units-page .unit-identity .badge {
+    justify-self: start;
+}
+.business-units-page .field-caption,
+.business-units-page .unit-identity small {
+    color: var(--muted);
+    font-size: 12px;
+}
+.business-units-page .unit-options {
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+.business-units-page .unit-options legend {
+    color: var(--muted);
+    font-size: 12px;
+    padding-inline: 4px;
+}
+.business-units-page .unit-options label {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding-block: 5px;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+.business-units-page .unit-options input {
+    accent-color: var(--amber);
+    flex-shrink: 0;
+}
+.business-units-page details {
+    padding-block: 10px;
+}
+.business-units-page summary {
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+@media (min-width: 1100px) {
+    .business-units-page .unit-create {
+        grid-template-columns: 1fr 1fr 160px auto;
+    }
+    .business-units-page form[data-business-unit-action="save"]:not(.unit-create) {
+        grid-template-columns: 1.2fr 1.2fr 140px 140px auto;
+    }
+}
+@media (max-width: 720px) {
+    .business-units-page .unit-panel {
+        padding: 16px;
+    }
+    .business-units-page .unit-form {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 14px;
+    }
+    .business-units-page .unit-form > .button {
+        width: 100%;
+        justify-self: stretch;
+    }
+    .business-units-page .unit-options label {
+        min-height: 36px;
+    }
+}
+
+.workspace-admin-page {
+    max-width: 1200px;
+    min-width: 0;
+    margin-inline: auto;
+}
+.workspace-admin-page[hidden],
+.scope-picker[hidden],
+.scope-picker label[hidden] {
+    display: none;
+}
+.workspace-admin-page > .panel {
+    margin-bottom: 20px;
+}
+.workspace-admin-page .panel-body {
+    padding: 20px;
+    min-width: 0;
+}
+.workspace-admin-page .page-heading .heading-actions {
+    flex-wrap: wrap;
+    max-width: 100%;
+}
+.workspace-admin-page .page-heading > div {
+    min-width: 0;
+}
+.workspace-admin-page .heading-actions .button {
+    white-space: normal;
+    text-align: center;
+}
+.workspace-admin-page .admin-filters,
+.workspace-admin-page .custody-filters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+    gap: 14px;
+    align-items: end;
+}
+.workspace-admin-page .form-field {
+    margin: 0;
+    min-width: 0;
+    max-width: none;
+}
+.workspace-admin-page .form-field input,
+.workspace-admin-page .form-field select {
+    min-width: 0;
+    width: 100%;
+}
+.treasury-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 14px;
+    margin-block: 20px;
+}
+.metric-card {
+    padding: 18px;
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+}
+.metric-card span {
+    color: var(--muted);
+    font-size: 12px;
+}
+.metric-card strong {
+    font-size: 22px;
+    overflow-wrap: anywhere;
+}
+.workspace-admin-page .data-table {
+    width: 100%;
+    table-layout: fixed;
+}
+.workspace-admin-page .data-table td,
+.workspace-admin-page .data-table th {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    padding: 12px 9px;
+}
+.workspace-admin-page .data-table form {
+    display: grid;
+    gap: 10px;
+    margin-block: 8px;
+}
+.workspace-admin-page .data-table form label {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+}
+.workspace-admin-page .data-table form input,
+.workspace-admin-page .data-table form select {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--line);
+    background: var(--panel2);
+    color: var(--text);
+    padding: 8px;
+    border-radius: 6px;
+}
+.workspace-admin-page .data-table .button {
+    max-width: 100%;
+    white-space: normal;
+}
+.scope-picker {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    min-width: 0;
+    align-self: start;
+}
+.scope-picker > summary {
+    padding: 10px 12px;
+    cursor: pointer;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+.scope-picker [data-scope-summary] {
+    display: block;
+    color: var(--muted);
+    padding-top: 4px;
+}
+.scope-picker fieldset {
+    border: 0;
+    margin: 0;
+    padding: 8px 12px;
+    max-height: 210px;
+    overflow-y: auto;
+}
+.scope-picker label {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 40px;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+.scope-picker input {
+    flex: 0 0 auto;
+    accent-color: var(--amber);
+}
+.scope-picker input + span {
+    min-width: 0;
+}
+.scope-picker [data-scope-empty] {
+    font-size: 12px;
+    color: var(--muted);
+}
+.audit-dialog {
+    width: min(760px, calc(100vw - 32px));
+    max-height: calc(100dvh - 40px);
+    overflow-y: auto;
+    padding: 22px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--panel);
+    color: var(--text);
+}
+.audit-dialog::backdrop {
+    background: #0009;
+}
+.audit-dialog .page-heading h2 {
+    font-size: 18px;
+    margin: 0;
+}
+.audit-meta {
+    display: grid;
+    grid-template-columns: 130px minmax(0, 1fr);
+    gap: 9px;
+    font-size: 12px;
+}
+.audit-meta dt {
+    color: var(--muted);
+}
+.audit-meta dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+.audit-change {
+    padding-block: 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+.audit-change > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.audit-dialog pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 11px;
+}
+@media (max-width: 1000px) {
+    .workspace-admin-page .responsive-records,
+    .workspace-admin-page .responsive-records tbody {
+        display: block;
+    }
+    .workspace-admin-page .responsive-records thead {
+        display: none;
+    }
+    .workspace-admin-page .responsive-records tr {
+        display: block;
+        padding: 14px;
+        margin-block: 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+    }
+    .workspace-admin-page .responsive-records td {
+        display: grid;
+        grid-template-columns: minmax(90px, 0.7fr) minmax(0, 1fr);
+        gap: 12px;
+        border: 0;
+        padding: 8px 0;
+    }
+    .workspace-admin-page .responsive-records td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 12px;
+    }
+    .workspace-admin-page .responsive-records td:has(form),
+    .workspace-admin-page .responsive-records td:has(dialog) {
+        display: block;
+    }
+    .workspace-admin-page .responsive-records td:has(form)::before,
+    .workspace-admin-page .responsive-records td:has(dialog)::before {
+        display: block;
+        margin-bottom: 8px;
+    }
+}
+@media (max-width: 720px) {
+    .workspace-admin-page .admin-filters,
+    .workspace-admin-page .custody-filters {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .workspace-admin-page .panel-body {
+        padding: 15px;
+    }
+    .workspace-admin-page .heading-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+    .workspace-admin-page .heading-actions .button {
+        flex: 1 1 130px;
+    }
+    .workspace-admin-page .admin-filters .button,
+    .workspace-admin-page .custody-filters .button {
+        width: 100%;
+    }
+    .audit-dialog {
+        padding: 16px;
+    }
+    .audit-meta {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .modal .scope-picker {
+        width: 100%;
+    }
+}
+@media print {
+    .workspace-admin-page .admin-filters,
+    .workspace-admin-page .heading-actions {
+        display: none !important;
+    }
+    .workspace-admin-page .responsive-records {
+        display: table !important;
+    }
+    .workspace-admin-page .responsive-records thead {
+        display: table-header-group !important;
+    }
+    .workspace-admin-page .responsive-records tbody {
+        display: table-row-group !important;
+    }
+    .workspace-admin-page .responsive-records tr {
+        display: table-row !important;
+    }
+    .workspace-admin-page .responsive-records td {
+        display: table-cell !important;
+    }
+    .workspace-admin-page .responsive-records td::before {
+        content: none !important;
+    }
+}
+
+.workspace-admin-page .custody-filters .form-field {
+    min-width: 0;
+    max-width: none;
+}
+
+#report-filters .form-field[hidden] {
+    display: none;
+}
+
+.product-availability-section {
+    margin-top: 20px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+}
+.product-availability-section h3 {
+    margin: 0 0 8px;
+    font-size: 15px;
+}
+.product-unit-settings {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+.product-unit-card {
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+    background: var(--panel);
+}
+.product-unit-check {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin-bottom: 12px;
+    cursor: pointer;
+}
+.product-unit-check input {
+    accent-color: var(--amber);
+    margin-top: 5px;
+}
+.product-unit-check strong,
+.product-unit-check small {
+    display: block;
+    overflow-wrap: anywhere;
+}
+.product-unit-check small {
+    font-size: 11px;
+    color: var(--muted);
+}
+.product-unit-prices {
+    display: grid;
+    gap: 8px;
+}
+.product-unit-prices .form-field {
+    margin-bottom: 0;
+    min-width: 0;
+}
+.product-unit-prices input {
+    width: 100%;
+    min-width: 0;
+}
+@media (max-width: 720px) {
+    .product-unit-settings {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.counter-cards {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+    max-width: 1100px;
+}
+.counter-card {
+    padding: 24px;
+    min-width: 0;
+}
+.counter-card h2 {
+    font-size: 18px;
+    overflow-wrap: anywhere;
+}
+.cashier-limit-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: end;
+    margin: 16px 0;
+    min-width: 0;
+}
+.cashier-limit-form .form-field {
+    flex: 1 1 220px;
+    min-width: 0;
+    max-width: 420px;
+}
+.cashier-limit-form input {
+    width: 100%;
+    min-width: 0;
+}
+.cashier-limit-form [role="alert"] {
+    flex-basis: 100%;
+    color: var(--red);
+    overflow-wrap: anywhere;
+}
+@media (max-width: 720px) {
+    .counter-cards {
+        grid-template-columns: 1fr;
+    }
+    .cashier-limit-form .form-field {
+        max-width: none;
+        flex-basis: 100%;
+    }
+    .cashier-limit-form button {
+        width: 100%;
+    }
+}
+.cashier-limit-form [data-counter-occupancy] {
+    flex-basis: 100%;
+    margin: 0;
+}
+.cashier-limit-form [data-counter-full][hidden] {
+    display: none;
+}
+.cashier-limit-form [data-cashier-limit-status] {
+    flex-basis: 100%;
+    overflow-wrap: anywhere;
+    color: var(--green);
+}
+.cashier-limit-form [data-cashier-limit-status].is-error {
+    color: var(--red);
+}
+.counter-card p {
+    overflow-wrap: anywhere;
+}
+.cashier-limit-form [data-counter-full] {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+/* Operational report filters follow the dashboard's existing form grid. */
+#report-filters .form-grid > *,
+[data-report-shifts] > * {
+    min-width: 0;
+}
+#report-filters select,
+[data-report-shifts] select {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    text-overflow: ellipsis;
+}
+.report-shift-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    margin-block: 0.75rem;
+    overflow-wrap: anywhere;
+}
+.report-shift-summary:empty {
+    display: none;
+}
+.report-shift-summary p {
+    flex-basis: 100%;
+    margin: 0;
+    color: var(--muted);
+}
+@media (max-width: 600px) {
+    #report-filters .form-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .report-shift-summary {
+        flex-direction: column;
+    }
+}
+
+.whatsapp-page {
+    max-width: 1440px;
+    margin-inline: auto;
+}
+.whatsapp-page .form-grid > *,
+.whatsapp-page fieldset {
+    min-width: 0;
+}
+.whatsapp-page input:not([type="checkbox"]),
+.whatsapp-page select {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+.whatsapp-page .whatsapp-branch-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.25rem;
+    padding: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    grid-column: 1 / -1;
+}
+.whatsapp-page .whatsapp-branch-list label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    overflow-wrap: anywhere;
+}
+.whatsapp-page .whatsapp-recipient {
+    padding-block: 0.75rem;
+    overflow-wrap: anywhere;
+}
+.whatsapp-page .whatsapp-recipient > summary {
+    cursor: pointer;
+    padding-block: 0.5rem;
+}
+@media (max-width: 600px) {
+    .whatsapp-page .form-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .whatsapp-page .whatsapp-branch-list {
+        flex-direction: column;
+    }
+    .whatsapp-page .button {
+        white-space: normal;
+    }
+    .whatsapp-page .whatsapp-log-table,
+    .whatsapp-page .whatsapp-log-table tbody,
+    .whatsapp-page .whatsapp-log-table tr,
+    .whatsapp-page .whatsapp-log-table td {
+        display: block;
+        width: 100%;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    .whatsapp-page .whatsapp-log-table thead {
+        display: none;
+    }
+    .whatsapp-page .whatsapp-log-table tr {
+        border-block: 1px solid var(--border);
+        padding-block: 0.5rem;
+    }
+}
+.whatsapp-page form > fieldset {
+    border: 0;
+    margin: 0;
+    padding: 0;
+}
+.whatsapp-page .panel + .panel {
+    margin-top: 1rem;
+}
+
+/* Keep stock form actions reachable while long unit-based forms scroll. */
+.modal:has(> form[data-unit-stock]) {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.modal > form[data-unit-stock] {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+.modal > form[data-unit-stock] .modal-body {
+    min-height: 0;
+    overflow-y: auto;
+}
+.modal > form[data-unit-stock] .modal-actions,
+.modal:has(> form[data-unit-stock]) .modal-heading {
+    flex-shrink: 0;
+}

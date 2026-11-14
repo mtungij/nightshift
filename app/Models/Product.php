@@ -6,6 +6,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 
 /**
  * @property int $id
@@ -30,8 +31,6 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  */
 class Product extends TenantModel
 {
-    protected $table = 'products';
-
     protected bool $branchScoped = false;
 
     protected function casts(): array

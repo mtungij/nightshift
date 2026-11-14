@@ -30,6 +30,9 @@ return [
     */
 
     'connections' => [
+        'whatsapp' => [
+            'driver' => 'database', 'connection' => env('DB_QUEUE_CONNECTION'), 'table' => env('DB_QUEUE_TABLE', 'jobs'), 'queue' => 'whatsapp', 'retry_after' => 300, 'after_commit' => true,
+        ],
 
         'sync' => [
             'driver' => 'sync',

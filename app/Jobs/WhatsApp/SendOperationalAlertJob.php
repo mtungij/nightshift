@@ -2,17 +2,26 @@
 
 namespace App\Jobs\WhatsApp;
 
+use App\Domain\BusinessUnitContext;
 use App\Models\AuditLog;
 use App\Services\TransactionService;
 use App\Services\WhatsApp\CompanyContext;
 use App\Services\WhatsApp\OperationalAlerts;
 use App\Services\WhatsApp\SettingsService;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
-final class SendOperationalAlertJob implements ShouldQueue
+final class SendOperationalAlertJob implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
+
+    public int $uniqueFor = 900;
+
+    public function uniqueId(): string
+    {
+        return (string) $this->companyId;
+    }
 
     public int $tries = 3;
 
@@ -37,6 +46,7 @@ final class SendOperationalAlertJob implements ShouldQueue
                     return;
                 }
                 foreach (AuditLog::where('id', '>', $settings->audit_cursor)->orderBy('id')->limit(100)->get() as $audit) {
+                    app(BusinessUnitContext::class)->select(null);
                     if (in_array($audit->action, config('whatsapp.audit_actions'), true)) {
                         app(OperationalAlerts::class)->inspect($audit, $options);
                     }

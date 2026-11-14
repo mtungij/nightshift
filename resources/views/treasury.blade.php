@@ -1,0 +1,30 @@
+@component('layouts.nightshift')
+@php($t = fn($text) => \App\Support\UiText::get($text))
+@include('partials.workspace-mount')
+<div class="workspace-admin-page custody-page" data-workspace-page="treasury" data-workspace-group="Finance" hidden data-cash-custody>
+<div class="page-heading"><div><div class="eyebrow">{{ $t('Finance') }}</div><h1>{{ $t('Treasury') }}</h1><p>{{ $t('Track physical cash custody after cashier handover.') }}</p></div><div class="heading-actions"><a class="button" href="/treasury/report?name=Treasury%20Ledger">{{ $t('Treasury reports') }}</a><a class="button" href="/cash-handovers">{{ $t('Cash Handover') }}</a><a class="button" data-report-pdf href="{{ request()->fullUrlWithQuery(['pdf' => 1,'print'=>null,'page'=>null,'from'=>$from,'to'=>$to]) }}">{{ $t('Download PDF') }}</a></div></div><p>{{ $t('Currency') }}: {{ auth()->user()->company->currency === 'TZS' ? 'TSh' : auth()->user()->company->currency }}</p><p>{{ $t('Physical cash custody is separate from sales, waiter debt and bank balances.') }}</p>
+<div data-custody-message role="alert"></div>
+<form class="toolbar custody-filters" method="GET"><label class="form-field"><span>{{ $t('Branch') }}</span><select name="branch_id"><option value="">{{ $t('All branches') }}</option>@foreach($branches as $branch)<option value="{{ $branch->id }}" @selected(request('branch_id') == $branch->id)>{{ $branch->name }}</option>@endforeach</select></label><label class="form-field"><span>{{ $t('Business Unit') }}</span><select name="business_unit_id"><option value="">{{ $t('All Business Units') }}</option>@foreach($units as $unit)<option value="{{ $unit->id }}" @selected(request('business_unit_id') == $unit->id)>{{ $unit->name }}</option>@endforeach</select></label><label class="form-field"><span>{{ $t('From') }}</span><input type="date" name="from" value="{{ $from }}"></label><label class="form-field"><span>{{ $t('To') }}</span><input type="date" name="to" value="{{ $to }}"></label><button class="button">{{ $t('Filter') }}</button></form>
+<p class="form-help">{{ $t('Unit filters apply to source activity. Cash balances and totals retain the full custody scope.') }}</p>
+<section class="panel panel-body"><h2>{{ $t('Available Cash') }}</h2><div class="recon-cash">@forelse($balances as $balance)<div><span>{{ $balance['custodian'] }} · {{ $balance['branch'] }}</span><strong>{{ $balance['amount'] }}</strong></div>@empty<p>0.00</p>@endforelse</div></section>
+<section class="treasury-metrics">@foreach(['CASHIER_RECEIPT'=>'Cash Received from Cashiers','PURCHASE'=>'Purchases','EXPENSE'=>'Expenses','SALARY'=>'Salaries/Wages','BANK_DEPOSIT'=>'Bank Deposits','REVERSAL'=>'Reversals'] as $type=>$label)<div class="panel metric-card"><span>{{ $t($label) }}</span><strong>{{ $totals[$type] }}</strong></div>@endforeach</section>
+<section class="panel panel-body"><h2>{{ $t('Pending cashier handovers') }}</h2>@include('partials.cash-handover-list', ['handovers' => array_values(array_filter($handovers, fn($h) => in_array($h['status'], ['PENDING','DISPUTED','RECEIVED','APPROVED'])))])</section>
+@if(auth()->user()->hasPermission('treasury-purchases') || auth()->user()->hasPermission('treasury-expenses') || auth()->user()->hasPermission('treasury-wages') || auth()->user()->hasPermission('treasury-bank-deposits'))
+<section class="panel panel-body"><h2>{{ $t('Record cash use') }}</h2><form data-custody-action="spend" class="form-grid">
+<label class="form-field"><span>{{ $t('Transaction type') }}</span><select name="transaction_type">@foreach(['PURCHASE'=>['Purchases','treasury-purchases'],'EXPENSE'=>['Expenses','treasury-expenses'],'SALARY'=>['Salaries/Wages','treasury-wages'],'BANK_DEPOSIT'=>['Bank Deposit','treasury-bank-deposits']] as $type=>$setting)@can($setting[1])<option value="{{ $type }}">{{ $t($setting[0]) }}</option>@endcan @endforeach</select></label>
+<label class="form-field"><span>{{ $t('Branch') }}</span><select name="branch_id" required>@foreach($branches as $branch)<option value="{{ $branch->id }}">{{ $branch->name }}</option>@endforeach</select></label>
+<label class="form-field"><span>{{ $t('Amount') }}</span><input name="amount" type="number" min="0.01" step="0.01" required></label>
+<label class="form-field"><span>{{ $t('Date and time') }}</span><input name="occurred_at" type="datetime-local" value="{{ now()->format('Y-m-d\TH:i') }}" required></label>
+<label class="form-field"><span>{{ $t('Reason / reference') }}</span><input name="external_reference" maxlength="100" required></label>
+<label class="form-field"><span>{{ $t('Description') }}</span><textarea name="description" minlength="3" maxlength="2000" required></textarea></label>
+<label class="form-field" data-cash-type="PURCHASE"><span>{{ $t('Posted purchase') }}</span><select name="goods_receipt_id"><option value="">{{ $t('Select purchase') }}</option>@foreach($purchases as $purchase)<option value="{{ $purchase->id }}">{{ $purchase->number }} · {{ $purchase->total_cost }}</option>@endforeach</select></label>
+<label class="form-field" data-cash-type="EXPENSE"><span>{{ $t('Category') }}</span><select name="category">@foreach(config('treasury.expense_categories') as $category)<option value="{{ $category }}">{{ $t($category) }}</option>@endforeach</select></label>
+<label class="form-field" data-cash-type="SALARY"><span>{{ $t('Employee') }}</span><select name="employee_id"><option value="">{{ $t('Select employee') }}</option>@foreach($employees as $employee)<option value="{{ $employee->id }}">{{ $employee->name }}</option>@endforeach</select></label>
+<label class="form-field" data-cash-type="SALARY"><span>{{ $t('Payment period') }}</span><input name="pay_period" maxlength="100"></label>
+<label class="form-field" data-cash-type="BANK_DEPOSIT"><span>{{ $t('Bank') }}</span><input name="bank" maxlength="100"></label>
+<button class="button primary">{{ $t('Record cash use') }}</button>
+</form></section>@endif
+<section class="panel panel-body"><h2>{{ $t('Treasury Ledger') }}</h2>@include('partials.treasury-ledger')</section>
+</div>
+<script>window.CashCustodyMessages = @json(\App\Support\UiText::catalog());</script>
+@endcomponent

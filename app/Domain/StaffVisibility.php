@@ -3,6 +3,7 @@
 namespace App\Domain;
 
 use App\Models\BusinessNotification;
+use App\Models\BusinessUnit;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\PaymentAllocation;
@@ -10,6 +11,7 @@ use App\Models\Shift;
 use App\Models\StockLocation;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 
 /** Read scopes are separate from accounting queries, which must retain complete history. */
 final class StaffVisibility
@@ -80,6 +82,9 @@ final class StaffVisibility
     public function assertFilters(array $filters): void
     {
         $actor = $this->context->user();
+        if (! empty($filters['business_unit_id'])) {
+            app(BusinessUnitContext::class)->select((int) $filters['business_unit_id']);
+        }
         if (! empty($filters['stock_location_id'])) {
             $this->assertLocation((int) $filters['stock_location_id']);
         }
@@ -98,20 +103,33 @@ final class StaffVisibility
     /** @param Builder<Order> $query
      * @return Builder<Order>
      */
-    public function orders(Builder $query): Builder
+    public function orders(Builder $query, ?int $operationalUnit = null): Builder
     {
         if ($this->broad()) {
             return $query;
         }
         $actor = $this->context->user();
         if ($actor->isPosTerminal()) {
-            return $query->where('created_by', $actor->id)->where('stock_location_id', $actor->terminal_stock_location_id);
+            $location = StockLocation::whereKey($actor->terminal_stock_location_id)->firstOrFail();
+            $query->where('created_by', $actor->id);
+            if (BusinessUnit::whereKey($location->business_unit_id)->where('advanced_locations_enabled', false)->exists()) {
+                return $query->whereExists(fn ($q) => $q->selectRaw('1')->from('operational_unit_contexts as terminal_unit')->whereColumn('terminal_unit.company_id', 'orders.company_id')->whereColumn('terminal_unit.record_id', 'orders.id')->where('terminal_unit.record_type', 'orders')->where('terminal_unit.business_unit_id', $location->business_unit_id));
+            }
+
+            return $query->where('stock_location_id', $location->id);
         }
         if (! $this->settlementOnly()) {
             return $query->where('waiter_id', $actor->id);
         }
 
-        return $this->atCounter($query)->whereHas('waiter.branches', fn ($q) => $q->whereIn('branches.id', StockLocation::whereIn('id', $this->counters())->select('branch_id')))->where(function ($q) use ($actor) {
+        if ($operationalUnit !== null) {
+            abort_unless($actor->canAccessBusinessUnit($operationalUnit), 403);
+            $query->whereExists(fn ($q) => $q->selectRaw('1')->from('operational_unit_contexts as staff_unit')->whereColumn('staff_unit.company_id', 'orders.company_id')->whereColumn('staff_unit.record_id', 'orders.id')->where('staff_unit.record_type', 'orders')->where('staff_unit.business_unit_id', $operationalUnit));
+        } else {
+            $query = $this->atCounter($query);
+        }
+
+        return $query->whereHas('waiter.branches', fn ($q) => $q->whereIn('branches.id', StockLocation::whereIn('id', $this->counters())->select('branch_id')))->where(function ($q) use ($actor) {
             $q->where('created_by', $actor->id)->orWhere('issued_by', $actor->id)
                 ->orWhereIn('status', ['DRAFT', 'WAITING_FOR_ISSUE', 'ISSUED', 'PARTIALLY_PAID', 'VOID_REQUESTED'])
                 ->orWhereIn('id', Payment::where('received_by', $actor->id)->select('order_id'))
@@ -178,8 +196,22 @@ final class StaffVisibility
     /** @param Builder<User> $query
      * @return Builder<User>
      */
+    public function unitUsers(Builder $query): Builder
+    {
+        $ids = app(BusinessUnitContext::class)->ids();
+        if ($ids !== null) {
+            $query->where(fn (Builder $q) => $q->whereHas('businessUnits', fn ($q) => $q->whereIn('business_units.id', $ids))->orWhere(fn (Builder $q) => $q->where('business_units_configured', false)->whereHas('branches', fn ($q) => $q->whereIn('branches.id', DB::table('business_units')->whereIn('id', $ids)->where('code', 'GENERAL')->select('branch_id')))));
+        }
+
+        return $query;
+    }
+
+    /** @param Builder<User> $query
+     * @return Builder<User>
+     */
     public function waiters(Builder $query): Builder
     {
+        $this->unitUsers($query);
         $query->where('company_id', $this->context->companyId())->whereHas('role', fn ($q) => $q->where('name', 'Waiter'));
         if ($this->broad()) {
             return $query;
@@ -207,13 +239,13 @@ final class StaffVisibility
 
     public function canViewShift(User $user, Shift $shift): bool
     {
-        return $user->company_id === $shift->company_id && $user->canAccessBranch($shift->branch_id)
+        return $user->company_id === $shift->company_id && $user->canAccessBranch($shift->branch_id) && $user->canAccessBusinessUnit($shift->business_unit_id)
             && ($this->broad($user) || ($shift->user_id === $user->id && ($shift->type !== 'CASHIER' || $this->settlementOnly($user))));
     }
 
     public function canViewOrder(User $user, Order $order): bool
     {
-        if ($user->company_id !== $order->company_id || ! $user->canAccessBranch($order->branch_id)) {
+        if ($user->company_id !== $order->company_id || ! $user->canAccessBranch($order->branch_id) || ! $user->canAccessBusinessUnit($order->business_unit_id)) {
             return false;
         }
         if ($user->isPosTerminal()) {

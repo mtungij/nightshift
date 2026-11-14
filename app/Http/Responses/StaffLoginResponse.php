@@ -13,7 +13,7 @@ final class StaffLoginResponse implements LoginResponse, TwoFactorLoginResponse
     {
         $shifts = app(OperationalShift::class);
         $user = $request->user();
-        if (! $shifts->type($user) && ! $user->isPosTerminal()) {
+        if (! $shifts->type($user) && ! $user->isPosTerminal() && ! ($user->hasPermission('view-treasury') && ! $user->hasPermission('view-dashboard'))) {
             return $request->wantsJson()
                 ? response()->json(['two_factor' => false])
                 : redirect()->intended(Fortify::redirects('login'));

@@ -1,13 +1,20 @@
 <?php
 
+use App\Http\Controllers\AuditTrailController;
 use App\Http\Controllers\BusinessOnboardingController;
 use App\Http\Controllers\BusinessProfileController;
+use App\Http\Controllers\BusinessUnitController;
+use App\Http\Controllers\CashCustodyController;
 use App\Http\Controllers\LanguagePreferenceController;
 use App\Http\Controllers\MyOrdersController;
 use App\Http\Controllers\NightshiftController;
 use App\Http\Controllers\OpenShiftController;
+use App\Http\Controllers\ProductConfigurationController;
+use App\Http\Controllers\ReportShiftController;
 use App\Http\Controllers\ShiftStockController;
 use App\Http\Controllers\WhatsAppController;
+use App\Http\Controllers\WhatsAppScheduleController;
+use App\Http\Controllers\WorkspaceShellController;
 use App\Http\Middleware\RequireOperationalShift;
 use App\Http\Middleware\RequireWhatsAppAccess;
 use App\Livewire\Workspace;
@@ -33,6 +40,7 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/', [WhatsAppController::class, 'save']);
         Route::post('/connection/{action}', [WhatsAppController::class, 'connection']);
         Route::post('/recipients/{id?}', [WhatsAppController::class, 'recipient']);
+        Route::post('/schedules/{id?}', [WhatsAppScheduleController::class, 'save']);
         Route::post('/send/{type}', [WhatsAppController::class, 'send']);
     });
     Route::get('/settings/business', [BusinessProfileController::class, 'edit'])->name('business.edit');
@@ -43,11 +51,25 @@ Route::middleware(['auth'])->group(function () {
 
         return redirect('/dashboard#setup');
     })->name('business.setup');
+    Route::get('/products/{id}/business-units', [BusinessUnitController::class, 'product'])->whereNumber('id');
+    Route::get('/api/workspace-shell', WorkspaceShellController::class);
+    Route::get('/audit-trail', [AuditTrailController::class, 'index'])->name('audit.trail');
+    Route::get('/business-units', [BusinessUnitController::class, 'index']);
+    Route::post('/api/business-units/{action}', [BusinessUnitController::class, 'command'])->middleware('throttle:60,1');
+    Route::get('/cash-handovers', [CashCustodyController::class, 'handoverIndex'])->name('cash.handovers');
+    Route::get('/treasury/report', [CashCustodyController::class, 'report'])->name('treasury.report');
+    Route::get('/treasury', [CashCustodyController::class, 'treasury'])->name('treasury');
+    Route::prefix('api/cash-custody')->middleware('throttle:60,1')->group(function () {
+        Route::get('/handovers', [CashCustodyController::class, 'handoverIndex']);
+        Route::get('/treasury', [CashCustodyController::class, 'treasury']);
+        Route::post('/{action}/{id?}', [CashCustodyController::class, 'command'])->where('action', 'stage|receive|approve|cancel|spend|reverse')->whereNumber('id');
+    });
     Route::get('/open-shift', [OpenShiftController::class, 'show'])->name('shift.open');
     Route::post('/open-shift', [OpenShiftController::class, 'store'])->middleware('throttle:20,1')->name('shift.open.store');
     // History remains available after the cashier closes their operational shift.
     Route::get('/api/nightshift/shift-stock/{id}', [ShiftStockController::class, 'show'])->whereNumber('id');
     Route::get('/shift-stock/{id}', [ShiftStockController::class, 'page'])->whereNumber('id');
+    Route::get('/shift-stock/{id}/pdf', [ShiftStockController::class, 'pdf'])->whereNumber('id');
     Route::get('/shift-stock/{id}/print', [ShiftStockController::class, 'sheet'])->whereNumber('id');
     Route::post('/api/nightshift/my-orders/close', [MyOrdersController::class, 'close'])->middleware('throttle:60,1')->block(10, 10);
     Route::get('/dashboard', Workspace::class)->middleware(RequireOperationalShift::class)->name('dashboard')->block(10, 10);
@@ -59,10 +81,15 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/', [MyOrdersController::class, 'index'])->block(10, 10);
             Route::get('/{id}', [MyOrdersController::class, 'show'])->whereNumber('id')->block(10, 10);
         });
+        Route::get('/staff-assignment-options', [BusinessUnitController::class, 'assignmentOptions']);
+        Route::get('/product-configuration/{id?}', [ProductConfigurationController::class, 'show'])->whereNumber('id');
+        Route::get('/location-products', [ProductConfigurationController::class, 'locationProducts']);
+        Route::get('/report-shifts', [ReportShiftController::class, 'index']);
         Route::get('/bootstrap', [NightshiftController::class, 'snapshot']);
         Route::post('/commands/{command}', [NightshiftController::class, 'command']);
-        Route::get('/reports/{name}/export', [NightshiftController::class, 'exportReport']);
-        Route::get('/reports/{name}', [NightshiftController::class, 'report']);
+        Route::get('/reports/{name}/pdf', [NightshiftController::class, 'pdfReport'])->where('name', '.*');
+        Route::get('/reports/{name}/export', [NightshiftController::class, 'exportReport'])->where('name', '.*');
+        Route::get('/reports/{name}', [NightshiftController::class, 'report'])->where('name', '.*');
         Route::get('/receipts/{id}', [NightshiftController::class, 'receipt'])->name('nightshift.receipt');
         Route::post('/sales-tickets/{token}/dispatch', [NightshiftController::class, 'dispatchTicket'])->name('nightshift.ticket-dispatch');
         Route::get('/sales-tickets/{token}', [NightshiftController::class, 'salesTicket'])->name('nightshift.sales-ticket');

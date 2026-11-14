@@ -2,8 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Domain\TenantContext;
 use App\Models\AuditLog;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\Category;
 use App\Models\GoodsReceipt;
 use App\Models\Order;
@@ -29,6 +31,7 @@ use App\Services\PaymentService;
 use App\Services\ReturnService;
 use App\Services\ShiftService;
 use App\Services\StockTransferService;
+use App\Services\UnitOperationalService;
 use App\Services\VoidService;
 use App\Services\WaiterLedgerService;
 use App\Support\StockMovementPresenter;
@@ -73,22 +76,73 @@ class NightshiftWorkflowTest extends TestCase
         $this->owner = User::factory()->create();
         $this->actingAs($this->owner);
         $this->branch = Branch::create(['name' => 'Masaki']);
-        $this->store = StockLocation::create(['branch_id' => $this->branch->id, 'name' => 'Main Store', 'type' => 'STORE']);
-        $this->counter = StockLocation::create(['branch_id' => $this->branch->id, 'name' => 'Main Counter', 'type' => 'COUNTER']);
-        $this->vip = StockLocation::create(['branch_id' => $this->branch->id, 'name' => 'VIP Counter', 'type' => 'COUNTER']);
+
+        $unit = app(\App\Services\BusinessUnitService::class)->save([
+            'branch_id' => $this->branch->id,
+            'name' => 'Operations',
+            'code' => 'OPERATIONS',
+            'active' => true,
+        ]);
+
+        $unit->update([
+            'advanced_locations_enabled' => true,
+            'max_active_cashiers' => 3,
+        ]);
+
+        $this->store = StockLocation::create([
+            'branch_id' => $this->branch->id,
+            'business_unit_id' => $unit->id,
+            'name' => 'Main Store',
+            'type' => 'STORE',
+        ]);
+
+        $this->counter = StockLocation::create([
+            'branch_id' => $this->branch->id,
+            'business_unit_id' => $unit->id,
+            'name' => 'Main Counter',
+            'type' => 'COUNTER',
+        ]);
+
+        $this->vip = StockLocation::create([
+            'branch_id' => $this->branch->id,
+            'business_unit_id' => $unit->id,
+            'name' => 'VIP Counter',
+            'type' => 'COUNTER',
+        ]);
+        app(UnitOperationalService::class)->adoptDefault($unit, $this->counter);
         $category = Category::create(['name' => 'Beer']);
         $bottle = Unit::create(['name' => 'Bottle']);
         $piece = Unit::create(['name' => 'Piece']);
         $bucket = Unit::create(['name' => 'Bucket']);
-        $this->product = Product::create(['category_id' => $category->id, 'base_unit_id' => $bottle->id, 'name' => 'Serengeti Lite', 'sku' => 'BR-001', 'purchase_cost' => '2000', 'minimum_stock' => '48']);
+        $this->product = Product::create([
+            'category_id' => $category->id,
+            'base_unit_id' => $bottle->id,
+            'name' => 'Serengeti Lite',
+            'sku' => 'BR-001',
+            'purchase_cost' => '2000',
+            'minimum_stock' => '48',
+        ]);
+
+        \Illuminate\Support\Facades\DB::table('business_unit_products')->updateOrInsert(
+            [
+                'company_id' => $this->owner->company_id,
+                'product_id' => $this->product->id,
+                'business_unit_id' => $unit->id,
+            ],
+            [
+                'available' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]
+        );
+
         $this->piece = ProductUnit::create(['product_id' => $this->product->id, 'unit_id' => $piece->id, 'conversion_quantity' => '1', 'selling_price' => '3000']);
         $this->bucket = ProductUnit::create(['product_id' => $this->product->id, 'unit_id' => $bucket->id, 'conversion_quantity' => '6', 'selling_price' => '16000']);
         $this->supplier = Supplier::create(['name' => 'Serengeti Breweries']);
         $this->cashier = $this->staff('Cashier');
         $this->waiter = $this->staff('Waiter');
+        app(ShiftService::class)->open(['user_id' => $this->cashier->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER', 'opening_cash' => '300000', 'opening_reason' => 'Authorized fixture opening float']);
         app(ShiftService::class)->open(['user_id' => $this->waiter->id, 'stock_location_id' => $this->counter->id, 'type' => 'WAITER', 'opening_cash' => '0']);
-        app(ShiftService::class)->open(['user_id' => $this->cashier->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER', 'opening_cash' => '300000']);
-        app(ShiftService::class)->open(['user_id' => $this->owner->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER', 'opening_cash' => '0']);
         foreach ([[$this->counter, '142'], [$this->store, '480'], [$this->vip, '96']] as [$location,$qty]) {
             app(GoodsReceiptService::class)->post(['stock_location_id' => $location->id, 'supplier_id' => $this->supplier->id, 'supplier_invoice' => 'START-'.$location->id, 'received_on' => now()->toDateString(), 'items' => [['product_unit_id' => $this->piece->id, 'quantity' => $qty, 'unit_cost' => '2000']]]);
         }
@@ -96,8 +150,22 @@ class NightshiftWorkflowTest extends TestCase
 
     private function staff(string $role): User
     {
-        $u = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', $role)->firstOrFail()->id]);
-        $u->branches()->attach($this->branch->id, ['company_id' => $this->owner->company_id]);
+        $u = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => Role::where('name', $role)->firstOrFail()->id,
+        ]);
+
+        $u->branches()->attach($this->branch->id, [
+            'company_id' => $this->owner->company_id,
+        ]);
+
+        app(\App\Domain\TenantContext::class)->run(
+            $this->owner,
+            fn () => app(\App\Services\BusinessUnitService::class)->assign(
+                $u,
+                [(int) $this->counter->business_unit_id]
+            )
+        );
 
         return $u;
     }
@@ -240,19 +308,19 @@ class NightshiftWorkflowTest extends TestCase
         $this->issued();
         $this->actingAs($this->waiter);
         $s = Shift::where('user_id', $this->waiter->id)->firstOrFail();
-        $this->command('shift-close', ['id' => $s->id])->assertForbidden();
+        $this->command('shift-close', ['id' => $s->id])->assertUnprocessable();
         $this->assertSame('OPEN', $s->fresh()->status);
     }
 
-    public function test_manager_override_requires_reason_and_is_audited(): void
+    public function test_manager_cannot_override_unsettled_waiter_debt(): void
     {
         $this->issued();
         $this->actingAs($this->owner);
         $s = Shift::where('user_id', $this->waiter->id)->firstOrFail();
         $this->command('shift-close', ['id' => $s->id])->assertUnprocessable();
-        $this->command('shift-close', ['id' => $s->id, 'override_reason' => 'Approved pending bank reconciliation'])->assertOk();
-        $this->assertSame('CLOSED', $s->fresh()->status);
-        $this->assertTrue(AuditLog::where('action', 'SHIFT_OVERRIDE')->exists());
+        $this->command('shift-close', ['id' => $s->id, 'override_reason' => 'Approved pending bank reconciliation'])->assertUnprocessable();
+        $this->assertSame('OPEN', $s->fresh()->status);
+        $this->assertFalse(AuditLog::where('action', 'SHIFT_OVERRIDE')->exists());
         $this->assertDecimal('6000.00', app(WaiterLedgerService::class)->balance($this->waiter->id));
     }
 
@@ -416,7 +484,8 @@ class NightshiftWorkflowTest extends TestCase
         $this->issued();
         app(PaymentService::class)->receive(Order::firstOrFail()->id, [['method' => 'Cash', 'amount' => '6000']]);
         $s = Shift::where('user_id', $this->cashier->id)->firstOrFail();
-        $this->completeStockCount($s);
+        app(TenantContext::class)->run($this->waiter, fn () => app(ShiftService::class)->close(Shift::where('user_id', $this->waiter->id)->firstOrFail()->id, []));
+        $this->completeStockCount($s, '300000');
         $this->command('shift-close', ['id' => $s->id, 'actual_cash' => '300000'])->assertUnprocessable();
         $this->command('shift-close', ['id' => $s->id, 'actual_cash' => '300000', 'notes' => 'Shortage confirmed during drawer reconciliation'])->assertOk();
         $this->assertDecimal('-6000', $s->fresh()->cash_difference);
@@ -470,7 +539,7 @@ class NightshiftWorkflowTest extends TestCase
     public function test_waiter_cannot_open_a_cashier_shift(): void
     {
         $this->actingAs($this->owner);
-        app(ShiftService::class)->close(Shift::where('user_id', $this->waiter->id)->firstOrFail()->id, []);
+        app(TenantContext::class)->run($this->waiter, fn () => app(ShiftService::class)->close(Shift::where('user_id', $this->waiter->id)->firstOrFail()->id, []));
         $this->actingAs($this->waiter);
         $this->command('shift-open', ['stock_location_id' => $this->counter->id, 'type' => 'CASHIER', 'opening_cash' => '0'])->assertUnprocessable();
     }
@@ -547,7 +616,7 @@ class NightshiftWorkflowTest extends TestCase
         $this->seed(NightshiftDemoSeeder::class);
         $this->actingAs(User::where('email', 'admin@nightshift.test')->firstOrFail());
         $this->assertSame(15, Product::count());
-        $this->assertSame(60, Stock::count());
+        $this->assertSame(56, Stock::count());
         $this->assertSame(3, Order::count());
         $this->assertSame(4, GoodsReceipt::count());
         $this->assertSame(1, Payment::count());
@@ -601,7 +670,12 @@ class NightshiftWorkflowTest extends TestCase
 
     public function test_workspace_counter_selection_is_deterministic_and_can_issue_at_the_open_shift(): void
     {
-        $garden = StockLocation::create(['branch_id' => $this->branch->id, 'name' => 'Garden Counter', 'type' => 'COUNTER']);
+        $garden = StockLocation::create([
+            'branch_id' => $this->branch->id,
+            'business_unit_id' => $this->counter->business_unit_id,
+            'name' => 'Garden Counter',
+            'type' => 'COUNTER',
+        ]);
         $snapshot = $this->getJson('/api/nightshift/bootstrap')->assertOk();
         $this->assertSame([$this->store->id, $this->counter->id, $this->vip->id, $garden->id], array_column($snapshot->json('locations'), 'id'));
         $snapshot->assertJsonPath('location_id', $this->counter->id);
@@ -613,9 +687,6 @@ class NightshiftWorkflowTest extends TestCase
 
     public function test_workspace_prefers_the_open_shift_counter_and_preserves_explicit_selection(): void
     {
-        $shift = Shift::where('user_id', $this->owner->id)->firstOrFail();
-        $this->completeStockCount($shift);
-        app(ShiftService::class)->close($shift->id, ['actual_cash' => '0']);
         // With no open shift, the first counter by ID is a stable fallback.
         $this->getJson('/api/nightshift/bootstrap')->assertOk()->assertJsonPath('location_id', $this->counter->id);
         app(ShiftService::class)->open(['user_id' => $this->owner->id, 'stock_location_id' => $this->vip->id, 'type' => 'CASHIER', 'opening_cash' => '0']);
@@ -642,7 +713,7 @@ class NightshiftWorkflowTest extends TestCase
     /** @return array<string, mixed> */
     private function uxProductData(): array
     {
-        return ['name' => 'UX product', 'category_id' => $this->product->category_id, 'base_unit_id' => $this->product->base_unit_id, 'purchase_cost' => '2000', 'minimum_stock' => '4', 'active' => true, 'units' => [['unit_id' => $this->piece->unit_id, 'conversion_quantity' => '1', 'selling_price' => '3000']]];
+        return ['business_units' => [['business_unit_id' => $this->counter->business_unit_id, 'available' => true, 'prices' => []]], 'name' => 'UX product', 'category_id' => $this->product->category_id, 'base_unit_id' => $this->product->base_unit_id, 'purchase_cost' => '2000', 'minimum_stock' => '4', 'active' => true, 'units' => [['unit_id' => $this->piece->unit_id, 'conversion_quantity' => '1', 'selling_price' => '3000']]];
     }
 
     public function test_optional_sku_is_unique_and_existing_hidden_product_data_is_preserved(): void

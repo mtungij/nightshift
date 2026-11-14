@@ -2,7 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\Domain\TenantContext;
 use App\Jobs\WhatsApp\SendOperationalAlertJob;
+use App\Models\Shift;
 use App\Services\ShiftService;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Support\Facades\DB;
@@ -34,6 +36,7 @@ class WhatsAppAfterCommitTest extends TestCase
     {
         $this->actingAs($this->cashier);
         DB::beginTransaction();
+        app(TenantContext::class)->run($this->waiter, fn () => app(ShiftService::class)->close(Shift::where('user_id', $this->waiter->id)->firstOrFail()->id, []));
         $this->completeStockCount($this->cashierShift);
         app(ShiftService::class)->close($this->cashierShift->id, ['actual_cash' => '0']);
         Queue::assertNothingPushed();
@@ -47,6 +50,7 @@ class WhatsAppAfterCommitTest extends TestCase
     {
         $this->actingAs($this->cashier);
         DB::beginTransaction();
+        app(TenantContext::class)->run($this->waiter, fn () => app(ShiftService::class)->close(Shift::where('user_id', $this->waiter->id)->firstOrFail()->id, []));
         $this->completeStockCount($this->cashierShift);
         app(ShiftService::class)->close($this->cashierShift->id, ['actual_cash' => '0']);
         DB::rollBack();

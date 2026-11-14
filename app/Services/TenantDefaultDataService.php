@@ -6,7 +6,6 @@ use App\Domain\TenantContext;
 use App\Models\Branch;
 use App\Models\Category;
 use App\Models\Company;
-use App\Models\StockLocation;
 use App\Models\Unit;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
@@ -23,9 +22,6 @@ final class TenantDefaultDataService
                 $settings = $company->settings ?? [];
                 $settings['default_branch_id'] = $branch->id;
                 $owner->branches()->syncWithoutDetaching([$branch->id => ['company_id' => $owner->company_id]]);
-                foreach (['Main Store' => 'STORE', 'Main Counter' => 'COUNTER'] as $name => $type) {
-                    StockLocation::firstOrCreate(['branch_id' => $branch->id, 'name' => $name], ['type' => $type, 'active' => true]);
-                }
                 foreach (config('business.categories') as $order => $name) {
                     $category = Category::whereKey($settings['default_category_ids'][$name] ?? 0)->first()
                         ?? Category::firstOrCreate(['name' => $name], ['sort_order' => $order, 'active' => $selectedCategories === null || in_array($name, $selectedCategories, true), 'icon' => 'box', 'color' => '#956015']);

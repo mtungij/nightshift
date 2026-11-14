@@ -1,0 +1,533 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Domain\TenantContext;
+use App\Models\AuditLog;
+use App\Models\Branch;
+use App\Models\BusinessUnit;
+use App\Models\CashHandover;
+use App\Models\CashHandoverEvent;
+use App\Models\GoodsReceipt;
+use App\Models\Payment;
+use App\Models\Product;
+use App\Models\ProductUnit;
+use App\Models\Role;
+use App\Models\Shift;
+use App\Models\StockLocation;
+use App\Models\StockMovement;
+use App\Models\Supplier;
+use App\Models\TreasuryEntry;
+use App\Models\User;
+use App\Models\WaiterLedgerEntry;
+use App\Services\BusinessUnitService;
+use App\Services\CashHandoverService;
+use App\Services\GoodsReceiptService;
+use App\Services\ShiftService;
+use App\Services\ShiftStockService;
+use App\Services\TreasuryService;
+use App\Services\UnitOperationalService;
+use Database\Seeders\NightshiftDemoSeeder;
+use Illuminate\Database\QueryException;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\CompletesStockCount;
+use Tests\TestCase;
+
+class CashCustodyTest extends TestCase
+{
+    use CompletesStockCount, RefreshDatabase;
+
+    private User $owner;
+
+    private User $cashier;
+
+    private User $next;
+
+    private User $accountant;
+
+    private StockLocation $counter;
+
+    private Shift $shift;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(NightshiftDemoSeeder::class);
+        $this->owner = User::where('email', 'admin@nightshift.test')->firstOrFail();
+        $this->actingAs($this->owner);
+        $branch = Branch::firstOrFail();
+        $this->counter = StockLocation::create(['branch_id' => $branch->id, 'name' => 'Custody counter', 'type' => 'COUNTER']);
+        $unit = app(BusinessUnitService::class)->save(['branch_id' => $branch->id, 'name' => 'Custody unit', 'code' => 'CUSTODY', 'active' => true, 'advanced_locations_enabled' => true, 'max_active_cashiers' => 3]);
+        $this->counter->update(['business_unit_id' => $unit->id]);
+        foreach (Product::all() as $product) {
+            app(BusinessUnitService::class)->product(['product_id' => $product->id, 'business_unit_id' => $unit->id, 'available' => true, 'prices' => []]);
+        }
+        app(UnitOperationalService::class)->adoptDefault($unit, $this->counter);
+        $this->cashier = $this->staff('Cashier');
+        $this->next = $this->staff('Cashier');
+        $this->accountant = $this->staff('Accountant');
+        $this->shift = app(ShiftService::class)->open(['type' => 'CASHIER', 'stock_location_id' => $this->counter->id, 'user_id' => $this->cashier->id, 'opening_cash' => '650000', 'opening_reason' => 'Owner supplied documented opening float']);
+    }
+
+    private function staff(string $role): User
+    {
+        $user = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', $role)->firstOrFail()->id]);
+        $user->branches()->attach($this->counter->branch_id, ['company_id' => $user->company_id]);
+
+        if ($user->isPosTerminal()) {
+            $user->forceFill(['terminal_stock_location_id' => $this->counter->id])->save();
+        }
+        $ids = [(int) $this->counter->business_unit_id];
+
+        app(TenantContext::class)->run(
+            $this->owner,
+            fn () => app(BusinessUnitService::class)->assign($user, $ids)
+        );
+
+        return $user;
+    }
+
+    private function as(User $actor, callable $callback): mixed
+    {
+        return app(TenantContext::class)->run($actor, $callback);
+    }
+
+    private function reject(callable $callback, string $message): void
+    {
+        try {
+            $callback();
+            $this->fail('Expected cash custody blocker');
+        } catch (ValidationException $error) {
+            $this->assertStringContainsString($message, $error->getMessage());
+        }
+    }
+
+    private function counted(): void
+    {
+        $this->as($this->cashier, fn () => $this->completeStockCount($this->shift, null, false));
+    }
+
+    private function stage(string $destination = 'TREASURY', ?User $to = null): CashHandover
+    {
+        $this->counted();
+
+        return $this->as($this->cashier, fn () => app(CashHandoverService::class)->stage($this->shift->id, ['destination' => $destination, 'to_user_id' => ($to ?? $this->accountant)->id, 'amount' => '650000']));
+    }
+
+    private function fund(?User $recipient = null): CashHandover
+    {
+        $to = $recipient ?? $this->accountant;
+        $h = $this->stage('TREASURY', $to);
+        $this->as($to, fn () => app(CashHandoverService::class)->receive($h->id, '650000'));
+        $this->as($this->cashier, fn () => app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '650000']));
+
+        return $h;
+    }
+
+    private function expense(string $type, string $amount, array $extra = []): TreasuryEntry
+    {
+        $data = ['transaction_type' => $type, 'amount' => $amount, 'branch_id' => $this->counter->branch_id, 'description' => 'Documented cash business use', 'occurred_at' => now()->format('Y-m-d\TH:i'), 'external_reference' => (string) Str::uuid(), ...$extra];
+
+        return $this->as($this->accountant, fn () => app(TreasuryService::class)->spend($data));
+    }
+
+    public function test_normal_cashier_opening_defaults_to_zero_and_manual_cash_is_denied(): void
+    {
+        $other = StockLocation::create([
+            'branch_id' => $this->counter->branch_id,
+            'business_unit_id' => $this->counter->business_unit_id,
+            'name' => 'Zero float counter',
+            'type' => 'COUNTER',
+        ]);
+        $this->actingAs($this->next);
+        $this->post('/open-shift', ['stock_location_id' => $other->id, 'opening_cash' => '50000'])->assertSessionHasErrors('opening_cash');
+        $this->postJson('/api/nightshift/commands/shift-open', ['type' => 'CASHIER', 'stock_location_id' => $other->id, 'opening_cash' => '50000', 'idempotency_key' => (string) Str::uuid()])->assertForbidden();
+        $this->post('/open-shift', ['stock_location_id' => $other->id])->assertRedirect('/dashboard#waiters');
+        $this->assertSame('0.00', Shift::where('user_id', $this->next->id)->firstOrFail()->opening_cash);
+    }
+
+    public function test_authorized_float_needs_reason_and_is_audited(): void
+    {
+        $counter = StockLocation::create([
+            'branch_id' => $this->counter->branch_id,
+            'business_unit_id' => $this->counter->business_unit_id,
+            'name' => 'Authorized float',
+            'type' => 'COUNTER',
+        ]);
+        $this->reject(fn () => app(ShiftService::class)->open(['type' => 'CASHIER', 'user_id' => $this->next->id, 'stock_location_id' => $counter->id, 'opening_cash' => '500']), 'needs a reason');
+        $shift = app(ShiftService::class)->open(['type' => 'CASHIER', 'user_id' => $this->next->id, 'stock_location_id' => $counter->id, 'opening_cash' => '500', 'opening_reason' => 'Documented owner opening float']);
+        $this->assertSame('500.00', $shift->opening_cash);
+        $this->assertSame('Documented owner opening float', AuditLog::where('action', 'SHIFT_OPENED')->latest('id')->firstOrFail()->new_values['opening_reason']);
+    }
+
+    public function test_cashier_to_cashier_receipt_becomes_opening_without_a_second_accounting_path(): void
+    {
+        $before = [
+            Payment::withoutGlobalScopes()->count(),
+            WaiterLedgerEntry::withoutGlobalScopes()->count(),
+            StockMovement::withoutGlobalScopes()->count(),
+        ];
+        $h = $this->stage('NEXT_CASHIER', $this->next);
+        $this->as($this->cashier, fn () => app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '650000']));
+        $this->assertSame('PENDING', app(CashHandoverService::class)->latest($h)->status);
+        $this->actingAs($this->next)->get('/open-shift')->assertOk()->assertSee('650000')->assertSee('Cash awaiting receipt');
+        $this->post('/open-shift', ['stock_location_id' => $this->counter->id, 'handover_id' => $h->id])->assertRedirect('/dashboard#waiters');
+        $new = Shift::where('user_id', $this->next->id)->firstOrFail();
+        $this->assertSame('650000.00', $new->opening_cash);
+        $this->assertSame('OPENED', app(CashHandoverService::class)->latest($h)->status);
+        $this->assertSame(0, TreasuryEntry::count());
+        $this->assertSame($before, [
+            Payment::withoutGlobalScopes()->count(),
+            WaiterLedgerEntry::withoutGlobalScopes()->count(),
+            StockMovement::withoutGlobalScopes()->count(),
+        ]);
+        $this->post('/open-shift', ['stock_location_id' => $this->counter->id, 'handover_id' => $h->id])->assertRedirect('/dashboard#waiters');
+        $this->assertSame(1, Shift::where('user_id', $this->next->id)->count());
+    }
+
+    public function test_accountant_receipt_is_required_before_final_close_and_credit_is_once(): void
+    {
+        $h = $this->stage();
+        $this->reject(fn () => $this->as($this->cashier, fn () => app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '650000'])), 'must confirm');
+        $this->as($this->accountant, fn () => app(CashHandoverService::class)->receive($h->id, '650000'));
+        $this->assertSame('0.00', app(TreasuryService::class)->balance($this->accountant->id, $this->counter->branch_id));
+        $this->as($this->cashier, fn () => app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '650000']));
+        $this->assertSame('650000.00', app(TreasuryService::class)->balance($this->accountant->id, $this->counter->branch_id));
+        $this->reject(fn () => $this->as($this->accountant, fn () => app(CashHandoverService::class)->receive($h->id, '650000')), 'already been processed');
+        $this->assertSame(1, TreasuryEntry::where('handover_id', $h->id)->count());
+    }
+
+    public function test_owner_can_receive_without_a_separate_accountant(): void
+    {
+        $this->fund($this->owner);
+        $this->assertSame('650000.00', app(TreasuryService::class)->balance($this->owner->id, $this->counter->branch_id));
+        $this->assertSame('0.00', app(TreasuryService::class)->balance($this->accountant->id, $this->counter->branch_id));
+    }
+
+    public function test_discrepancy_preserves_expected_cash_and_needs_approval_before_next_open(): void
+    {
+        $h = $this->stage('NEXT_CASHIER', $this->next);
+        $this->as($this->cashier, fn () => app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '650000']));
+        $this->reject(fn () => $this->as($this->next, fn () => app(CashHandoverService::class)->receive($h->id, '645000')), 'Explain');
+        $this->as($this->next, fn () => app(CashHandoverService::class)->receive($h->id, '645000', 'Cash recounted with a shortage'));
+        $this->assertSame('650000.00', $h->fresh()->amount);
+        $this->reject(fn () => $this->as($this->next, fn () => app(ShiftService::class)->open(['type' => 'CASHIER', 'stock_location_id' => $this->counter->id, 'handover_id' => $h->id])), 'must approve');
+        app(CashHandoverService::class)->approve($h->id, 'Manager verified the counted difference');
+        $shift = $this->as($this->next, fn () => app(ShiftService::class)->open(['type' => 'CASHIER', 'stock_location_id' => $this->counter->id, 'handover_id' => $h->id]));
+        $this->assertSame('645000.00', $shift->opening_cash);
+        $this->assertSame('-5000.00', app(CashHandoverService::class)->present($h)['difference']);
+        $this->assertTrue(AuditLog::where('action', 'CASH_HANDOVER_APPROVED')->exists());
+    }
+
+    public function test_treasury_discrepancy_credit_uses_approved_received_amount(): void
+    {
+        $h = $this->stage();
+        $this->as($this->accountant, fn () => app(CashHandoverService::class)->receive($h->id, '645000', 'Cash shortage verified by receiver'));
+        $this->reject(fn () => $this->as($this->cashier, fn () => app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '650000'])), 'must confirm');
+        app(CashHandoverService::class)->approve($h->id, 'Owner verified discrepancy against physical cash');
+        $this->as($this->cashier, fn () => app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '650000']));
+        $this->assertSame('645000.00', app(TreasuryService::class)->balance($this->accountant->id, $this->counter->branch_id));
+        $this->assertSame('650000.00', $this->shift->fresh()->actual_cash);
+    }
+
+    public static function cashUses(): array
+    {
+        return [['EXPENSE'], ['SALARY'], ['BANK_DEPOSIT'], ['PURCHASE']];
+    }
+
+    #[DataProvider('cashUses')]
+    public function test_each_authorized_use_reduces_only_treasury(string $type): void
+    {
+        $this->fund();
+
+        $purchaseReceipt = null;
+
+        if ($type === 'PURCHASE') {
+            $purchaseReceipt = app(GoodsReceiptService::class)->post([
+                'stock_location_id' => $this->counter->id,
+                'supplier_id' => Supplier::firstOrFail()->id,
+                'supplier_invoice' => 'TREASURY-USE-'.Str::uuid(),
+                'received_on' => now()->toDateString(),
+                'items' => [[
+                    'product_unit_id' => ProductUnit::firstOrFail()->id,
+                    'quantity' => '1',
+                    'unit_cost' => '50000',
+                ]],
+            ]);
+        }
+
+        $before = [
+            Payment::count(),
+            WaiterLedgerEntry::count(),
+            StockMovement::count(),
+        ];
+
+        $extra = match ($type) {
+            'EXPENSE' => [
+                'category' => 'Transport',
+            ],
+            'SALARY' => [
+                'employee_id' => $this->cashier->id,
+                'pay_period' => 'November 2026',
+            ],
+            'BANK_DEPOSIT' => [
+                'bank' => 'CRDB',
+            ],
+            'PURCHASE' => [
+                'goods_receipt_id' => $purchaseReceipt->id,
+            ],
+        };
+
+        $entry = $this->expense($type, '50000', $extra);
+
+        $this->assertSame(
+            '600000.00',
+            app(TreasuryService::class)->balance(
+                $this->accountant->id,
+                $this->counter->branch_id
+            )
+        );
+
+        $this->assertSame($type, $entry->transaction_type);
+
+        $this->assertSame($before, [
+            Payment::count(),
+            WaiterLedgerEntry::count(),
+            StockMovement::count(),
+        ]);
+    }
+
+    public function test_insufficient_cash_and_duplicate_business_references_are_rejected(): void
+    {
+        $this->fund();
+        $this->reject(fn () => $this->expense('EXPENSE', '650001', ['category' => 'Transport']), 'Insufficient');
+        $this->expense('EXPENSE', '200000', ['category' => 'Transport', 'external_reference' => 'BILL-ONE']);
+        $this->reject(fn () => $this->expense('EXPENSE', '200000', ['category' => 'Transport', 'external_reference' => 'BILL-ONE']), 'already been posted');
+        $this->assertSame('450000.00', app(TreasuryService::class)->balance($this->accountant->id, $this->counter->branch_id));
+    }
+
+    public function test_purchase_cannot_be_paid_twice_with_different_keys_or_references(): void
+    {
+        $this->fund();
+        $grn = app(GoodsReceiptService::class)->post(['stock_location_id' => $this->counter->id, 'supplier_id' => Supplier::firstOrFail()->id, 'supplier_invoice' => 'TREASURY-PURCHASE', 'received_on' => now()->toDateString(), 'items' => [['product_unit_id' => ProductUnit::firstOrFail()->id, 'quantity' => '1', 'unit_cost' => '100000']]]);
+        $this->expense('PURCHASE', $grn->total_cost, ['goods_receipt_id' => $grn->id]);
+        $this->reject(fn () => $this->expense('PURCHASE', '1', ['goods_receipt_id' => $grn->id]), 'already paid');
+    }
+
+    public function test_outflow_reversal_preserves_original_and_restores_cash_once(): void
+    {
+        $this->fund();
+        $entry = $this->expense('EXPENSE', '200000', ['category' => 'Transport']);
+        $reverse = app(TreasuryService::class)->reverse($entry->id, ['note' => 'Cash physically returned after cancelled expense']);
+        $this->assertSame('IN', $reverse->direction);
+        $this->assertSame($entry->id, $reverse->reversal_of);
+        $this->assertSame('650000.00', app(TreasuryService::class)->balance($this->accountant->id, $this->counter->branch_id));
+        $this->reject(fn () => app(TreasuryService::class)->reverse($entry->id, ['note' => 'Duplicate reversal attempt']), 'already been reversed');
+        $this->assertSame('OUT', $entry->fresh()->direction);
+    }
+
+    public function test_receipt_reversal_preserves_custody_through_replacement_handover(): void
+    {
+        $h = $this->fund();
+        $entry = TreasuryEntry::where('handover_id', $h->id)->firstOrFail();
+        app(TreasuryService::class)->reverse($entry->id, ['note' => 'Reassign cash to the company owner', 'to_user_id' => $this->owner->id]);
+        $replacement = CashHandover::where('replaces_id', $h->id)->firstOrFail();
+        $this->assertSame('0.00', app(TreasuryService::class)->balance($this->accountant->id, $this->counter->branch_id));
+        $this->assertSame('PENDING', app(CashHandoverService::class)->latest($replacement)->status);
+        app(CashHandoverService::class)->receive($replacement->id, '650000');
+        $this->assertSame('650000.00', app(TreasuryService::class)->balance($this->owner->id, $this->counter->branch_id));
+        $this->assertSame('REVERSED', app(CashHandoverService::class)->latest($h)->status);
+    }
+
+    public function test_unreceived_closed_handover_can_only_be_cancelled_with_replacement(): void
+    {
+        $h = $this->stage('NEXT_CASHIER', $this->next);
+        $this->as($this->cashier, fn () => app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '650000']));
+        app(CashHandoverService::class)->cancel($h->id, ['note' => 'Owner receives cash instead of next cashier', 'destination' => 'TREASURY', 'to_user_id' => $this->owner->id]);
+        $replacement = CashHandover::where('replaces_id', $h->id)->firstOrFail();
+        $this->assertSame('650000.00', $replacement->amount);
+        $this->assertSame('CANCELLED', app(CashHandoverService::class)->latest($h)->status);
+        app(CashHandoverService::class)->receive($replacement->id, '650000');
+        $this->assertSame('650000.00', app(TreasuryService::class)->balance($this->owner->id, $this->counter->branch_id));
+    }
+
+    public function test_other_counter_cannot_claim_cash_and_other_cashier_cannot_open_around_it(): void
+    {
+        $h = $this->stage('NEXT_CASHIER', $this->next);
+        $this->as($this->cashier, fn () => app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '650000']));
+        $vip = StockLocation::create([
+            'branch_id' => $this->counter->branch_id,
+            'business_unit_id' => $this->counter->business_unit_id,
+            'name' => 'Other custody counter',
+            'type' => 'COUNTER',
+        ]);
+        $this->reject(fn () => $this->as($this->next, fn () => app(ShiftService::class)->open(['type' => 'CASHIER', 'stock_location_id' => $vip->id, 'handover_id' => $h->id])), 'No cash handover');
+        $this->reject(fn () => app(ShiftService::class)->open(['user_id' => $this->staff('Cashier')->id, 'type' => 'CASHIER', 'stock_location_id' => $this->counter->id]), 'Confirm the assigned');
+    }
+
+    public function test_waiter_terminal_and_other_receiver_have_no_treasury_authority(): void
+    {
+        $h = $this->stage();
+        foreach (['Waiter', 'POS Terminal'] as $role) {
+            $user = $this->staff($role);
+            if ($role === 'POS Terminal') {
+                $user->forceFill(['terminal_stock_location_id' => $this->counter->id])->save();
+            }
+            $this->actingAs($user)->get('/treasury')->assertForbidden();
+            $this->get('/cash-handovers')->assertForbidden();
+            $this->postJson('/api/cash-custody/spend', [])->assertForbidden();
+        }
+        $this->actingAs($this->owner)->postJson('/api/cash-custody/receive/'.$h->id, ['amount' => '650000', 'idempotency_key' => (string) Str::uuid()])->assertForbidden();
+    }
+
+    public function test_tenant_branch_and_custodian_ids_cannot_be_tampered_with(): void
+    {
+        $h = $this->fund();
+        $other = User::factory()->create();
+        $this->actingAs($other)->postJson('/api/cash-custody/receive/'.$h->id, ['amount' => '650000', 'idempotency_key' => (string) Str::uuid()])->assertNotFound();
+        $branch = $this->as($this->owner, fn () => Branch::create(['name' => 'Treasury restricted branch']));
+        $this->actingAs($this->accountant)->getJson('/api/cash-custody/treasury?branch_id='.$branch->id)->assertNotFound();
+        $this->getJson('/api/cash-custody/treasury?custodian_id='.$this->owner->id)->assertForbidden();
+    }
+
+    public function test_financial_history_has_model_and_database_immutability(): void
+    {
+        $h = $this->fund();
+        $entry = TreasuryEntry::firstOrFail();
+        foreach ([$h, app(CashHandoverService::class)->latest($h), $entry] as $model) {
+            try {
+                $model->update(['amount' => '1']);
+                $this->fail('Expected immutable model');
+            } catch (\LogicException) {
+                $this->assertTrue(true);
+            }
+            try {
+                DB::table($model->getTable())->where('id', $model->id)->update(['amount' => '1']);
+                $this->fail('Expected immutable database');
+            } catch (QueryException) {
+                $this->assertTrue(true);
+            }
+        }
+        $before = [CashHandover::count(), CashHandoverEvent::count(), TreasuryEntry::count()];
+        try {
+            (require database_path('migrations/2026_11_10_000002_create_cash_custody.php'))->down();
+            $this->fail('Custody migration rollback must be refused.');
+        } catch (\LogicException $error) {
+            $this->assertStringContainsString('forward-only', $error->getMessage());
+        }
+        $this->assertSame($before, [CashHandover::count(), CashHandoverEvent::count(), TreasuryEntry::count()]);
+        $this->assertSame('650000.00', $this->shift->fresh()->actual_cash);
+    }
+
+    public function test_reports_and_kiswahili_rendering_keep_custody_separate_from_sales(): void
+    {
+        $h = $this->fund();
+        $this->accountant->forceFill(['language_preference' => 'sw'])->save();
+        $this->actingAs($this->accountant)->get('/treasury')->assertOk()->assertSee('Hazina ya Cash')->assertSee('Cash Iliyopo')->assertSee('650000.00');
+        $this->get('/cash-handovers')->assertOk()->assertSee('Makabidhiano ya Cash');
+        foreach (config('treasury.reports') as $name) {
+            $this->getJson('/api/nightshift/reports/'.rawurlencode($name))->assertOk();
+            $this->get('/treasury/report?'.http_build_query(['name' => $name]))->assertOk();
+        }
+        $this->get('/treasury?print=1')->assertOk()->assertSee('Hazina ya Cash')->assertSee('A4 landscape');
+        $this->actingAs($this->owner);
+        $r = app(ShiftStockService::class)->report($this->shift->id);
+        $this->assertSame($h->id, $r['cash_disposition']['id']);
+        $this->assertSame('RECEIVED', $r['custody']['status']);
+        $this->assertSame('650000.00', $r['cash']['actual']);
+        $this->assertSame('0.00', $r['total_sales']);
+    }
+
+    public function test_staging_handover_freezes_operational_writes_until_close(): void
+    {
+        $this->stage();
+        $waiter = $this->staff('Waiter');
+        $this->reject(fn () => $this->as($waiter, fn () => app(ShiftService::class)->open(['type' => 'WAITER', 'stock_location_id' => $this->counter->id])), 'handover is in progress');
+        $this->reject(fn () => $this->counted(), 'Cancel the unreceived');
+    }
+
+    public function test_accountant_role_has_no_implicit_admin_stock_or_pos_permissions(): void
+    {
+        foreach (['manage-users', 'manage-inventory', 'receive-stock', 'create-orders', 'open-shifts', 'approve-cash-discrepancies', 'reverse-treasury', 'all-branches'] as $permission) {
+            $this->assertFalse($this->accountant->hasPermission($permission));
+        }
+        $this->assertTrue($this->accountant->hasPermission('receive-treasury'));
+    }
+
+    public function test_close_without_disposition_is_blocked_and_zero_cash_is_exempt(): void
+    {
+        $this->counted();
+        $this->reject(fn () => $this->as($this->cashier, fn () => app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '650000'])), 'Select where');
+        $counter = StockLocation::create([
+            'branch_id' => $this->counter->branch_id,
+            'business_unit_id' => $this->counter->business_unit_id,
+            'name' => 'Zero cash close',
+            'type' => 'COUNTER',
+        ]);
+        $shift = $this->as($this->next, fn () => app(ShiftService::class)->open(['type' => 'CASHIER', 'stock_location_id' => $counter->id]));
+        $this->as($this->next, fn () => $this->completeStockCount($shift));
+        $this->as($this->next, fn () => app(ShiftService::class)->close($shift->id, ['actual_cash' => '0']));
+        $this->assertSame('NONE', CashHandover::where('source_shift_id', $shift->id)->firstOrFail()->destination);
+        $this->assertSame(0, TreasuryEntry::count());
+    }
+
+    public function test_receipt_api_retries_are_idempotent_but_new_keys_cannot_receive_twice(): void
+    {
+        $h = $this->stage();
+        $this->actingAs($this->accountant);
+        $payload = ['amount' => '650000', 'idempotency_key' => (string) Str::uuid()];
+        $this->postJson('/api/cash-custody/receive/'.$h->id, $payload)->assertOk();
+        $this->postJson('/api/cash-custody/receive/'.$h->id, $payload)->assertOk();
+        $this->postJson('/api/cash-custody/receive/'.$h->id, [...$payload, 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+        $this->assertSame(1, CashHandoverEvent::where('handover_id', $h->id)->where('status', 'RECEIVED')->count());
+    }
+
+    public function test_accountant_can_be_created_and_logs_into_treasury_without_admin_access(): void
+    {
+        $this->postJson('/api/nightshift/commands/catalog-user', [
+            'name' => 'New Accountant',
+            'username' => 'new-accountant',
+            'email' => 'new-accountant@custody.test',
+            'pin' => '0123',
+            'role' => 'Accountant',
+            'branch_id' => $this->counter->branch_id,
+            'business_unit_ids' => [$this->counter->business_unit_id],
+            'active' => true,
+            'idempotency_key' => (string) Str::uuid(),
+        ])->assertOk();
+        $this->post('/logout');
+        $this->post('/login', ['username' => 'new-accountant', 'pin' => '0123'])->assertRedirect('/treasury');
+        $this->get('/treasury')->assertOk();
+        $this->get('/settings/business')->assertForbidden();
+    }
+
+    public function test_foreign_or_unassigned_handover_recipient_cannot_be_selected(): void
+    {
+        $this->counted();
+        $foreign = User::factory()->create(['role_id' => $this->accountant->role_id]);
+        $payload = ['shift_id' => $this->shift->id, 'destination' => 'TREASURY', 'to_user_id' => $foreign->id, 'amount' => '650000', 'idempotency_key' => (string) Str::uuid()];
+        $this->postJson('/api/cash-custody/stage', $payload)->assertNotFound();
+        $otherBranch = Branch::create(['name' => 'Other accountant branch']);
+        $this->accountant->branches()->sync([$otherBranch->id => ['company_id' => $this->owner->company_id]]);
+        $this->postJson('/api/cash-custody/stage', [...$payload, 'to_user_id' => $this->accountant->id, 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+        $this->assertSame(0, CashHandover::count());
+    }
+
+    public function test_cash_api_rejects_float_amounts_without_changing_custody_balance(): void
+    {
+        $this->fund();
+        $this->actingAs($this->accountant)->postJson('/api/cash-custody/spend', ['transaction_type' => 'EXPENSE', 'amount' => 10.15, 'branch_id' => $this->counter->branch_id, 'category' => 'Transport', 'description' => 'Float amount should be rejected', 'external_reference' => 'FLOAT-REJECT', 'occurred_at' => now()->format('Y-m-d\TH:i'), 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable()->assertJsonValidationErrors('amount');
+        $this->assertSame('650000.00', app(TreasuryService::class)->balance($this->accountant->id, $this->counter->branch_id));
+    }
+
+    public function test_received_closed_handovers_leave_pending_queue_but_remain_in_history(): void
+    {
+        $this->fund();
+        $this->actingAs($this->accountant)->getJson('/api/cash-custody/treasury')->assertOk()->assertJsonCount(0, 'handovers');
+        $this->getJson('/api/cash-custody/handovers')->assertOk()->assertJsonCount(1, 'handovers');
+    }
+}

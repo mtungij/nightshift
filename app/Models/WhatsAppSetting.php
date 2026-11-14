@@ -10,7 +10,7 @@ use Carbon\CarbonInterface;
  * @property CarbonInterface|null $created_at
  * @property CarbonInterface|null $updated_at
  * @property string|null $device_id
- * @property bool $provisioned
+ * @property bool $provisioned Legacy configured-ID marker; never proves creation/linking or gates device use.
  * @property string $connection_status
  * @property string|null $jid
  * @property CarbonInterface|null $last_checked_at

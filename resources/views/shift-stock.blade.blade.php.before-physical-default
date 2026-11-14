@@ -1,0 +1,147 @@
+@component('layouts.nightshift')
+@php($t = fn($text) => \App\Support\UiText::get($text))
+@php($sw = app()->getLocale() === 'sw')
+<meta name="csrf-token" content="{{ csrf_token() }}">
+@unless(request()->boolean('embedded'))
+@include('partials.auth-toolbar')
+@endunless
+<main class="reconciliation-page" id="shift-stock" data-shift="{{ $report['shift_id'] }}">
+    @unless(request()->boolean('embedded'))
+    <header class="recon-heading"><x-nightshift-brand :href="url('/dashboard#shifts')" /><a class="button" href="/dashboard#shifts">{{ $t('Shifts') }}</a></header>
+    @endunless
+    <h1>{{ $sw ? 'Makabidhiano ya Zamu' : 'Shift Handover' }}</h1>
+    <p>
+        <strong>{{ $report['number'] }}</strong>
+        · {{ $report['operating_date'] ?? '—' }}
+        · {{ $report['branch'] }}
+        · {{ $report['business_unit'] ?? '—' }}
+        @if($report['show_location'] ?? true) · {{ $report['counter'] }} @endif
+    </p>
+    <p>
+        {{ $t('Cashier') }}: <strong>{{ $report['cashier'] }}</strong>
+        · {{ $t('Total sales') }}: <strong>TSh {{ $report['total_sales'] ?? '0' }}</strong>
+        @if(!empty($report['cash']['settlements']))
+            · {{ $sw ? 'Malipo ya wahudumu' : 'Waiter settlements' }}:
+            @foreach($report['cash']['settlements'] as $settlement)
+                {{ $settlement['name'] }} TSh {{ $settlement['amount'] }}{{ $loop->last ? '' : ',' }}
+            @endforeach
+        @endif
+    </p>
+    <div id="recon-message" role="alert" class="text-red">{{ $report['stale'] ? $t('Stock changed. Reload and verify every physical count.') : '' }}</div>
+    @if($report['totals']['ledger_mismatches'])
+        <p class="text-red">{{ $t('Stock balances do not match the ledger. Investigate before closing.') }}</p>
+    @endif
+
+@if(!empty($report['waiters']))<div class="table-scroll"><table class="data-table"><thead><tr><th>{{ $t('Waiter') }}</th><th>{{ $t('Opened') }}</th><th>{{ $t('Closed') }}</th></tr></thead><tbody>@foreach($report['waiters'] as $session)<tr><td>{{ $session['name'] }}</td><td>{{ $session['opened_at'] }}</td><td>{{ $session['closed_at'] ?? '—' }}</td></tr>@endforeach</tbody></table></div>@endif
+
+    @if(!empty($report['blockers']))
+    <section class="panel panel-body" role="alert">
+        <h2>{{ $sw ? 'Huwezi kufunga zamu bado' : 'Shift cannot be closed yet' }}</h2>
+        <ul>
+            @foreach($report['blockers'] as $blocker)
+                <li>
+                    <strong>{{ $blocker['name'] }}</strong>
+                    · TSh {{ $blocker['balance'] }}
+                    @if($blocker['open']) · {{ $sw ? 'Zamu bado wazi' : 'Shift still open' }} @endif
+                </li>
+            @endforeach
+        </ul>
+    </section>
+    @endif
+    <section class="panel panel-body">
+        <h2>{{ $sw ? 'Hesabu ya Fedha' : 'Cash Summary' }}</h2>
+        <div class="recon-cash">
+            <div><span>{{ $t('Opening cash') }}</span><strong>{{ $report['cash']['opening'] }}</strong></div>
+
+            @foreach($report['cash']['methods'] as $method => $amounts)
+                @if(
+                    \App\Domain\Decimal::cmp((string) $amounts['net'], '0') !== 0 ||
+                    \App\Domain\Decimal::cmp((string) $amounts['sales'], '0') !== 0 ||
+                    \App\Domain\Decimal::cmp((string) $amounts['refunds'], '0') !== 0
+                )
+                    <div>
+                        <span>{{ $t($method) }}</span>
+                        <strong>{{ $amounts['net'] }}</strong>
+                    </div>
+                @endif
+            @endforeach
+
+            <div><span>{{ $t('Expected cash') }}</span><strong>{{ $report['cash']['expected'] }}</strong></div>
+
+            @if(\App\Domain\Decimal::cmp((string) $report['cash']['waiter_outstanding'], '0') !== 0)
+                <div><span>{{ $t('Waiter outstanding') }}</span><strong>{{ $report['cash']['waiter_outstanding'] }}</strong></div>
+            @endif
+        </div>
+        @if($report['can_edit'])<label class="form-field"><span>{{ $t('Actual cash') }}</span><input form="recon-count-form" name="actual_cash" @readonly(!empty($report['custody'])) type="number" min="0" step="0.01" required value="{{ $report['cash']['actual'] ?? '' }}"></label><p id="recon-cash-difference"></p>@else<p>{{ $t('Actual cash') }}: {{ $report['cash']['actual'] ?? '—' }}</p>@endif
+    </section>
+    <section class="panel panel-body">
+        <h2>{{ $sw ? 'Hesabu ya Stock' : 'Stock Count' }}</h2>
+        <div class="toolbar recon-filters">
+            <input id="recon-search" class="search-field" placeholder="{{ $t('Search product') }}" aria-label="{{ $t('Search product') }}">
+            <select id="recon-category" aria-label="{{ $t('Category') }}"><option value="">{{ $t('All categories') }}</option>@foreach(collect($report['rows'])->pluck('category')->unique() as $category)<option>{{ $category }}</option>@endforeach</select>
+            <label><input id="recon-variance-only" type="checkbox"> {{ $t('Variances only') }}</label>
+        </div>
+        <form id="recon-count-form">
+            <div class="table-scroll"><table class="data-table recon-table"><thead><tr>
+                @foreach(['Product','Opening','Added','Total Available','System Sold','Other Stock Out','Valid Returns','Expected Closing','Physical Closing','Variance','Selling Price','Expected Sales Value'] as $label)<th>{{ $t($label) }}</th>@endforeach
+            </tr></thead><tbody>
+            @foreach($report['rows'] as $row)
+                <tr data-recon-row data-product="{{ $row['product_id'] }}" data-category="{{ $row['category'] }}" data-name="{{ $row['product'] }}" data-expected="{{ $row['expected'] }}" data-price="{{ \App\Support\QuantityFormatter::format($row['price']) }}" data-total="{{ $row['total_available'] }}">
+                    <td><strong>{{ $row['product'] }}</strong><small>{{ $row['base_unit'] }}</small>@foreach($row['conversions'] as $conversion)<small>1 {{ $conversion['unit'] }} = {{ \App\Support\QuantityFormatter::format($conversion['quantity']) }} {{ $row['base_unit'] }}</small>@endforeach</td>
+                    @foreach(['opening','added','total_available','system_sold','other_out','returns','expected'] as $field)<td>{{ \App\Support\QuantityFormatter::format($row[$field]) }}</td>@endforeach
+                    <td><input class="physical-count" aria-label="{{ $t('Physical Closing') }} {{ $row['product'] }}" inputmode="decimal" type="number" min="0" step="0.000001" value="{{ $row['physical'] === null ? '' : \App\Support\QuantityFormatter::format($row['physical']) }}" {{ $report['can_edit'] && empty($report['custody']) ? '' : 'readonly' }}></td>
+                    <td data-variance-cell><strong>{{ $row['variance'] === null ? '—' : \App\Support\QuantityFormatter::format($row['variance']) }}</strong> {{ $t($row['status']) }}</td>
+                    <td>{{ \App\Support\QuantityFormatter::format($row['price']) }}</td><td data-sales-cell>{{ $row['sales_value'] ?? '—' }}</td>
+                </tr>
+            @endforeach
+            </tbody></table></div>
+            <div class="recon-summary"><strong>{{ $t('Stock Variance Value') }}: <span id="recon-variance-total">{{ $report['totals']['variance_value'] }}</span></strong><strong>{{ $t('Expected Sales Value') }}: <span id="recon-sales-total">{{ $report['totals']['sales_value'] }}</span></strong></div>
+            @if($report['can_edit'] && empty($report['custody']))
+            <label class="form-field"><span>{{ $t('Variance reason') }}</span><textarea name="reason" maxlength="2000">{{ $report['reason'] }}</textarea></label>
+            <button class="button primary" type="submit">{{ $t('Save physical count') }}</button>
+            @endif
+        </form>
+    </section>
+    @include('partials.shift-custody')
+    <section class="panel panel-body">
+        @if($report['totals']['variance_count'])
+            <h2>{{ $sw ? 'Tofauti za Stock' : 'Stock Variances' }}</h2>
+            <p>
+                {{ $t('Counted by') }}: {{ $report['entered_name'] ?? '—' }}
+                · {{ $t('Manager approval') }}: {{ $report['approved_name'] ?? '—' }}
+            </p>
+
+            @if($report['can_approve'] && $report['complete'] && !$report['approved'])
+                <form id="recon-approve-form">
+                    <label class="form-field">
+                        <span>{{ $t('Approval note') }}</span>
+                        <textarea name="note" required minlength="8" maxlength="2000"></textarea>
+                    </label>
+                    <button class="button primary">{{ $t('Approve stock variances') }}</button>
+                </form>
+            @elseif(!$report['approved'])
+                <p>{{ $t('A manager must approve the stock variances before closing.') }}</p>
+            @endif
+        @endif
+        @if($report['can_edit'])
+            <form id="recon-close-form">
+                <h2>{{ $t('Cash Handover') }}</h2>
+                @if(!$report['custody'] && \App\Domain\Decimal::cmp((string)($report['cash']['actual'] ?? '0'), '0') > 0)
+                <label class="form-field"><span>{{ $t('Where is the cash being handed over?') }}</span><select name="destination" required><option value="NEXT_CASHIER">{{ $t('Next Cashier') }}</option><option value="TREASURY">{{ $t('Accountant / Admin') }}</option></select></label>
+                <label class="form-field"><span>{{ $t('Destination') }}</span><select name="to_user_id" required>@foreach($recipients as $recipient)<option value="{{ $recipient['id'] }}" data-cashier="{{ $recipient['cashier'] ? '1' : '0' }}" data-treasury="{{ $recipient['treasury'] ? '1' : '0' }}" @disabled($recipient['id'] === auth()->id() && $recipient['cashier'])>{{ $recipient['name'] }}</option>@endforeach</select></label>
+                <p>{{ $t('Handover amount') }}: {{ $report['cash']['actual'] }}</p>
+                @elseif(!$report['custody'])
+                    <p>{{ $report['cash']['actual'] === null
+                        ? ($sw ? 'Ingiza cash halisi kwanza.' : 'Enter actual cash first.')
+                        : ($sw ? 'Hakuna cash ya kukabidhi.' : 'No cash to hand over.') }}</p>
+                @endif
+                <label class="form-field"><span>{{ $t('Closing notes') }}</span><textarea name="notes" maxlength="2000"></textarea></label>
+                <button class="button primary" {{ empty($report['blockers']) && $report['complete'] && (!$report['totals']['variance_count'] || $report['approved']) && !$report['totals']['ledger_mismatches'] && (!$report['custody'] || $report['custody']['destination'] !== 'TREASURY' || in_array($report['custody']['status'], ['RECEIVED','APPROVED'])) ? '' : 'disabled' }}>{{ $t('Confirm and Close Shift') }}</button>
+            </form>
+        @endif
+        @if($report['status'] === 'CLOSED')<p>{{ $t('Closed by') }}: {{ $report['closed_by'] }} · {{ $report['closed_at'] }}</p><p>{{ $report['closing_notes'] }}</p><p>{{ $t('Cash variance') }}: {{ $report['cash']['difference'] }}</p>@endif
+        <a class="button" data-report-pdf href="/shift-stock/{{ $report['shift_id'] }}/pdf">{{ $t('Download PDF') }}</a>
+    </section>
+</main>
+<script>window.ShiftStockData = @json($report); window.ShiftStockMessages = @json(\App\Support\UiText::catalog());</script>
+@endcomponent

@@ -1,0 +1,171 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Domain\TenantContext;
+use App\Models\AuditLog;
+use App\Models\Branch;
+use App\Models\BusinessUnit;
+use App\Models\Role;
+use App\Models\Shift;
+use App\Models\User;
+use App\Services\AuditService;
+use App\Services\AuditTrailService;
+use App\Services\BusinessUnitService;
+use App\Services\TreasuryService;
+use Database\Seeders\NightshiftDemoSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Tests\TestCase;
+
+class AdministrationUiTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $owner;
+
+    private Branch $branch;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(NightshiftDemoSeeder::class);
+        $this->owner = User::where('email', 'admin@nightshift.test')->firstOrFail();
+        $this->actingAs($this->owner);
+        $this->branch = Branch::firstOrFail();
+    }
+
+    private function audit(string $action = 'BUSINESS_UNIT_SAVED', array $old = [], array $new = []): AuditLog
+    {
+        return app(AuditService::class)->record($action, 'Business Units', 'BusinessUnit', BusinessUnit::firstOrFail()->id, $old, $new, $this->branch->id);
+    }
+
+    public function test_audit_friendly_diff_and_raw_redaction_never_rewrite_history(): void
+    {
+        $row = $this->audit(old: ['name' => 'General', 'active' => true], new: ['name' => 'Restaurant', 'active' => true, 'pin' => 'sensitive-pin', 'nested' => ['password' => 'sensitive-password', 'apiKey' => 'sensitive-key', 'authorization' => 'Bearer sensitive-bearer']]);
+        $response = $this->get('/audit-trail')->assertOk()->assertSee('Business Unit Updated')->assertSee('View details')->assertSee('General')->assertSee('Restaurant')
+            ->assertDontSee('sensitive-pin')->assertDontSee('sensitive-password')->assertDontSee('sensitive-key')->assertDontSee('sensitive-bearer');
+        $presented = app(AuditTrailService::class)->present(collect([$row]))[0];
+        $this->assertNotContains('Active', array_column($presented['changes'], 'field'));
+        $this->assertSame('sensitive-pin', $row->fresh()->new_values['pin']);
+        $this->assertSame('Bar', $presented['reference']);
+        $csv = $this->get('/audit-trail?export=1')->assertOk()->streamedContent();
+        $this->assertStringNotContainsString('sensitive-', $csv);
+        $this->assertStringContainsString('[REDACTED]', $csv);
+        $this->getJson('/api/nightshift/bootstrap')->assertOk()->assertJsonPath('audit', []);
+    }
+
+    public function test_nested_credentials_and_encoded_json_are_redacted(): void
+    {
+        $service = app(AuditTrailService::class);
+        $redacted = $service->redact(['operational_pin' => 'a', 'password_confirmation' => 'b', 'remember_token' => 'c', 'csrf' => 'd', 'secret' => 'e', 'api-key' => 'f', 'accessToken' => 'g', 'twoFactorRecoveryCodes' => 'recovery-secret', 'private_key' => 'private-secret', 'encoded' => '{"token":"h"}', 'opening_cash' => '125.00']);
+        foreach (['operational_pin', 'password_confirmation', 'remember_token', 'csrf', 'secret', 'api-key', 'accessToken', 'twoFactorRecoveryCodes', 'private_key'] as $key) {
+            $this->assertSame('[REDACTED]', $redacted[$key]);
+        }
+        $this->assertSame('[REDACTED]', $redacted['encoded']['token']);
+        $this->assertSame('125.00', $redacted['opening_cash']);
+    }
+
+    public function test_audit_search_filters_pagination_and_localization(): void
+    {
+        for ($i = 0; $i < 28; $i++) {
+            $this->audit('SHIFT_OPENED', new: ['branch_id' => $this->branch->id, 'name' => 'scope-marker']);
+        }
+        $this->get('/audit-trail?action=SHIFT_OPENED&module=Business%20Units')->assertOk()->assertViewHas('rows', fn ($rows) => count($rows) === 25)->assertSee('Next');
+        $this->get('/audit-trail?action=SHIFT_OPENED&module=Business%20Units&page=2')->assertOk()->assertViewHas('rows', fn ($rows) => count($rows) === 3);
+        $this->get('/audit-trail?search=Shift%20Opened')->assertOk()->assertSee('Shift Opened');
+        $this->get('/audit-trail?search='.urlencode($this->branch->name))->assertOk()->assertSee('Shift Opened');
+        $this->get('/audit-trail?action=SHIFT_OPENED&module=NoSuchModule')->assertOk()->assertSee('No audit records found.');
+        $this->get('/audit-trail?from=2000-01-01&to=2000-01-02')->assertOk()->assertSee('No audit records found.');
+        $this->owner->forceFill(['language_preference' => 'sw'])->save();
+        $this->get('/audit-trail?action=SHIFT_OPENED&module=Business%20Units')->assertOk()->assertSee('Zamu Imefunguliwa')->assertSee('Angalia maelezo');
+    }
+
+    public function test_unit_scope_filters_and_name_resolution_cannot_expand_access(): void
+    {
+        $service = app(BusinessUnitService::class);
+        $bar = $service->save(['branch_id' => $this->branch->id, 'name' => 'Bar private', 'code' => 'BAR_UI', 'active' => true]);
+        $restaurant = $service->save(['branch_id' => $this->branch->id, 'name' => 'Restaurant private', 'code' => 'REST_UI', 'active' => true]);
+        $manager = User::factory()->create(['company_id' => $this->owner->company_id, 'name' => 'UI manager', 'username' => 'ui-manager', 'email' => 'ui-manager@test.test', 'password' => 'password', 'active' => true, 'role_id' => Role::where('name', 'Manager')->value('id')]);
+        $manager->branches()->attach($this->branch->id, ['company_id' => $this->owner->company_id]);
+        $service->assign($manager, [$bar->id]);
+        $row = app(AuditService::class)->record('BUSINESS_UNIT_SAVED', 'Business Units', 'BusinessUnit', $bar->id, [], ['business_unit_id' => $bar->id, 'counter_id' => 999999, 'branch_id' => $this->branch->id, 'name' => 'bar-visible'], $this->branch->id);
+        $foreign = User::factory()->create(['name' => 'Foreign private audit actor']);
+        app(TenantContext::class)->run($foreign, function () use ($foreign) {
+            $branch = Branch::create(['name' => 'Foreign private branch']);
+            app(AuditService::class)->record('LOGIN', 'Authentication', 'User', $foreign->id, [], ['marker' => 'foreign-audit-marker'], $branch->id);
+        });
+        app(AuditService::class)->record('BUSINESS_UNIT_SAVED', 'Business Units', 'BusinessUnit', $bar->id, [], ['user_id' => $foreign->id], $this->branch->id);
+        $this->actingAs($manager);
+        $this->get('/audit-trail')->assertOk()->assertSee('bar-visible')->assertDontSee('Restaurant private')->assertSee('Deleted or unavailable record')->assertDontSee('Foreign private audit actor')->assertDontSee('foreign-audit-marker');
+        $this->get('/audit-trail?business_unit_id='.$restaurant->id)->assertForbidden();
+        $this->get('/api/nightshift/staff-assignment-options')->assertOk()->assertDontSee('Restaurant private');
+        $names = app(AuditTrailService::class)->present(collect([$row]))[0];
+        $this->assertSame('Bar private', $names['reference']);
+    }
+
+    public function test_audit_search_uses_friendly_reference_numbers_and_assignment_names(): void
+    {
+        $shift = Shift::firstOrFail();
+        app(AuditService::class)->record('SHIFT_OPENED', 'Shifts', 'Shift', $shift->id, [], ['example' => 'reference-search-marker'], $shift->branch_id);
+        $this->get('/audit-trail?search='.urlencode($shift->number))->assertOk()->assertSee('reference-search-marker');
+        $unit = BusinessUnit::firstOrFail();
+        app(AuditService::class)->record('USER_UNITS_ASSIGNED', 'Business Units', 'User', $this->owner->id, [], ['unit_ids' => [$unit->id], 'example' => 'assignment-search-marker'], $this->branch->id);
+        $this->get('/audit-trail?search='.urlencode($unit->name))->assertOk()->assertSee('assignment-search-marker');
+    }
+
+    public function test_name_resolution_query_count_does_not_grow_per_audit_row(): void
+    {
+        $row = $this->audit(new: ['branch_id' => $this->branch->id, 'business_unit_id' => BusinessUnit::firstOrFail()->id]);
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        app(AuditTrailService::class)->present(collect([$row]));
+        $single = count(DB::getQueryLog());
+        DB::flushQueryLog();
+        app(AuditTrailService::class)->present(collect(array_fill(0, 25, $row)));
+        $many = count(DB::getQueryLog());
+        DB::disableQueryLog();
+        $this->assertLessThanOrEqual($single + 2, $many);
+    }
+
+    public function test_finance_pages_mount_workspace_in_both_languages_and_themes_without_changing_balances(): void
+    {
+        $before = app(TreasuryService::class)->dashboard([]);
+        foreach (['en', 'sw'] as $locale) {
+            foreach (['light', 'dark'] as $theme) {
+                $this->owner->forceFill(['language_preference' => $locale, 'theme_preference' => $theme])->save();
+                foreach (['/treasury' => 'treasury', '/cash-handovers' => 'cash-handovers', '/treasury/report?name=Treasury%20Ledger' => 'treasury', '/audit-trail' => 'audit'] as $url => $screen) {
+                    $this->get($url)->assertOk()->assertSee('data-workspace-page="'.$screen.'"', false)->assertSee('id="app"', false)->assertSee('data-theme="'.$theme.'"', false)->assertDontSee('class="auth-toolbar"', false);
+                }
+            }
+        }
+        $after = app(TreasuryService::class)->dashboard([]);
+        $this->assertSame($before['balances'], $after['balances']);
+        $this->assertSame($before['totals'], $after['totals']);
+    }
+
+    public function test_closed_cashier_can_load_handover_shell_without_bypassing_operational_shift_guard(): void
+    {
+        $cashier = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', 'Cashier')->value('id'), 'active' => true]);
+        $cashier->branches()->attach($this->branch->id, ['company_id' => $cashier->company_id]);
+        $this->actingAs($cashier);
+        $this->get('/cash-handovers')->assertOk();
+        $this->getJson('/api/workspace-shell?page=cash-handovers')->assertOk()->assertJsonPath('orders', [])->assertJsonPath('payments', []);
+        $this->getJson('/api/workspace-shell?page=audit')->assertForbidden();
+        $this->getJson('/api/nightshift/bootstrap')->assertStatus(409);
+    }
+
+    public function test_waiters_and_terminals_cannot_open_finance_audit_or_staff_scope_urls(): void
+    {
+        foreach (['Waiter', 'POS Terminal'] as $role) {
+            $user = User::whereHas('role', fn ($q) => $q->where('name', $role))->first();
+            if (! $user) {
+                continue;
+            }
+            $this->actingAs($user);
+            foreach (['/treasury', '/cash-handovers', '/audit-trail', '/audit-trail?export=1'] as $url) {
+                $this->get($url)->assertForbidden();
+            }
+        }
+    }
+}

@@ -36,8 +36,29 @@ class UsernamePinAuthenticationTest extends TestCase
     private function staff(string $role = 'Company Admin / Owner'): User
     {
         $admin = User::where('email', 'admin@nightshift.test')->firstOrFail();
-        $user = User::factory()->unverified()->create(['company_id' => $admin->company_id, 'role_id' => Role::where('name', $role)->firstOrFail()->id, 'operational_pin' => Hash::make('0123')]);
-        app(TenantContext::class)->run($admin, fn () => $user->branches()->attach(Branch::firstOrFail()->id, ['company_id' => $admin->company_id]));
+
+        $user = User::factory()->unverified()->create([
+            'company_id' => $admin->company_id,
+            'role_id' => Role::where('name', $role)->firstOrFail()->id,
+            'operational_pin' => Hash::make('0123'),
+        ]);
+
+        app(TenantContext::class)->run($admin, function () use ($admin, $user): void {
+            $branch = Branch::firstOrFail();
+
+            $unit = \App\Models\BusinessUnit::where('branch_id', $branch->id)
+                ->where('active', true)
+                ->firstOrFail();
+
+            $user->branches()->attach($branch->id, [
+                'company_id' => $admin->company_id,
+            ]);
+
+            app(\App\Services\BusinessUnitService::class)->assign(
+                $user,
+                [$unit->id]
+            );
+        });
 
         return $user;
     }
@@ -50,7 +71,24 @@ class UsernamePinAuthenticationTest extends TestCase
         $type = app(OperationalShift::class)->type($user);
         if ($type) {
             $admin = User::where('email', 'admin@nightshift.test')->firstOrFail();
-            app(TenantContext::class)->run($admin, fn () => app(ShiftService::class)->open(['user_id' => $user->id, 'stock_location_id' => StockLocation::where('name', 'Main Counter')->firstOrFail()->id, 'type' => $type]));
+            app(TenantContext::class)->run($admin, function () use ($user, $type) {
+                $main = StockLocation::where('name', 'Main Counter')->firstOrFail();
+
+                $counter = $type === 'CASHIER'
+                    ? StockLocation::create([
+                        'branch_id' => $main->branch_id,
+                        'business_unit_id' => $main->business_unit_id,
+                        'name' => 'Auth counter',
+                        'type' => 'COUNTER',
+                    ])
+                    : $main;
+
+                app(ShiftService::class)->open([
+                    'user_id' => $user->id,
+                    'stock_location_id' => $counter->id,
+                    'type' => $type,
+                ]);
+            });
         }
         $destination = $type ? '/dashboard#'.($type === 'WAITER' ? 'pos' : 'waiters') : '/dashboard';
         $this->post('/login', ['username' => strtoupper($user->username), 'pin' => '0123'])->assertSessionHasNoErrors()->assertRedirect($destination);
@@ -171,7 +209,21 @@ class UsernamePinAuthenticationTest extends TestCase
         $foreign = User::factory()->create(['username' => 'unique-username']);
         $admin = User::where('email', 'admin@nightshift.test')->firstOrFail();
         $this->actingAs($admin);
-        $this->postJson('/api/nightshift/commands/catalog-user', ['idempotency_key' => (string) Str::uuid(), 'name' => 'Duplicate username', 'username' => strtoupper($foreign->username), 'email' => 'duplicate@pin.test', 'pin' => '0123', 'role' => 'Manager', 'branch_id' => Branch::firstOrFail()->id])->assertUnprocessable()->assertJsonValidationErrors('username');
+        $branch = Branch::firstOrFail();
+        $unit = \App\Models\BusinessUnit::where('branch_id', $branch->id)
+            ->where('active', true)
+            ->firstOrFail();
+
+        $this->postJson('/api/nightshift/commands/catalog-user', [
+            'idempotency_key' => (string) Str::uuid(),
+            'name' => 'Duplicate username',
+            'username' => strtoupper($foreign->username),
+            'email' => 'duplicate@pin.test',
+            'pin' => '0123',
+            'role' => 'Manager',
+            'branch_id' => $branch->id,
+            'business_unit_ids' => [$unit->id],
+        ])->assertUnprocessable()->assertJsonValidationErrors('username');
         $this->assertDatabaseMissing('users', ['email' => 'duplicate@pin.test']);
     }
 }

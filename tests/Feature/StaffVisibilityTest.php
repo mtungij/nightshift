@@ -27,12 +27,38 @@ class StaffVisibilityTest extends TestCase
 
     private function createStaff(string $role, int $branch, bool $active = true): int
     {
-        $response = $this->postJson('/api/nightshift/commands/catalog-user', [
-            'idempotency_key' => (string) Str::uuid(), 'name' => 'New '.$role,
-            'email' => Str::uuid().'@staff.test', 'role' => $role, 'branch_id' => $branch,
-            'active' => $active, 'pin' => '0123',
-            ...($role === 'POS Terminal' ? ['stock_location_id' => StockLocation::where('branch_id', $branch)->where('type', 'COUNTER')->firstOrFail()->id] : []),
-        ])->assertOk();
+        $unit = \App\Models\BusinessUnit::where('branch_id', $branch)
+            ->where('active', true)
+            ->first();
+
+        if (! $unit) {
+            $unit = app(\App\Services\BusinessUnitService::class)->save([
+                'branch_id' => $branch,
+                'name' => 'Operations '.$branch,
+                'code' => 'OPS-'.$branch,
+                'active' => true,
+            ]);
+        }
+
+        $payload = [
+            'idempotency_key' => (string) Str::uuid(),
+            'name' => 'New '.$role,
+            'email' => Str::uuid().'@staff.test',
+            'role' => $role,
+            'branch_id' => $branch,
+            'business_unit_ids' => [$unit->id],
+            'active' => $active,
+            'pin' => '0123',
+        ];
+
+        if ($role === 'POS Terminal') {
+            $payload['stock_location_id'] = $unit->default_stock_location_id;
+        }
+
+        $response = $this->postJson(
+            '/api/nightshift/commands/catalog-user',
+            $payload
+        )->assertOk();
 
         return $response->json('id');
     }
@@ -64,7 +90,7 @@ class StaffVisibilityTest extends TestCase
         $this->assertFalse($account['active']);
         $this->assertSame('0.00', $account['outstanding']);
         $this->assertNotContains($id, array_column($snapshot['servingWaiters'], 'id'));
-        $counter = StockLocation::where('type', 'COUNTER')->firstOrFail();
+        $counter = StockLocation::where('name', 'Main Counter')->where('type', 'COUNTER')->firstOrFail();
         $this->postJson('/api/nightshift/commands/shift-open', ['idempotency_key' => (string) Str::uuid(), 'user_id' => $id, 'stock_location_id' => $counter->id, 'type' => 'WAITER', 'opening_cash' => '0'])->assertOk();
         $snapshot = $this->getJson('/api/nightshift/bootstrap?branch_id='.$branch)->assertOk()->json();
         $this->assertTrue(collect($snapshot['waiters'])->firstWhere('id', $id)['active']);
@@ -82,12 +108,35 @@ class StaffVisibilityTest extends TestCase
         $company = Company::create(['name' => 'Other company']);
         $foreign = User::factory()->create();
         $foreign->forceFill(['company_id' => $company->id, 'role_id' => Role::where('name', 'Company Admin / Owner')->firstOrFail()->id])->save();
-        $foreignBranch = app(TenantContext::class)->run($foreign, fn () => Branch::create(['name' => 'Foreign branch']));
-        $foreign->branches()->attach($foreignBranch->id, ['company_id' => $company->id]);
+        $foreignBranch = app(TenantContext::class)->run(
+            $foreign,
+            fn () => Branch::create(['name' => 'Foreign branch'])
+        );
+
+        $foreignUnit = app(TenantContext::class)->run($foreign, function () use ($foreignBranch) {
+            return \App\Models\BusinessUnit::create([
+                'branch_id' => $foreignBranch->id,
+                'name' => 'Foreign Operations',
+                'code' => 'FOREIGN-OPS',
+                'active' => true,
+            ]);
+        });
+
+        $foreign->branches()->attach($foreignBranch->id, [
+            'company_id' => $company->id,
+        ]);
         $snapshot = $this->getJson('/api/nightshift/bootstrap?all_branches=1')->assertOk()->json();
         $this->assertNotContains($foreign->id, array_column($snapshot['team'], 'id'));
         $this->getJson('/api/nightshift/bootstrap?branch_id='.$foreignBranch->id)->assertNotFound();
-        $this->postJson('/api/nightshift/commands/catalog-user', ['idempotency_key' => (string) Str::uuid(), 'name' => 'Foreign attempt', 'email' => 'attempt@staff.test', 'role' => 'Waiter', 'pin' => '0123', 'branch_id' => $foreignBranch->id])->assertNotFound();
+        $this->postJson('/api/nightshift/commands/catalog-user', [
+            'idempotency_key' => (string) Str::uuid(),
+            'name' => 'Foreign attempt',
+            'email' => 'attempt@staff.test',
+            'role' => 'Waiter',
+            'pin' => '0123',
+            'branch_id' => $foreignBranch->id,
+            'business_unit_ids' => [$foreignUnit->id],
+        ])->assertNotFound();
         $this->assertDatabaseMissing('users', ['email' => 'attempt@staff.test']);
         $this->actingAs(User::where('email', 'asha@nightshift.test')->firstOrFail());
         $snapshot = $this->getJson('/api/nightshift/bootstrap')->assertOk()->json();
@@ -110,6 +159,20 @@ class StaffVisibilityTest extends TestCase
         $this->assertNotContains($id, array_column($snapshot['team'], 'id'));
         $this->assertNotContains($id, array_column($snapshot['waiters'], 'id'));
         $this->getJson('/api/nightshift/bootstrap?branch_id='.$otherBranch->id)->assertNotFound();
-        $this->postJson('/api/nightshift/commands/catalog-user', ['idempotency_key' => (string) Str::uuid(), 'name' => 'Outside branch', 'email' => 'outside@staff.test', 'role' => 'Waiter', 'pin' => '0123', 'branch_id' => $otherBranch->id])->assertNotFound();
+        $outsideUnit = \App\Models\BusinessUnit::withoutGlobalScopes()
+            ->where('company_id', $manager->company_id)
+            ->where('branch_id', $otherBranch->id)
+            ->where('active', true)
+            ->firstOrFail();
+
+        $this->postJson('/api/nightshift/commands/catalog-user', [
+            'idempotency_key' => (string) Str::uuid(),
+            'name' => 'Outside branch',
+            'email' => 'outside@staff.test',
+            'role' => 'Waiter',
+            'pin' => '0123',
+            'branch_id' => $otherBranch->id,
+            'business_unit_ids' => [$outsideUnit->id],
+        ])->assertNotFound();
     }
 }

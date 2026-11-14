@@ -34,11 +34,16 @@ use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use Tests\Support\CompletesCashDisposition;
+use Tests\Support\SettlesCounterWaiters;
 use Tests\TestCase;
 
 class ShiftStockReconciliationTest extends TestCase
 {
+    use CompletesCashDisposition;
     use RefreshDatabase;
+    use SettlesCounterWaiters;
 
     private User $owner;
 
@@ -72,9 +77,10 @@ class ShiftStockReconciliationTest extends TestCase
 
     private function save(string $difference = '0', string $reason = ''): array
     {
+        $this->settleCounterWaiters($this->shift->stock_location_id);
         $r = $this->service->report($this->shift->id);
         $counts = array_map(fn ($line) => ['product_id' => $line['product_id'], 'quantity' => D::add($line['expected'], $line['product_id'] === $this->unit->product_id ? $difference : '0', 6)], $r['rows']);
-        $this->service->count($this->shift->id, ['basis' => $r['basis'], 'revision' => $r['revision'], 'counts' => $counts, 'reason' => $reason]);
+        $this->service->count($this->shift->id, ['actual_cash' => app(ShiftService::class)->expected($this->shift), 'basis' => $r['basis'], 'revision' => $r['revision'], 'counts' => $counts, 'reason' => $reason]);
 
         return $this->service->report($this->shift->id);
     }
@@ -96,6 +102,7 @@ class ShiftStockReconciliationTest extends TestCase
         $snapshot = ShiftStockSnapshot::where('shift_id', $this->shift->id)->where('kind', 'OPENING')->firstOrFail();
         $before = $snapshot->data;
         $this->move('7');
+        $this->assertSame($this->shift->id, StockMovement::latest('id')->firstOrFail()->shift_id);
         $r = $this->service->report($this->shift->id);
         $this->assertSame($before, $snapshot->fresh()->data);
         $this->assertSame(0, $r['totals']['ledger_mismatches']);
@@ -172,15 +179,17 @@ class ShiftStockReconciliationTest extends TestCase
 
     public function test_close_requires_complete_count_and_shortage_requires_manager_approval(): void
     {
+        $this->settleCounterWaiters($this->shift->stock_location_id);
         $this->actingAs($this->cashier);
-        $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => '300000', 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+        $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => app(ShiftService::class)->expected($this->shift), 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
         $r = $this->save('-2', 'Two bottles missing after recount');
-        $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => '300000', 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+        $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => app(ShiftService::class)->expected($this->shift), 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
         $this->postJson('/api/nightshift/commands/shift-stock-approve', ['id' => $this->shift->id, 'basis' => $r['basis'], 'revision' => $r['revision'], 'note' => 'Manager reviewed missing bottles', 'idempotency_key' => (string) Str::uuid()])->assertForbidden();
         $this->actingAs($this->owner);
         $this->service->approve($this->shift->id, $r['basis'], $r['revision'], 'Manager reviewed missing bottles');
         $before = [StockMovement::count(), WaiterLedgerEntry::count(), Payment::count()];
-        app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '300000']);
+        $this->prepareCashDisposition($this->shift);
+        app(ShiftService::class)->close($this->shift->id, ['actual_cash' => app(ShiftService::class)->expected($this->shift)]);
         $this->assertSame($before, [StockMovement::count(), WaiterLedgerEntry::count(), Payment::count()]);
         $this->assertSame('CLOSED', $this->shift->fresh()->status);
         $this->assertTrue(AuditLog::where('action', 'SHIFT_STOCK_APPROVED')->exists());
@@ -195,14 +204,14 @@ class ShiftStockReconciliationTest extends TestCase
         $this->assertTrue($changed['stale']);
         $this->assertFalse($changed['complete']);
         $this->assertFalse($changed['approved']);
-        $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => '300000', 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+        $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => app(ShiftService::class)->expected($this->shift), 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
     }
 
     public function test_stale_count_or_revision_is_rejected_without_overwriting_other_counts(): void
     {
         $old = $this->service->report($this->shift->id);
         $this->save();
-        $payload = ['id' => $this->shift->id, 'basis' => $old['basis'], 'revision' => 0, 'counts' => array_map(fn ($r) => ['product_id' => $r['product_id'], 'quantity' => $r['expected']], $old['rows']), 'idempotency_key' => (string) Str::uuid()];
+        $payload = ['actual_cash' => app(ShiftService::class)->expected($this->shift), 'id' => $this->shift->id, 'basis' => $old['basis'], 'revision' => 0, 'counts' => array_map(fn ($r) => ['product_id' => $r['product_id'], 'quantity' => $r['expected']], $old['rows']), 'idempotency_key' => (string) Str::uuid()];
         $this->postJson('/api/nightshift/commands/shift-stock-count', $payload)->assertConflict();
         $this->move('1');
         $this->postJson('/api/nightshift/commands/shift-stock-count', [...$payload, 'revision' => 1])->assertConflict();
@@ -210,8 +219,10 @@ class ShiftStockReconciliationTest extends TestCase
 
     public function test_closed_report_is_frozen_and_count_edits_and_cashier_cost_visibility_are_blocked(): void
     {
+        $this->settleCounterWaiters($this->shift->stock_location_id);
         $this->save();
-        app(ShiftService::class)->close($this->shift->id, ['actual_cash' => '300000']);
+        $this->prepareCashDisposition($this->shift);
+        app(ShiftService::class)->close($this->shift->id, ['actual_cash' => app(ShiftService::class)->expected($this->shift)]);
         $before = $this->service->report($this->shift->id);
         $this->move('5');
         Product::findOrFail($this->unit->product_id)->update(['name' => 'Renamed after close']);
@@ -253,10 +264,43 @@ class ShiftStockReconciliationTest extends TestCase
         $this->getJson('/api/nightshift/shift-stock/'.$ownerShift->id)->assertForbidden();
         $manager = User::where('email', 'manager@nightshift.test')->firstOrFail();
         $this->actingAs($this->owner);
+
         $branch = Branch::create(['name' => 'Restricted branch']);
-        $counter = StockLocation::create(['branch_id' => $branch->id, 'name' => 'Restricted counter', 'type' => 'COUNTER']);
-        $otherOwner = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => $this->owner->role_id]);
-        $other = app(ShiftService::class)->open(['user_id' => $otherOwner->id, 'stock_location_id' => $counter->id, 'type' => 'CASHIER']);
+
+        $businessUnit = \App\Models\BusinessUnit::create([
+            'branch_id' => $branch->id,
+            'name' => 'Restricted Operations',
+            'code' => 'RESTRICTED-'.$branch->id,
+            'active' => true,
+        ]);
+
+        $counter = StockLocation::create([
+            'branch_id' => $branch->id,
+            'business_unit_id' => $businessUnit->id,
+            'name' => 'Restricted counter',
+            'type' => 'COUNTER',
+        ]);
+
+        $otherOwner = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => $this->owner->role_id,
+        ]);
+
+        $otherOwner->branches()->attach($branch->id, [
+            'company_id' => $otherOwner->company_id,
+        ]);
+
+        $otherOwner->businessUnits()->syncWithoutDetaching([
+            $businessUnit->id => [
+                'company_id' => $otherOwner->company_id,
+            ],
+        ]);
+
+        $other = app(ShiftService::class)->open([
+            'user_id' => $otherOwner->id,
+            'stock_location_id' => $counter->id,
+            'type' => 'CASHIER',
+        ]);
         $this->actingAs($manager)->getJson('/api/nightshift/shift-stock/'.$other->id)->assertNotFound();
     }
 
@@ -265,9 +309,9 @@ class ShiftStockReconciliationTest extends TestCase
         $order = $this->issue('3');
         app(PaymentService::class)->receive($order->id, [['method' => 'Cash', 'amount' => '1000'], ['method' => 'M-Pesa', 'amount' => '2000'], ['method' => 'Card', 'amount' => '1000']]);
         $r = $this->service->report($this->shift->id);
-        // Payments belong to the owner's cashier shift, not another cashier at the same counter.
-        $this->assertSame('0.00', $r['cash']['methods']['Cash']['net']);
-        $ownerShift = Shift::where('user_id', $this->owner->id)->where('type', 'CASHIER')->firstOrFail();
+        // All receipts at a counter belong to its single cashier operation.
+        $this->assertSame('21000.00', $r['cash']['methods']['Cash']['net']);
+        $ownerShift = $this->shift;
         $cash = $this->service->report($ownerShift->id)['cash'];
         $this->assertSame('21000.00', $cash['methods']['Cash']['net']);
         $this->assertSame('2000.00', $cash['methods']['M-Pesa']['net']);
@@ -327,7 +371,7 @@ class ShiftStockReconciliationTest extends TestCase
         $r = $this->save();
         $this->assertSame(1, $r['totals']['ledger_mismatches']);
         $before = StockMovement::count();
-        $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => '300000', 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
+        $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => app(ShiftService::class)->expected($this->shift), 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
         $this->assertSame($before, StockMovement::count());
     }
 
@@ -342,8 +386,24 @@ class ShiftStockReconciliationTest extends TestCase
 
     public function test_supervisor_can_review_assigned_branch_but_cannot_gain_override_permission(): void
     {
-        $supervisor = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => Role::where('name', 'Supervisor')->firstOrFail()->id]);
-        $supervisor->branches()->attach($this->shift->branch_id, ['company_id' => $this->owner->company_id]);
+        $supervisor = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => Role::where('name', 'Supervisor')->firstOrFail()->id,
+        ]);
+
+        $supervisor->branches()->attach($this->shift->branch_id, [
+            'company_id' => $this->owner->company_id,
+        ]);
+
+        $shiftUnitId = StockLocation::whereKey($this->shift->stock_location_id)
+            ->value('business_unit_id');
+
+        $supervisor->businessUnits()->syncWithoutDetaching([
+            $shiftUnitId => [
+                'company_id' => $supervisor->company_id,
+            ],
+        ]);
+
         $this->actingAs($supervisor);
         $this->getJson('/api/nightshift/shift-stock/'.$this->shift->id)->assertOk()->assertJsonPath('can_approve', false)->assertJsonPath('can_edit', false);
     }
@@ -353,14 +413,50 @@ class ShiftStockReconciliationTest extends TestCase
         $legacy = Shift::create(['branch_id' => $this->shift->branch_id, 'stock_location_id' => $this->shift->stock_location_id, 'user_id' => $this->owner->id, 'number' => 'LEGACY-RECON', 'type' => 'CASHIER', 'status' => 'OPEN', 'opened_at' => now()->subDay(), 'opening_cash' => '0']);
         $this->getJson('/api/nightshift/shift-stock/'.$legacy->id)->assertConflict();
         $this->assertFalse(ShiftStockSnapshot::where('shift_id', $legacy->id)->exists());
+        try {
+            $this->move('1');
+            $this->fail('Stock must not be attributed to an arbitrary legacy cashier.');
+        } catch (ValidationException $e) {
+            $this->assertStringContainsString('overlapping legacy cashier shifts', $e->getMessage());
+        }
+        $this->expectException(ValidationException::class);
+        app(TransactionService::class)->run(fn () => app(ShiftService::class)->counterCashier($this->shift->stock_location_id));
     }
 
     public function test_base_unit_price_is_preferred_over_a_fractional_pack_markup(): void
     {
         $half = Unit::create(['name' => 'Half base unit']);
         ProductUnit::create(['product_id' => $this->unit->product_id, 'unit_id' => $half->id, 'conversion_quantity' => '0.5', 'selling_price' => '2000']);
-        $cashier = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => $this->owner->role_id]);
-        $shift = app(ShiftService::class)->open(['user_id' => $cashier->id, 'stock_location_id' => $this->shift->stock_location_id, 'type' => 'CASHIER']);
+        $cashier = User::factory()->create([
+            'company_id' => $this->owner->company_id,
+            'role_id' => $this->owner->role_id,
+        ]);
+
+        $businessUnitId = StockLocation::whereKey($this->shift->stock_location_id)
+            ->value('business_unit_id');
+
+        $counter = StockLocation::create([
+            'branch_id' => $this->shift->branch_id,
+            'business_unit_id' => $businessUnitId,
+            'name' => 'New price counter',
+            'type' => 'COUNTER',
+        ]);
+
+        $cashier->branches()->attach($this->shift->branch_id, [
+            'company_id' => $cashier->company_id,
+        ]);
+
+        $cashier->businessUnits()->syncWithoutDetaching([
+            $businessUnitId => [
+                'company_id' => $cashier->company_id,
+            ],
+        ]);
+
+        $shift = app(ShiftService::class)->open([
+            'user_id' => $cashier->id,
+            'stock_location_id' => $counter->id,
+            'type' => 'CASHIER',
+        ]);
         $row = collect($this->service->report($shift->id)['rows'])->firstWhere('product_id', $this->unit->product_id);
         $this->assertSame('3000.000000', $row['price']);
     }

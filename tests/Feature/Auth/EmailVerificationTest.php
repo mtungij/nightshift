@@ -110,14 +110,74 @@ class EmailVerificationTest extends TestCase
     private function staff(string $role): User
     {
         $this->seed(PermissionSeeder::class);
-        $user = User::factory()->unverified()->create(['role_id' => Role::where('name', $role)->firstOrFail()->id]);
+
+        $user = User::factory()->unverified()->create([
+            'role_id' => Role::where('name', $role)->firstOrFail()->id,
+        ]);
+
         app(TenantContext::class)->run($user, function () use ($user): void {
             $branch = Branch::create(['name' => 'Assigned branch']);
-            $user->branches()->attach($branch->id, ['company_id' => $user->company_id]);
+
+            $unit = \App\Models\BusinessUnit::create([
+                'branch_id' => $branch->id,
+                'name' => 'Assigned Unit',
+                'code' => 'ASSIGNED-'.$branch->id,
+                'active' => true,
+            ]);
+
+            $counter = StockLocation::create([
+                'branch_id' => $branch->id,
+                'business_unit_id' => $unit->id,
+                'name' => 'Assigned counter',
+                'type' => 'COUNTER',
+            ]);
+
+            $user->branches()->attach($branch->id, [
+                'company_id' => $user->company_id,
+            ]);
+
+            $user->businessUnits()->syncWithoutDetaching([
+                $unit->id => [
+                    'company_id' => $user->company_id,
+                ],
+            ]);
+
             $type = app(OperationalShift::class)->type($user);
+
             if ($type) {
-                $counter = StockLocation::create(['branch_id' => $branch->id, 'name' => 'Assigned counter', 'type' => 'COUNTER']);
-                app(ShiftService::class)->open(['user_id' => $user->id, 'stock_location_id' => $counter->id, 'type' => $type]);
+                if ($type === 'WAITER') {
+                    $cashier = User::factory()->create([
+                        'company_id' => $user->company_id,
+                        'role_id' => Role::where('name', 'Cashier')->firstOrFail()->id,
+                    ]);
+
+                    $cashier->branches()->attach($branch->id, [
+                        'company_id' => $cashier->company_id,
+                    ]);
+
+                    $cashier->businessUnits()->syncWithoutDetaching([
+                        $unit->id => [
+                            'company_id' => $cashier->company_id,
+                        ],
+                    ]);
+
+                    app(TenantContext::class)->run(
+                        $cashier,
+                        fn () => app(ShiftService::class)->open([
+                            'stock_location_id' => $counter->id,
+                            'type' => 'CASHIER',
+                        ])
+                    );
+                }
+
+                app(TenantContext::class)->run(
+                    $user,
+                    fn () => app(ShiftService::class)->open([
+                        'user_id' => $user->id,
+                        'stock_location_id' => $counter->id,
+                        'type' => $type,
+                    ])
+                );
             }
         });
 
