@@ -1760,7 +1760,7 @@ ${esc(cartNote)}</textarea>
                         aria-label="Search inventory"
                         placeholder="Search product or category…"
                         value="${esc(search)}"
-                    />${selectControl("category-filter", ["All categories", ...categories.slice(1)], category === "All products" ? "All categories" : category)}${btn("Export", "export-inventory", "", "download")}
+                    />${selectControl("category-filter", ["All categories", ...categories.slice(1)], category === "All products" ? "All categories" : category)}${btn("Download PDF", "export-inventory", "", "download")}
                 </div>
                 <section class="panel">
                     <div class="table-scroll">
@@ -4262,7 +4262,17 @@ ${esc(cartNote)}</textarea>
                 return downloadReport("Daily Sales", queryParams());
             }
             if (action === "export-inventory") {
-                return downloadReport("Closing Stock", queryParams());
+                const params = queryParams({
+                    category:
+                        category !== "All products" &&
+                        category !== "All categories"
+                            ? category
+                            : "",
+                });
+                return downloadPdf(
+                    "/api/nightshift/inventory/products/pdf?" + params,
+                    target,
+                );
             }
             if (action === "export-payments") {
                 return downloadReport("Payment Method Report", queryParams());

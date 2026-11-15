@@ -67,6 +67,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/open-shift', [OpenShiftController::class, 'show'])->name('shift.open');
     Route::post('/open-shift', [OpenShiftController::class, 'store'])->middleware('throttle:20,1')->name('shift.open.store');
     // History remains available after the cashier closes their operational shift.
+    Route::get('/api/nightshift/inventory/products/pdf', [\App\Http\Controllers\InventoryProductPdfController::class, 'download']);
     Route::get('/api/nightshift/shift-stock/{id}', [ShiftStockController::class, 'show'])->whereNumber('id');
     Route::get('/shift-stock/{id}', [ShiftStockController::class, 'page'])->whereNumber('id');
     Route::get('/shift-stock/{id}/pdf', [ShiftStockController::class, 'pdf'])->whereNumber('id');
