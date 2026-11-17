@@ -8,6 +8,10 @@
             </flux:subheading>
         </div>
 
+        @error('transaction')
+            <p role="alert" class="text-red-600 dark:text-red-400">{{ $message }}</p>
+        @enderror
+
         <flux:input wire:model="password" :label="__('Password')" type="password" viewable />
 
         <div class="flex justify-end space-x-2 rtl:space-x-reverse">

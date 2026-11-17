@@ -118,15 +118,19 @@ class User extends Authenticatable implements PasskeyUser
         if (! $this->isPosTerminal()) {
             return null;
         }
-        $legacy = StockLocation::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($this->attributes['terminal_stock_location_id'] ?? null)->first();
+        $legacy = StockLocation::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($this->attributes['terminal_stock_location_id'] ?? null)->whereNull('archived_at')->first();
         $unit = BusinessUnit::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($this->terminal_business_unit_id ?: $legacy?->business_unit_id)->first();
+
+        if ($unit?->archived_at !== null) {
+            return null;
+        }
 
         return $unit && ! $unit->advanced_locations_enabled ? ($unit->default_stock_location_id ?: $legacy?->id) : $legacy?->id;
     }
 
     public function canAccessCounter(int $id): bool
     {
-        $location = StockLocation::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($id)->first();
+        $location = StockLocation::withoutGlobalScopes()->where('company_id', $this->company_id)->whereKey($id)->whereNull('archived_at')->first();
         if (! $location || ! $this->canAccessBranch($location->branch_id) || ! $this->canAccessBusinessUnit($location->business_unit_id)) {
             return false;
         }

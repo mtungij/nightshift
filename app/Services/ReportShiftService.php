@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Domain\BusinessUnitContext;
+use App\Domain\OrderCollectionMode;
 use App\Domain\StaffVisibility;
 use App\Domain\TenantContext;
 use App\Models\Branch;
@@ -82,7 +84,8 @@ final class ReportShiftService
             abort_if(! empty($filters[$filter]) && (int) $filters[$filter] !== $shift->$attribute, 422, __('ui.Selected shift does not match the report location.'));
         }
         $actor = app(TenantContext::class)->user();
-        abort_unless($actor->canAccessBranch($shift->branch_id) && $actor->canAccessBusinessUnit($shift->business_unit_id), 403);
+        $archived = $shift->status === 'CLOSED' && app(BusinessUnitContext::class)->canReviewArchived($actor, $shift->branch_id, $shift->business_unit_id);
+        abort_unless($actor->canAccessBranch($shift->branch_id) && ($actor->canAccessBusinessUnit($shift->business_unit_id) || $archived), 403);
 
         return $shift;
     }
@@ -124,9 +127,10 @@ final class ReportShiftService
         $paid = DB::query()->fromSub($allocated->unionAll($direct), 'paid_history')->selectRaw('order_id,SUM(amount) AS paid')->groupBy('order_id');
         $columns = array_values(array_diff(Schema::getColumnListing('orders'), ['total', 'amount_paid', 'balance', 'status', 'return_total']));
         $total = 'saved_orders.subtotal - saved_orders.discount - COALESCE(returned_totals.returned,0)';
-        $balance = '('.$total.') - COALESCE(paid_totals.paid,0)';
+        $amountPaid = "CASE WHEN saved_orders.collection_mode = '".OrderCollectionMode::PaidTicket->value."' THEN (".$total.") ELSE COALESCE(paid_totals.paid,0) END";
+        $balance = '('.$total.') - ('.$amountPaid.')';
         $sub = DB::table('orders as saved_orders')->where('saved_orders.company_id', $shift->company_id)->leftJoinSub($returns, 'returned_totals', 'returned_totals.order_id', '=', 'saved_orders.id')->leftJoinSub($paid, 'paid_totals', 'paid_totals.order_id', '=', 'saved_orders.id')
-            ->select(array_map(fn ($column) => 'saved_orders.'.$column, $columns))->selectRaw($total.' AS total,COALESCE(returned_totals.returned,0) AS return_total,COALESCE(paid_totals.paid,0) AS amount_paid,'.$balance.' AS balance')
+            ->select(array_map(fn ($column) => 'saved_orders.'.$column, $columns))->selectRaw($total.' AS total,COALESCE(returned_totals.returned,0) AS return_total,'.$amountPaid.' AS amount_paid,'.$balance.' AS balance')
             ->selectRaw('CASE WHEN ('.$total.")=0 AND COALESCE(returned_totals.returned,0)>0 THEN 'RETURNED' WHEN (".$balance.")<=0 THEN 'PAID' WHEN COALESCE(paid_totals.paid,0)>0 THEN 'PARTIALLY_PAID' ELSE 'ISSUED' END AS status")
             ->whereNotExists(fn ($v) => $v->selectRaw('1')->from('void_requests')->whereColumn('void_requests.order_id', 'saved_orders.id')->where('void_requests.company_id', $shift->company_id)->where('void_requests.status', 'APPROVED')->where('void_requests.decided_at', '<=', $cutoff));
         $q->fromSub($sub, 'orders');

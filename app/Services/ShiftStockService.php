@@ -132,7 +132,13 @@ final class ShiftStockService
         $cursor = $movements->last()->id ?? $opening->data['cursor'];
         $sessions = Shift::where('stock_location_id', $shift->stock_location_id)->where('type', 'WAITER')->where('opened_at', '>=', $shift->opened_at)->orderBy('id')->get(['id', 'status', 'opened_at', 'closed_at'])->toArray();
         $receipts = Payment::where('shift_id', $shift->id)->orderBy('id')->get(['id', 'amount'])->toArray();
-        $basis = hash_hmac('sha256', json_encode([$cursor, $rows, $sessions, $receipts], JSON_THROW_ON_ERROR), config('app.key'));
+        $tickets = app(TicketCollectionService::class)->forShift($shift)->whereIn('status', ['PENDING', 'COLLECTED'])
+            ->orderBy('id')->get(['id', 'amount', 'status'])->toArray();
+        $basisData = [$cursor, $rows, $sessions, $receipts];
+        if ($tickets !== []) {
+            $basisData[] = $tickets;
+        }
+        $basis = hash_hmac('sha256', json_encode($basisData, JSON_THROW_ON_ERROR), config('app.key'));
         $stale = $count && $count->basis !== $basis;
         $totals = ['sales_value' => '0.00', 'system_sales_value' => '0.00', 'variance_value' => '0.00', 'cost_variance_value' => '0.00', 'variance_count' => 0, 'ledger_mismatches' => 0];
         $currentStock = Stock::where('stock_location_id', $shift->stock_location_id)->orderBy('product_id')->lockForUpdate()->get()->keyBy('product_id');
@@ -195,7 +201,11 @@ final class ShiftStockService
             ->select('waiter_id')->selectRaw('SUM(credit) - SUM(debit) AS settled')->groupBy('waiter_id')->get()
             ->map(fn ($entry) => ['name' => User::where('company_id', $shift->company_id)->findOrFail($entry->waiter_id)->name, 'amount' => D::money((string) $entry->getAttribute('settled'))])->all();
 
-        return ['opening' => $shift->opening_cash, 'methods' => $methods, 'expected' => D::add($shift->opening_cash, $methods['Cash']['net'] ?? '0'), 'actual' => ShiftStockCount::where('shift_id', $shift->id)->exists() ? $shift->actual_cash : null, 'difference' => $shift->cash_difference, 'waiter_outstanding' => $outstanding, 'settlements' => $settlements];
+        $collections = app(TicketCollectionService::class);
+        $pending = $collections->forShift($shift)->where('status', 'PENDING');
+        $collected = $collections->collectedCash($shift);
+
+        return ['opening' => $shift->opening_cash, 'methods' => $methods, 'expected' => app(ShiftService::class)->expected($shift), 'pending_ticket_count' => (clone $pending)->count(), 'pending_ticket_amount' => D::money((string) $pending->sum('amount')), 'collected_ticket_amount' => $collected, 'actual' => ShiftStockCount::where('shift_id', $shift->id)->exists() ? $shift->actual_cash : null, 'difference' => $shift->cash_difference, 'waiter_outstanding' => $outstanding, 'settlements' => $settlements];
     }
 
     /** @param array<string, mixed> $data */

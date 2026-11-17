@@ -34,7 +34,7 @@ WhatsApp shift/daily summaries emphasize branch, unit, employee and shift. Locat
 
 ## Supervised legacy cutover
 
-1. Review the inactive General unit and its physical stock; establish actual product allocation to each destination unit.
+1. Review the inactive legacy unit and its physical stock before retirement. Establish the actual product allocation to each destination unit.
 2. Finish all shifts, unpaid/pending orders, waiter debt, pending adjustments/transfers, unresolved handovers and active terminal assignments at the source. The service rejects busy sources.
 3. Use **Supervised stock cutover** in Business Units settings with the source location, destination unit, product unit, quantity and explanatory notes. Both `manage-business-units` and `transfer-stock` are required.
 4. The company transaction lock encloses a normal transfer create/send/receive. The source decreases and destination increases through paired stock movements. The inactive-source allowance exists only within this guarded call and is restored in `finally`; it does not reactivate the unit or permit normal sales there.
@@ -65,7 +65,7 @@ The working tree contains earlier Nightshift feature work. This list identifies 
 
 ## Operational boundaries
 
-- Ambiguous legacy units intentionally remain in advanced mode until a person verifies stock allocation and completes the explicit cutover. The software cannot infer which part of old General stock belongs to BAR or Restaurant.
+- Ambiguous legacy units intentionally remain in advanced mode until a person verifies stock allocation and completes the explicit cutover. Use the [legacy retirement runbook](legacy-business-unit-retirement.md) when a preflight identifies stock that requires explicit allocation.
 - An inactive legacy unit with unresolved work cannot be transferred from until that work is resolved under the existing authorized operational controls. Cutover never force-closes shifts, forgives debt or bypasses cash reconciliation.
 - Explicit historical/advanced location command inputs remain accepted for backward compatibility. Normal screens submit unit IDs; a supplied unit/location mismatch is rejected in simple mode except for finishing a user's existing saved shift context.
 - Cross-unit physical stock is not automatically consolidated. Current defaults do not redefine old sales, prices, cashier attribution or physical stock movements.

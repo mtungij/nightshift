@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Domain\BusinessUnitContext;
 use App\Domain\Decimal as D;
+use App\Domain\OrderCollectionMode;
 use App\Domain\StaffVisibility;
 use App\Domain\TenantContext;
 use App\Models\Branch;
@@ -19,6 +20,7 @@ use App\Models\Shift;
 use App\Models\ShiftStockSnapshot;
 use App\Models\StockAdjustment;
 use App\Models\StockLocation;
+use App\Models\TicketCollection;
 use App\Models\StockMovement;
 use App\Models\StockTransfer;
 use App\Models\User;
@@ -27,6 +29,7 @@ use App\Models\WaiterLedgerEntry;
 use App\Support\QuantityFormatter;
 use App\Support\StockMovementPresenter;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\ValidationException;
@@ -100,7 +103,10 @@ final class ReportService
             app(ReportShiftService::class)->orders($orders, $selectedShift);
         }
         if ($visibility->settlementOnly()) {
-            $orders->where('issued_by', app(TenantContext::class)->user()->id);
+            $actorId = app(TenantContext::class)->user()->id;
+            $orders->where(fn ($q) => $q->where('issued_by', $actorId)->orWhere(fn ($q) => $q
+                ->where('collection_mode', OrderCollectionMode::PaidTicket->value)
+                ->whereIn('issued_shift_id', Shift::where('user_id', $actorId)->where('type', 'CASHIER')->select('id'))));
         }
         if ($branch) {
             $orders->where('branch_id', $branch);
@@ -120,6 +126,7 @@ final class ReportService
                 if ($selectedShift) {
                     app(ReportShiftService::class)->payments($cash, $selectedShift);
                 }
+                $ticketCash = $this->ticketCash($filters, $selectedShift, $from, $to)->where('business_unit_id', $unit->id);
                 $shifts = Shift::whereIn('id', $contexts('shifts'))->where('status', 'OPEN')->when($selectedShift, fn ($q) => $q->whereKey($selectedShift->id));
                 $moves = StockMovement::whereIn('id', $contexts('stock_movements'))->when(! $selectedShift, fn ($q) => $q->whereBetween('created_at', [$from, $to]));
                 if ($selectedShift) {
@@ -131,7 +138,7 @@ final class ReportService
                     $cash->whereIn('id', DB::table('operational_unit_contexts')->where('company_id', $unit->company_id)->where('record_type', 'payments')->where('stock_location_id', $filters['stock_location_id'])->select('record_id'));
                 }
 
-                return [$unit->name, (string) (clone $q)->sum('total'), (string) $cash->sum('amount'), (string) (clone $q)->sum('balance'), $q->count(), (string) $moves->sum('quantity'), (clone $shifts)->where('type', 'CASHIER')->count(), (clone $shifts)->where('type', 'WAITER')->count()];
+                return [$unit->name, (string) (clone $q)->sum('total'), D::add((string) $cash->sum('amount'), (string) $ticketCash->sum('amount')), (string) (clone $q)->sum('balance'), $q->count(), (string) $moves->sum('quantity'), (clone $shifts)->where('type', 'CASHIER')->count(), (clone $shifts)->where('type', 'WAITER')->count()];
             })->all()];
         }
         foreach (['waiter_id', 'stock_location_id', 'issued_by'] as $key) {
@@ -217,7 +224,10 @@ final class ReportService
             if ($selectedShift) {
                 app(ReportShiftService::class)->payments($q, $selectedShift);
             }
-            $rows = $q->selectRaw('method, SUM(amount) as total')->groupBy('method')->orderBy('method')->offset($offset)->limit(101)->toBase()->get();
+            $ticketCash = $this->ticketCash($filters, $selectedShift, $from, $to)->selectRaw('? as method, amount', ['Cash']);
+            $receipts = $q->select('method', 'amount')->toBase()->unionAll($ticketCash->toBase());
+            $rows = DB::query()->fromSub($receipts, 'receipts')->selectRaw('method, SUM(amount) as total')
+                ->groupBy('method')->orderBy('method')->offset($offset)->limit(101)->get();
 
             return ['headers' => ['Method', 'Collected'], 'rows' => $rows->map(fn ($r) => [$r->method, D::money((string) $r->total)])->all(), 'values' => $rows->map(fn ($r) => [$r->method, D::money((string) $r->total)])->all()];
         }
@@ -338,5 +348,36 @@ final class ReportService
         abort_unless(in_array($name, ['Daily Sales', 'Order Report', 'Paid Orders', 'Unpaid Orders'], true), 422, 'Unknown report.');
 
         return ['headers' => ['Invoice', 'Waiter', 'Table', 'Total', 'Paid', 'Balance', 'Status'], 'rows' => $orders->latest('issued_at')->orderByDesc('id')->offset($offset)->limit(101)->get()->map(fn ($o) => [$o->invoice_number, User::where('company_id', app(TenantContext::class)->companyId())->find($o->waiter_id)?->name, ServiceTable::whereKey($o->service_table_id)->first()->name ?? 'Takeaway', $o->total, $o->amount_paid, $o->balance, $o->status])->all()];
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     * @return Builder<TicketCollection>
+     */
+    private function ticketCash(array $filters, ?Shift $shift, CarbonImmutable $from, CarbonImmutable $to): Builder
+    {
+        $actor = app(TenantContext::class)->user();
+        $visibility = app(StaffVisibility::class);
+        $query = $visibility->atCounter(TicketCollection::where('status', 'COLLECTED'));
+        foreach (['branch_id' => 'branch_id', 'stock_location_id' => 'stock_location_id', 'issued_by' => 'collected_by'] as $filter => $column) {
+            if (! empty($filters[$filter])) {
+                $query->where($column, $filters[$filter]);
+            }
+        }
+        if ($shift?->type === 'CASHIER') {
+            $query->where('cashier_shift_id', $shift->id);
+        } elseif ($shift) {
+            $query->whereHas('order', fn ($q) => $q->where('shift_id', $shift->id))
+                ->where('collected_at', '<=', $shift->closed_at ?? now());
+        } else {
+            $query->whereBetween('collected_at', [$from, $to]);
+        }
+        if ($visibility->settlementOnly()) {
+            $query->where('collected_by', $actor->id);
+        } elseif (! $visibility->broad()) {
+            $query->whereHas('order', fn ($q) => $q->where('waiter_id', $actor->id));
+        }
+
+        return $query;
     }
 }

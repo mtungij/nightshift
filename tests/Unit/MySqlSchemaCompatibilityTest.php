@@ -16,7 +16,11 @@ class MySqlSchemaCompatibilityTest extends TestCase
         $this->assertSame($default, config('database.default'));
         $this->assertNotEmpty($audit['money_columns']);
         $this->assertLessThanOrEqual(64, $audit['longest_identifier_length']);
-        $this->assertCount(34, $audit['money_columns']);
+        $this->assertCount(35, $audit['money_columns']);
+        $this->assertContains('ticket_collections.amount', $audit['money_columns']);
+        $this->assertSame('WAITER_ACCOUNT', $schema['tables']['business_units']['columns']['order_collection_mode']['default']);
+        $this->assertSame('WAITER_ACCOUNT', $schema['tables']['orders']['columns']['collection_mode']['default']);
+        $this->assertSame(['order_id'], $schema['tables']['ticket_collections']['indexes']['ticket_collections_order_id_unique']['columns']);
         $this->assertCount(20, $audit['json_columns']);
         $this->assertContains('shift_stock_snapshots.data', $audit['json_columns']);
         $this->assertContains('shift_stock_counts.data', $audit['json_columns']);

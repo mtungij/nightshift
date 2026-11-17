@@ -122,7 +122,9 @@ final class CatalogService
             $record = match ($type) {
                 'branch' => $this->branch($data),'location' => $this->location($data),'category' => $this->category($data),'unit' => Unit::firstOrCreate(['name' => $data['name']]),'supplier' => Supplier::create(['name' => $data['name'], 'contact' => $data['contact'], 'category' => $data['category'] ?? null]),'reservation' => $this->reservation($data),'user' => $this->user($data),'company' => $this->company($data),default => throw new \InvalidArgumentException('Unknown catalog type')
             };
-            $this->audit->record(strtoupper($type).'_SAVED', 'Management', class_basename($record), $record->id, [], ['name' => $record->name ?? $type, ...($record instanceof StockLocation ? ['business_unit_id' => $record->business_unit_id, 'branch_id' => $record->branch_id, 'max_active_cashiers' => $record->max_active_cashiers] : [])], $record instanceof StockLocation ? $record->branch_id : null);
+            $action = $record instanceof User && $record->role->name === CompanyAdminService::ROLE
+                ? 'COMPANY_ADMIN_CREATED' : strtoupper($type).'_SAVED';
+            $this->audit->record($action, 'Management', class_basename($record), $record->id, [], ['name' => $record->name ?? $type, ...($action === 'COMPANY_ADMIN_CREATED' ? ['role' => $record->role->name, 'active' => $record->active, 'branch_id' => $data['branch_id']] : []), ...($record instanceof StockLocation ? ['business_unit_id' => $record->business_unit_id, 'branch_id' => $record->branch_id, 'max_active_cashiers' => $record->max_active_cashiers] : [])], $record instanceof StockLocation ? $record->branch_id : ($action === 'COMPANY_ADMIN_CREATED' ? $data['branch_id'] : null));
 
             return ['id' => $record->id];
         });
@@ -160,8 +162,16 @@ final class CatalogService
     private function user(#[\SensitiveParameter] array $data): User
     {
         $actor = app(TenantContext::class)->user();
-        $role = Role::where('name', $data['role'])->whereIn('name', config('business.staff_roles'))->firstOrFail();
+        $admin = $data['role'] === CompanyAdminService::ROLE;
+        if ($admin) {
+            app(CompanyAdminService::class)->authorize();
+        }
+        $role = Role::where('name', $data['role'])->whereIn('name', [...config('business.staff_roles'), CompanyAdminService::ROLE])->firstOrFail();
         $branch = Branch::whereKey($data['branch_id'])->firstOrFail();
+        if ($admin) {
+            $ids = $data['business_unit_ids'] ?? [];
+            $this->stock->require(BusinessUnit::where('branch_id', $branch->id)->whereIn('id', $ids)->count() === count($ids), __('ui.Choose authorized Business Units.'));
+        }
         $terminalLocation = null;
         if ($role->name === 'POS Terminal') {
             abort_unless(in_array($actor->role->name, ['Company Admin / Owner', 'Super Admin'], true), 403);
@@ -187,7 +197,7 @@ final class CatalogService
         $ids = $data['business_unit_ids'] ?? ($terminalLocation ? [$terminalLocation->business_unit_id] : []);
 
         $this->stock->require(
-            $ids !== [],
+            $admin || $ids !== [],
             __('ui.Choose at least one Business Unit.')
         );
 

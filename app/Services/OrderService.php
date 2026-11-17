@@ -3,9 +3,11 @@
 namespace App\Services;
 
 use App\Domain\Decimal as D;
+use App\Domain\OrderCollectionMode;
 use App\Domain\StaffVisibility;
 use App\Domain\TenantContext;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\Order;
 use App\Models\ServiceTable;
 use App\Models\Shift;
@@ -78,7 +80,8 @@ final class OrderService
             $this->stock->require(D::cmp($discount, '0') >= 0 && D::cmp($discount, $subtotal) <= 0, 'Discount cannot exceed the subtotal.');
             abort_if($actor->isPosTerminal() && D::cmp($discount, '0') !== 0, 403);
             $total = D::sub($subtotal, $discount);
-            $o = Order::create(['branch_id' => $location->branch_id, 'stock_location_id' => $location->id, 'waiter_id' => $waiter->id, 'service_table_id' => $table?->id, 'order_note' => $data['order_note'] ?? null, 'shift_id' => $shift->id, 'invoice_number' => $this->numbers->next('INV'), 'subtotal' => $subtotal, 'discount' => $discount, 'total' => $total, 'balance' => $total, 'status' => $data['status'] ?? 'WAITING_FOR_ISSUE', 'created_by' => $actor->id]);
+            $unitMode = BusinessUnit::where('branch_id', $location->branch_id)->findOrFail($location->business_unit_id)->order_collection_mode;
+            $o = Order::create(['collection_mode' => $unitMode, 'branch_id' => $location->branch_id, 'stock_location_id' => $location->id, 'waiter_id' => $waiter->id, 'service_table_id' => $table?->id, 'order_note' => $data['order_note'] ?? null, 'shift_id' => $shift->id, 'invoice_number' => $this->numbers->next('INV'), 'subtotal' => $subtotal, 'discount' => $discount, 'total' => $total, 'balance' => $total, 'status' => $data['status'] ?? 'WAITING_FOR_ISSUE', 'created_by' => $actor->id]);
             // Floor proportional shares, then distribute the remaining cents. No line
             // can receive a negative discount or more than its original gross value.
             $remaining = $discount;
@@ -98,6 +101,9 @@ final class OrderService
                 $o->items()->create($line);
             }
             $this->audit->record('ORDER_CREATED', 'Orders', 'Order', $o->id, [], ['terminal_user_id' => $actor->isPosTerminal() ? $actor->id : null, 'entered_by' => $actor->id, 'waiter_id' => $waiter->id, 'stock_location_id' => $location->id, 'invoice' => $o->invoice_number, 'status' => $o->status, 'total' => $total], $o->branch_id);
+            if (! $identifiedWaiter && $unitMode === OrderCollectionMode::PaidTicket && $o->status === 'WAITING_FOR_ISSUE') {
+                return $this->issueOrder($o->id, true);
+            }
             $this->audit->notify($o->branch_id, 'NEW_ORDER', 'New waiter order', "{$o->invoice_number} from {$waiter->name}", 'orders', $waiter->id, $o->stock_location_id);
 
             return $o;
@@ -113,7 +119,7 @@ final class OrderService
             $o->update(['status' => 'WAITING_FOR_ISSUE']);
             $this->audit->record('ORDER_UPDATED', 'Orders', 'Order', $o->id, ['status' => 'DRAFT'], ['status' => $o->status], $o->branch_id);
 
-            return $o;
+            return $o->collection_mode === OrderCollectionMode::PaidTicket ? $this->issueOrder($o->id, true) : $o;
         });
     }
 
@@ -160,7 +166,7 @@ final class OrderService
             $this->stock->require($waiter->canAccessBranch($location->branch_id) && $waiter->canAccessBusinessUnit($location->business_unit_id), 'Waiter is not available at this branch.');
             $order = $this->issueOrder($order->id, true);
 
-            return ['id' => $order->id, 'status' => $order->status, 'ticket_url' => route('nightshift.issue-ticket', $order->id, false)];
+            return ['id' => $order->id, 'status' => $order->status, 'collection_mode' => $order->collection_mode->value, 'ticket_url' => route('nightshift.issue-ticket', $order->id, false)];
         });
     }
 
@@ -177,12 +183,22 @@ final class OrderService
             $this->stock->require($waiterShift->status === 'OPEN', 'The waiter shift is closed.');
             $this->stock->require(! $direct || ($waiterShift->type === 'WAITER' && $waiterShift->user_id === $o->waiter_id && $waiterShift->branch_id === $o->branch_id && $waiterShift->stock_location_id === $o->stock_location_id), 'Waiter shift and counter must match the order.');
             $issueShift = $direct ? $this->shifts->counterCashier($o->stock_location_id) : $this->shifts->activeCashier($o->stock_location_id);
+            $paidTicket = $o->collection_mode === OrderCollectionMode::PaidTicket;
             foreach ($o->items()->orderBy('product_id')->get() as $line) {
                 $this->stock->require(app(BusinessUnitService::class)->available($line->product_id, (int) $o->business_unit_id), __('ui.Product is unavailable in this Business Unit.'));
                 $this->stock->change($o->stock_location_id, $line->product_id, D::sub('0', $line->base_quantity, 6), 'ISSUE', 'Order', $o->id, $issueShift->id);
             }
-            $o->update(['status' => D::cmp($o->total, '0') === 0 ? 'PAID' : 'ISSUED', 'issued_by' => app(TenantContext::class)->user()->id, 'issued_shift_id' => $issueShift->id, 'issued_at' => now(), 'closed_at' => D::cmp($o->total, '0') === 0 ? now() : null]);
-            $this->ledger->post($o, 'ISSUE', $o->total, '0', 'Order', $o->id, 'Drinks issued: '.$o->invoice_number);
+            $paid = $paidTicket || D::cmp($o->total, '0') === 0;
+            if ($paidTicket) {
+                $o->amount_paid = $o->total;
+                $o->balance = '0.00';
+            }
+            $o->update(['status' => $paid ? 'PAID' : 'ISSUED', 'issued_by' => app(TenantContext::class)->user()->id, 'issued_shift_id' => $issueShift->id, 'issued_at' => now(), 'closed_at' => $paid ? now() : null]);
+            if ($paidTicket) {
+                app(TicketCollectionService::class)->start($o, $issueShift);
+            } else {
+                $this->ledger->post($o, 'ISSUE', $o->total, '0', 'Order', $o->id, 'Drinks issued: '.$o->invoice_number);
+            }
             $this->audit->record('DRINKS_ISSUED', 'Orders', 'Order', $o->id, ['status' => 'WAITING_FOR_ISSUE'], ['status' => $o->status, 'issue_shift' => $issueShift->id, 'direct_send' => $direct, 'total' => $o->total], $o->branch_id);
 
             return $o;

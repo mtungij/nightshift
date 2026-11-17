@@ -212,9 +212,9 @@ try {
         );
         await ready(f);
         check(
-            locale + " General Business Unit context",
+            locale + " explicit Business Unit context",
             await run(
-                `document.querySelector(${JSON.stringify(card(f.counter_id))}).innerText.includes(${JSON.stringify(locale === "en" ? "Business Unit: General" : "Kitengo cha Biashara: General")})`,
+                `document.querySelector(${JSON.stringify(card(f.counter_id))}).innerText.includes(${JSON.stringify((locale === "en" ? "Business Unit: " : "Kitengo cha Biashara: ") + f.unit_name)})`,
             ),
         );
         check(
@@ -224,9 +224,9 @@ try {
             ),
         );
         check(
-            locale + " shared store has shared helper and no misleading General",
+            locale + " shared store has shared helper and no private unit label",
             await run(
-                `(()=>{const t=document.querySelector(${JSON.stringify(card(f.shared_store_id))}).innerText;return t.includes(${JSON.stringify(locale === "en" ? "Shared across Business Units" : "Inatumika kwa Vitengo Vingi")})&&!t.includes('General')})()`,
+                `(()=>{const t=document.querySelector(${JSON.stringify(card(f.shared_store_id))}).innerText;return t.includes(${JSON.stringify(locale === "en" ? "Shared across Business Units" : "Inatumika kwa Vitengo Vingi")})&&!t.includes(${JSON.stringify(f.unit_name)})})()`,
             ),
         );
         for (const theme of ["light", "dark"]) {

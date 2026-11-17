@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\AuditLog;
+use App\Models\BusinessUnit;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\PaymentAllocation;
@@ -107,6 +108,25 @@ class SalesTicketPrintingTest extends TestCase
         $this->assertNotNull($events->first()->created_at);
         $this->assertSame((string) $batch->order_id, $events->first()->reference_id);
         $this->assertFalse($events->first()->new_values['reprint']);
+    }
+
+    public function test_paid_ticket_prints_both_copies_with_existing_paper_sizes_even_when_disabled(): void
+    {
+        BusinessUnit::findOrFail($this->counter->business_unit_id)->update(['order_collection_mode' => 'PAID_TICKET']);
+        $settings = ['auto_print' => false, 'waiter_copy' => false, 'cashier_copy' => false, 'number_of_copies' => 1];
+        $this->command('print-settings', $this->settings([...$settings, 'paper_width' => '58mm']))->assertOk();
+        $note = 'Long paid ticket note '.str_repeat('LongUnbrokenWord', 20);
+        $send = $this->command('order-send', [...$this->payload(), 'order_note' => $note])
+            ->assertOk()->assertJsonPath('status', 'PAID')->assertJsonPath('auto_print', true)
+            ->assertJsonPath('copies', ['WAITER COPY', 'CASHIER COPY']);
+        $this->get($send->json('print_url'))->assertOk()->assertSee('data-paper-width="58mm"', false)
+            ->assertSee('WAITER COPY')->assertSee('CASHIER COPY')->assertSee('PAID')->assertSee($note)->assertSee('overflow-wrap', false);
+
+        $this->command('print-settings', $this->settings([...$settings, 'paper_width' => '80mm']))->assertOk();
+        $reprint = $this->command('ticket-reprint', ['id' => $send->json('id')])->assertOk()
+            ->assertJsonPath('copies', ['WAITER COPY', 'CASHIER COPY']);
+        $this->get($reprint->json('print_url'))->assertOk()->assertSee('data-paper-width="80mm"', false)->assertSee($note);
+        $this->assertSame([$send->json('id'), $send->json('id')], SalesTicketBatch::orderBy('id')->pluck('order_id')->all());
     }
 
     public function test_print_preparation_runs_only_after_outermost_commit(): void

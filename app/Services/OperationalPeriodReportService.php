@@ -106,7 +106,7 @@ final class OperationalPeriodReportService
             $treasury = [];
             // Unassigned expenses and custody balances may be shown only for complete branches.
             foreach ($branches as $branch) {
-                $all = DB::table('business_units')->where('company_id', app(TenantContext::class)->companyId())->where('branch_id', $branch)->pluck('id')->all();
+                $all = DB::table('business_units')->where('company_id', app(TenantContext::class)->companyId())->where('branch_id', $branch)->whereNull('archived_at')->pluck('id')->all();
                 if (! Gate::allows('view-treasury') || array_diff($all, $units) !== [] || ! empty($filters['stock_location_id'])) {
                     continue;
                 }

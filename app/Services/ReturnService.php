@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Domain\Decimal as D;
+use App\Domain\OrderCollectionMode;
 use App\Domain\TenantContext;
 use App\Models\Order;
 use App\Models\OrderItem;
@@ -66,7 +67,9 @@ final class ReturnService
                 $o->closed_at = now();
             }
             $o->save();
-            $this->ledger->post($o, 'RETURN', '0', $value, 'OrderReturn', $return->id, 'Return processed: '.$return->number, null, $return->id);
+            if ($o->collection_mode === OrderCollectionMode::WaiterAccount) {
+                $this->ledger->post($o, 'RETURN', '0', $value, 'OrderReturn', $return->id, 'Return processed: '.$return->number, null, $return->id);
+            }
             $this->audit->record('RETURN_PROCESSED', 'Orders', 'OrderReturn', $return->id, $old, ['order' => $o->id, 'total' => $o->total, 'returned' => $value], $o->branch_id);
 
             return $return;

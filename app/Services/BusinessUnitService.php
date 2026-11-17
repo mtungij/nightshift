@@ -12,6 +12,7 @@ use App\Models\Product;
 use App\Models\ProductUnit;
 use App\Models\Shift;
 use App\Models\StockLocation;
+use App\Models\TicketCollection;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
@@ -34,7 +35,6 @@ final class BusinessUnitService
                 $this->idle($unit->id);
             }
             app(StockService::class)->require(! BusinessUnit::where('branch_id', $branch->id)->where(fn ($q) => $q->where('code', $data['code'])->orWhere('name', $data['name']))->when($unit->exists, fn ($q) => $q->where('id', '!=', $unit->id))->exists(), __('ui.Business Unit name or code already exists.'));
-            app(StockService::class)->require(! $unit->exists || $unit->code !== 'GENERAL' || $data['code'] === 'GENERAL', __('ui.Keep the General code for legacy access.'));
             if (array_key_exists('advanced_locations_enabled', $data) && $unit->exists && (bool) $data['advanced_locations_enabled'] !== $unit->advanced_locations_enabled) {
                 $this->idle($unit->id);
                 foreach (StockLocation::where('business_unit_id', $unit->id)->where('id', '!=', $unit->default_stock_location_id)->get() as $legacy) {
@@ -48,6 +48,9 @@ final class BusinessUnitService
             }
             if (array_key_exists('advanced_locations_enabled', $data)) {
                 $unit->advanced_locations_enabled = (bool) $data['advanced_locations_enabled'];
+            }
+            if (array_key_exists('order_collection_mode', $data)) {
+                $unit->order_collection_mode = $data['order_collection_mode'];
             }
             $unit->save();
             $unit->refresh();
@@ -72,6 +75,7 @@ final class BusinessUnitService
         $locations = $locationId ? collect([$locationId]) : StockLocation::where('business_unit_id', $unit)->pluck('id');
         $busy = Shift::where('status', 'OPEN')->whereIn('stock_location_id', $locations)->exists()
             || Order::whereIn('stock_location_id', $locations)->whereIn('status', ['DRAFT', 'WAITING_FOR_ISSUE', 'ISSUED', 'PARTIALLY_PAID', 'VOID_REQUESTED'])->exists()
+            || TicketCollection::whereIn('stock_location_id', $locations)->where('status', 'PENDING')->exists()
             || User::where('company_id', app(TenantContext::class)->companyId())->where('active', true)->whereIn('terminal_stock_location_id', $locations)->exists()
             || DB::table('waiter_ledger_entries')->where('company_id', app(TenantContext::class)->companyId())->whereIn('order_id', DB::table('orders')->where('company_id', app(TenantContext::class)->companyId())->whereIn('stock_location_id', $locations)->select('id'))->select('waiter_id')->groupBy('waiter_id')->havingRaw('SUM(debit) - SUM(credit) > 0')->exists()
             || DB::table('stock_adjustments')->where('company_id', app(TenantContext::class)->companyId())->whereIn('stock_location_id', $locations)->where('status', 'PENDING')->exists()
@@ -140,8 +144,21 @@ final class BusinessUnitService
     public function status(User $user, bool $active): void
     {
         Gate::authorize('manage-business-units');
+        if ($user->role?->name === CompanyAdminService::ROLE) {
+            app(TransactionService::class)->run(function () use ($user, $active) {
+                $current = User::where('company_id', app(TenantContext::class)->companyId())->lockForUpdate()->findOrFail($user->id);
+                $this->updateStatus($current, $active);
+            });
+
+            return;
+        }
+        $this->updateStatus($user, $active);
+    }
+
+    private function updateStatus(User $user, bool $active): void
+    {
         $this->assertManagedUser($user);
-        app(StockService::class)->require(in_array($user->role->name, [...config('business.staff_roles'), 'POS Terminal'], true), __('ui.Choose authorized Business Units.'));
+        app(StockService::class)->require(in_array($user->role->name, [...config('business.staff_roles'), CompanyAdminService::ROLE], true), __('ui.Choose authorized Business Units.'));
         if ($active && $user->isPosTerminal()) {
             $location = app(StockService::class)->location((int) $user->terminal_stock_location_id);
             app(StockService::class)->require((bool) Branch::whereKey($location->branch_id)->firstOrFail()->active, 'Branch is inactive.');
@@ -150,32 +167,41 @@ final class BusinessUnitService
             return;
         }
         if (! $active) {
-            $company = app(TenantContext::class)->companyId();
-            $open = DB::table('shifts')->where('company_id', $company)->where('user_id', $user->id)->where('status', 'OPEN')->exists();
-            $pending = DB::table('cash_handovers')->where('company_id', $company)->where(fn ($q) => $q->where('from_user_id', $user->id)->orWhere('to_user_id', $user->id))->whereExists(function ($q) {
-                $q->selectRaw('1')->from('cash_handover_events as e')->whereColumn('e.handover_id', 'cash_handovers.id')->whereIn('e.status', ['PENDING', 'DISPUTED', 'RECEIVED', 'APPROVED'])->where(fn ($q) => $q->whereIn('e.status', ['PENDING', 'DISPUTED'])->orWhere('cash_handovers.destination', 'NEXT_CASHIER'))->whereRaw('e.id = (SELECT MAX(e2.id) FROM cash_handover_events e2 WHERE e2.handover_id = e.handover_id)');
-            })->exists();
-            $cash = DB::table('treasury_entries')->where('company_id', $company)->where('custodian_id', $user->id)->selectRaw("COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE -amount END),0) AS cash")->first()->cash;
-            app(StockService::class)->require(! $open && ! $pending && D::cmp((string) $cash, '0') === 0, __('ui.Resolve shifts, handovers and treasury cash before deactivating staff.'));
+            app(CompanyAdminService::class)->ensureAnotherActive($user);
+            $this->assertIdleStaff($user);
         }
         $before = (bool) $user->active;
         $user->forceFill(['active' => $active])->save();
-        app(AuditService::class)->record('USER_STATUS_CHANGED', 'Business Units', 'User', $user->id, ['active' => $before], ['active' => $active]);
+        $action = $user->role->name === CompanyAdminService::ROLE
+            ? ($active ? 'COMPANY_ADMIN_REACTIVATED' : 'COMPANY_ADMIN_DEACTIVATED')
+            : 'USER_STATUS_CHANGED';
+        app(AuditService::class)->record($action, 'Business Units', 'User', $user->id, ['active' => $before], ['active' => $active]);
+    }
+
+    public function assertIdleStaff(User $user): void
+    {
+        abort_unless($user->company_id === app(TenantContext::class)->companyId(), 403);
+        $company = app(TenantContext::class)->companyId();
+        $open = DB::table('shifts')->where('company_id', $company)->where('user_id', $user->id)->where('status', 'OPEN')->exists();
+        $pending = DB::table('cash_handovers')->where('company_id', $company)->where(fn ($q) => $q->where('from_user_id', $user->id)->orWhere('to_user_id', $user->id))->whereExists(function ($q) {
+            $q->selectRaw('1')->from('cash_handover_events as e')->whereColumn('e.handover_id', 'cash_handovers.id')->whereIn('e.status', ['PENDING', 'DISPUTED', 'RECEIVED', 'APPROVED'])->where(fn ($q) => $q->whereIn('e.status', ['PENDING', 'DISPUTED'])->orWhere('cash_handovers.destination', 'NEXT_CASHIER'))->whereRaw('e.id = (SELECT MAX(e2.id) FROM cash_handover_events e2 WHERE e2.handover_id = e.handover_id)');
+        })->exists();
+        $cash = DB::table('treasury_entries')->where('company_id', $company)->where('custodian_id', $user->id)->selectRaw("COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE -amount END),0) AS cash")->first()->cash;
+        app(StockService::class)->require(! $open && ! $pending && D::cmp((string) $cash, '0') === 0, __('ui.Resolve shifts, handovers and treasury cash before deactivating staff.'));
     }
 
     private function assertManagedUser(User $user): void
     {
         $actor = app(TenantContext::class)->user();
         abort_unless($user->company_id === $actor->company_id, 403);
+        if ($user->role?->name === CompanyAdminService::ROLE) {
+            app(CompanyAdminService::class)->authorize();
+        }
         $allowed = app(BusinessUnitContext::class)->ids($actor);
         if ($allowed === null || $user->wasRecentlyCreated) {
             return;
         }
         $existing = DB::table('business_unit_user')->where('company_id', $user->company_id)->where('user_id', $user->id)->pluck('business_unit_id')->all();
-        if (! $user->business_units_configured) {
-            $legacy = DB::table('business_units')->where('company_id', $user->company_id)->where('code', 'GENERAL')->whereIn('branch_id', DB::table('branch_user')->where('company_id', $user->company_id)->where('user_id', $user->id)->select('branch_id'))->pluck('id')->all();
-            $existing = array_unique([...$existing, ...$legacy]);
-        }
         abort_unless($existing !== [] && array_diff($existing, $allowed) === [], 403);
     }
 

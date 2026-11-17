@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\OrderCollectionMode;
 use App\Domain\StaffVisibility;
 use App\Http\Requests\NightshiftCommandRequest;
 use App\Models\Branch;
 use App\Models\BusinessNotification;
+use App\Models\Order;
 use App\Models\Payment;
 use App\Models\PaymentAllocation;
 use App\Models\Product;
@@ -14,6 +16,7 @@ use App\Models\StockLocation;
 use App\Models\User;
 use App\Services\AdjustmentService;
 use App\Services\CatalogService;
+use App\Services\CompanyAdminService;
 use App\Services\GoodsReceiptService;
 use App\Services\OrderService;
 use App\Services\PaymentService;
@@ -55,15 +58,7 @@ final class NightshiftController extends Controller
         unset($data['idempotency_key']);
         if ($command === 'order-send') {
             $result = app(OrderService::class)->send($data, $key);
-            $result += app(SalesTicketService::class)->response(null);
-            DB::afterCommit(function () use (&$result, $key) {
-                try {
-                    $result = array_replace($result, app(SalesTicketService::class)->response(app(SalesTicketService::class)->prepare($result['id'], $key)));
-                } catch (\Throwable $error) {
-                    report($error);
-                    $result['print_error'] = true;
-                }
-            });
+            $this->prepareInitialTicket($result, $key);
 
             return response()->json($result);
         }
@@ -82,6 +77,8 @@ final class NightshiftController extends Controller
                 'shift-stock-count' => app(ShiftStockService::class)->count($data['id'], $data),
                 'shift-stock-approve' => app(ShiftStockService::class)->approve($data['id'], $data['basis'], $data['revision'], $data['note']),
                 'print-settings' => app(SalesTicketService::class)->savePreferences($data),
+                'staff-admin-status' => app(CompanyAdminService::class)->setStatus($data['id'], $data['active']),
+                'staff-admin-role' => app(CompanyAdminService::class)->changeRole($data),
                 'staff-pin' => app(StaffPinService::class)->set($data['id'], $data['pin'] ?? null),
                 'waiter-payment' => app(PaymentService::class)->receiveWaiter($data['waiter_id'], $data['stock_location_id'], $data['amount'], $data['method']),
                 'order-create' => app(OrderService::class)->create($data),'order-issue' => app(OrderService::class)->issue($data['id']),'order-submit' => app(OrderService::class)->submit($data['id']),'order-cancel' => app(OrderService::class)->cancel($data['id']),
@@ -92,14 +89,37 @@ final class NightshiftController extends Controller
                 'product' => app(CatalogService::class)->product($data),'notifications-read' => $this->readNotifications(),default => app(CatalogService::class)->save(substr($command, 8), $data)
             };
 
+            if ($result instanceof Order && in_array($command, ['order-create', 'order-submit'], true)
+                && $result->collection_mode === OrderCollectionMode::PaidTicket && $result->issued_at !== null) {
+                return ['id' => $result->id, 'status' => $result->status, 'collection_mode' => $result->collection_mode->value];
+            }
+
             return is_array($result) ? $result : ['id' => $result->id, 'status' => $result->status ?? null];
         });
+
+        if (($result['collection_mode'] ?? null) === OrderCollectionMode::PaidTicket->value) {
+            $this->prepareInitialTicket($result, $key);
+        }
 
         if ($command === 'catalog-cashier-limit') {
             $result['location'] = app(CounterLocationPresenter::class)->present(StockLocation::whereKey($data['id'])->firstOrFail());
         }
 
         return response()->json($result);
+    }
+
+    /** @param array<string, mixed> $result */
+    private function prepareInitialTicket(array &$result, string $key): void
+    {
+        $result += app(SalesTicketService::class)->response(null);
+        DB::afterCommit(function () use (&$result, $key) {
+            try {
+                $result = array_replace($result, app(SalesTicketService::class)->response(app(SalesTicketService::class)->prepare($result['id'], $key)));
+            } catch (\Throwable $error) {
+                report($error);
+                $result['print_error'] = true;
+            }
+        });
     }
 
     public function productImage(int $id): StreamedResponse
@@ -179,7 +199,7 @@ final class NightshiftController extends Controller
         abort_unless($order->issued_at !== null, 409, 'The order has not been issued.');
         $tickets = app(SalesTicketService::class);
 
-        return view('issue-ticket', ['ticket' => $tickets->data($order), 'copies' => $tickets->copies($tickets->preferences()), 'reprint' => true, 'batch' => null, 'paperWidth' => $tickets->preferences()['paper_width']]);
+        return view('issue-ticket', ['ticket' => $tickets->data($order), 'copies' => $tickets->orderCopies($order, $tickets->preferences()), 'reprint' => true, 'batch' => null, 'paperWidth' => $tickets->preferences()['paper_width']]);
     }
 
     public function salesTicket(string $token): View

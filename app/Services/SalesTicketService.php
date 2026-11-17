@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Domain\Decimal as D;
+use App\Domain\OrderCollectionMode;
 use App\Domain\StaffVisibility;
 use App\Domain\TenantContext;
 use App\Models\Branch;
@@ -48,16 +49,24 @@ class SalesTicketService
         return $copies;
     }
 
+    /** @param array<string, mixed> $settings
+     * @return list<string>
+     */
+    public function orderCopies(Order $order, array $settings): array
+    {
+        return $order->collection_mode === OrderCollectionMode::PaidTicket ? ['WAITER COPY', 'CASHIER COPY'] : $this->copies($settings);
+    }
+
     public function prepare(int $id, string $key, bool $reprint = false): ?SalesTicketBatch
     {
         // Called after order commit. Its independent transaction cannot roll back a sale.
         $order = app(OrderService::class)->accessible($id);
         abort_unless($order->issued_at !== null, 409, 'The order has not been issued.');
         $settings = $this->preferences();
-        if (! $reprint && ! $settings['auto_print']) {
+        if (! $reprint && ! $settings['auto_print'] && $order->collection_mode !== OrderCollectionMode::PaidTicket) {
             return null;
         }
-        $copies = $this->copies($settings);
+        $copies = $this->orderCopies($order, $settings);
         if (! $copies) {
             return null;
         }
@@ -86,7 +95,9 @@ class SalesTicketService
         Gate::authorize('view', $order);
         $company = app(TenantContext::class)->user()->company;
         $issue = WaiterLedgerEntry::where('order_id', $order->id)->where('entry_type', 'ISSUE')->first();
-        $issuedTotal = $issue->debit ?? $order->total;
+        $issuedTotal = $order->collection_mode === OrderCollectionMode::PaidTicket
+            ? D::sub($order->subtotal, $order->discount)
+            : ($issue->debit ?? $order->total);
         $enteredBy = User::where('company_id', $order->company_id)->find($order->created_by);
 
         return ['show_location' => app(UnitOperationalService::class)->showLocation($order->company_id, $order->business_unit_id, $order->stock_location_id), 'business_unit' => BusinessUnit::withoutGlobalScopes()->where('company_id', $order->company_id)->whereKey($order->business_unit_id)->value('name') ?? '—', 'order_id' => $order->id, 'business' => $company->trading_name ?: $company->name, 'branch' => Branch::findOrFail($order->branch_id)->name, 'invoice' => $order->invoice_number, 'order_note' => $order->order_note,
@@ -97,11 +108,14 @@ class SalesTicketService
             'items' => $order->items->map(fn ($item) => $item->only(['product_name', 'quantity', 'unit_name', 'unit_price', 'total']))->all(),
             'subtotal' => $order->subtotal, 'discount' => $order->discount, 'total' => $issuedTotal, 'currency' => $company->currency,
             'outstanding' => $this->outstanding($order),
-            'status' => bccomp($issuedTotal, '0', 2) > 0 ? 'UNPAID' : 'SETTLED'];
+            'status' => $order->collection_mode === OrderCollectionMode::PaidTicket ? 'PAID' : (bccomp($issuedTotal, '0', 2) > 0 ? 'UNPAID' : 'SETTLED')];
     }
 
     private function outstanding(Order $order): string
     {
+        if ($order->collection_mode === OrderCollectionMode::PaidTicket) {
+            return '0.00';
+        }
         $issueId = WaiterLedgerEntry::where('order_id', $order->id)->where('entry_type', 'ISSUE')->value('id');
         $visibility = app(StaffVisibility::class);
         $ledger = $visibility->ledger(WaiterLedgerEntry::where('waiter_id', $order->waiter_id), $visibility->settlementOnly() ? $order->stock_location_id : null)->where('id', '<=', $issueId ?? 0);

@@ -4,15 +4,14 @@ The product master remains company-wide. Operational availability is a positive 
 
 ## Add and edit
 
-The existing Nightshift product modal displays authorized Business Units as responsive checkboxes and optional prices for each selling unit. Add Product preselects only the current Inventory Business Unit. With All Business Units selected, nothing is preselected; the user must select at least one unit. General is never added implicitly by this workflow. Edit reads raw company prices from a permission-protected endpoint, avoiding accidental copying of a POS override into the company default. Unchecked units stay unchecked after save.
+The existing Nightshift product modal displays authorized Business Units as responsive checkboxes and optional prices for each selling unit. Add Product starts with all Business Units unchecked. Select at least one Business Unit before saving. Edit reads raw company prices from a permission-protected endpoint, avoiding accidental copying of a POS override into the company default. Unchecked units stay unchecked after save.
 
 Product commands require a `business_units` array. Entries contain `business_unit_id`, boolean `available`, and `prices` entries keyed by physical `unit_id` with nullable decimal-string `selling_price`. Existing rows outside the submitted authorized scope are preserved. Invalid prices, duplicate unit assignments, foreign companies, unauthorized branches/units, or unknown selling units roll back the entire product update. Existing manage-products, company, branch, unit and terminal permissions are retained.
 
-## General and cutover
+## Legacy cutover
 
-Migration `2026_11_11_000005_make_product_availability_explicit` is forward-only. It maps products with **no availability rows at all** to the company's existing General units. Any explicit configuration, including all-disabled rows, is preserved. It does not modify products, prices, receipts, stock, orders, payments, posted line prices or operational/reporting contexts. It is idempotent and does not enable Bar or Restaurant.
+The earlier availability migration preserved existing explicit settings and mapped otherwise unconfigured products to the then-existing legacy unit. The retirement migration removes those legacy-only mappings. Current application code and internal product imports must configure availability explicitly. A product without an enabled assignment is absent from scoped sales and Inventory catalogues. See the [legacy retirement runbook](legacy-business-unit-retirement.md).
 
-Internal legacy seed/import code that creates a Product without the new Catalog payload receives General-only mappings through the Product creation hook. The interactive Catalog workflow disables that initializer and saves only explicit choices in its existing company transaction. Integrations using the HTTP product command must send the new array. New branches do not automatically receive old products; their availability is configured explicitly.
 
 ## Inventory, POS and prices
 
@@ -32,7 +31,7 @@ Transfers and adjustments can still operate on existing positive physical stock 
 
 Semantic audits record PRODUCT_UNIT_ENABLED, PRODUCT_UNIT_DISABLED and BUSINESS_UNIT_PRICE_CHANGED with actor, product reference, branch/unit, previous/new values and timestamps. The existing configuration audit is retained. No secrets are included.
 
-`tests/Feature/ProductAvailabilityTest.php` covers strict missing/General behavior, unit pricing, edit defaults, cutover, scoped search/locations, receipt rejection and expected stock movement, company/branch tampering, atomic rollback and permission denial. Existing BusinessUnitTest, workflow, terminal and MySQL concurrency tests cover posted-price/report history and backend sale/access races.
+`tests/Feature/ProductAvailabilityTest.php` covers explicit assignment requirements, unit pricing, edit defaults, cutover, scoped search/locations, receipt rejection and expected stock movement, company/branch tampering, atomic rollback and permission denial. Existing BusinessUnitTest, workflow, terminal and MySQL concurrency tests cover posted-price/report history and backend sale/access races.
 
 `scripts/browser-product-availability.mjs` is fail-closed to the disposable browser validation database. It exercises real product form saves, edit defaults, scoped search, receiving and assigned terminals, with English/Kiswahili, light/dark and 390/412/820/1440/1920px form checks. Screenshots and JSON evidence are written under `/tmp/nightshift-product-browser`.
 
@@ -42,7 +41,7 @@ No production deployment is part of this task.
 
 ## Files in this focused change
 
-- `app/Models/Product.php`: safe General initializer for legacy internal creation.
+- `app/Models/Product.php`: product master and selling units.
 - `app/Services/BusinessUnitService.php`: positive availability queries, atomic Catalog configuration, shared-location scope and semantic audits.
 - `app/Services/CatalogService.php`: explicit configuration in the existing product transaction.
 - `app/Services/WorkspaceService.php`: scoped inventory/search, POS availability metadata, counter/unit pricing and separate company defaults.
@@ -70,7 +69,7 @@ Earlier shift, cash custody, administration and PDF work remains in the working 
 - The positive-receipt integration test receives two units for 2000.00, verifies the exact stock/GRN movement, and proves order/payment counts do not change. The negative receipt test proves unrelated-unit receiving changes no stock or ledger rows.
 - Full Laravel and MySQL runs are divided into bounded groups because the execution environment terminates long commands. MySQL groups use two separate disposable schemas; no concurrent test processes share a schema. Browser validation uses its own third schema.
 
-The staff lifetime-accounting fixture now explicitly enables its shared product in its newly created branch's General unit. It no longer relies on missing-assignment fallback; its accounting assertions are retained.
+The staff lifetime-accounting fixture now explicitly enables its shared product in its newly created branch's explicit Business Unit. It no longer relies on missing-assignment fallback; its accounting assertions are retained.
 
 Full Laravel coverage completed in seven groups: **407 tests passed, 3,997 assertions**. Group 6 was rerun after explicitly configuring its new-branch accounting fixture. The finalized run includes all product-specific and existing feature/unit tests.
 
@@ -97,4 +96,4 @@ Additional files for that protection: `resources/js/product-selling-units.js`, `
 
 Consolidated evidence is `/tmp/product-validation-summary.json`; individual test group JSON and JUnit results use `/tmp/product-{sqlite,mysql}-group*`. Browser evidence is `/tmp/nightshift-product-browser/{result,final-result,conversion-result}.json` with screenshots in the same directory. Test groups were isolated by schema; the slow database tests ran in four nine-test batches. All original financial rows and the single company product master were retained.
 
-Remaining boundaries: the existing 200-product workspace snapshot limit remains; HTTP product integrations must provide explicit assignments; legacy internal model creation remains General-only as documented above. No production deployment was performed.
+Remaining boundaries: the existing 200-product workspace snapshot limit remains; HTTP product integrations must provide explicit assignments; internal model creation requires explicit availability configuration. No production deployment was performed.

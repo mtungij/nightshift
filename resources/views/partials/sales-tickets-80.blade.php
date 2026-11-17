@@ -29,7 +29,7 @@
             <div class="row"><span>{{ \App\Support\UiText::get('Discount') }}</span><span class="amount">{{ $ticket['discount'] }}</span></div>
         @endif
         <div class="row total"><span>{{ \App\Support\UiText::get('TOTAL') }} {{ $ticket['currency'] }}</span><span class="amount">{{ $ticket['total'] }}</span></div>
-        <div class="row"><span>{{ \App\Support\UiText::get('Status') }}</span><strong>@if($copy === 'CASHIER COPY'){{ \App\Support\UiText::get('ISSUED') }} / @endif{{ \App\Support\UiText::get($ticket['status']) }}</strong></div>
+        <div class="row"><span>{{ \App\Support\UiText::get('Status') }}</span><strong>@if($copy === 'CASHIER COPY' && $ticket['status'] !== 'PAID'){{ \App\Support\UiText::get('ISSUED') }} / @endif{{ \App\Support\UiText::get($ticket['status']) }}</strong></div>
         @if($copy === 'WAITER COPY')
             <div class="row"><span>{{ \App\Support\UiText::get('Waiter outstanding after this order') }}</span><strong class="amount">{{ $ticket['outstanding'] }}</strong></div>
         @endif

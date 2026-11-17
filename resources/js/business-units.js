@@ -4,7 +4,13 @@ if (document.querySelector("[data-workspace-page]")) {
 }
 
 for (const form of document.querySelectorAll("[data-business-unit-action]")) {
-    form.addEventListener("input", () => delete form.dataset.requestKey);
+    form.addEventListener("input", (event) => {
+        delete form.dataset.requestKey;
+        if (event.target.name !== "order_collection_mode") return;
+        for (const description of form.querySelectorAll("[data-mode-description]")) {
+            description.hidden = description.dataset.modeDescription !== event.target.value;
+        }
+    });
     form.addEventListener("submit", async (event) => {
         event.preventDefault();
         const status = document.querySelector("[data-business-unit-status]");
@@ -68,4 +74,20 @@ for (const form of document.querySelectorAll("[data-business-unit-action]")) {
             button.disabled = false;
         }
     });
+}
+
+const productSection = document.querySelector("[data-unit-products]");
+const productSearch = productSection?.querySelector("[data-unit-product-search]");
+if (productSearch) {
+    const products = [...productSection.querySelectorAll("[data-unit-product]")];
+    const empty = productSection.querySelector("[data-unit-product-empty]");
+    const filter = () => {
+        const query = productSearch.value.trim().toLocaleLowerCase();
+        for (const product of products) {
+            product.hidden = !product.dataset.unitProduct.toLocaleLowerCase().includes(query);
+        }
+        empty.hidden = products.some((product) => !product.hidden);
+    };
+    productSearch.addEventListener("input", filter);
+    filter();
 }

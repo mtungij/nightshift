@@ -6,7 +6,7 @@ const location = {
     name: "Main Counter",
     type: "COUNTER",
     active: true,
-    business_unit_name: "General",
+    business_unit_name: "Bar",
     is_shared: false,
 };
 const setLanguage = (messages) => {
@@ -31,7 +31,7 @@ test("counter cards always render authoritative complete occupancy and prefilled
         assert.match(html, /type="number"\s+min="1"\s+max="65535"\s+step="1"\s+required/);
         assert.doesNotMatch(html, /name="max_active_cashiers"[^>]*value=""/);
         assert.doesNotMatch(html, /Active Cashiers:\s*\d+\s*\/\s*</);
-        assert.match(html, /Business Unit: General/);
+        assert.match(html, /Business Unit: Bar/);
         assert.equal(/data-counter-full hidden/.test(html), active < max);
     }
 });
@@ -45,7 +45,7 @@ test("non-cashier and shared locations do not expose cashier controls or mislead
         );
         assert.doesNotMatch(html, /Active Cashiers|Maximum Active Cashiers|data-cashier-limit/);
         assert.match(html, /Shared across Business Units/);
-        assert.doesNotMatch(html, /Business Unit: General/);
+        assert.doesNotMatch(html, /Business Unit: Bar/);
     }
 });
 test("server save response refreshes both maximum and occupancy, without resetting the count", () => {

@@ -14,7 +14,12 @@ function syncControls() {
     document.querySelectorAll("[data-pwa-install]").forEach((button) => {
         button.hidden = !canInstall();
         button.disabled = prompting;
-        button.textContent = t("Install App");
+        const label = t("Install App");
+        const labelElement = button.querySelector?.("[data-pwa-install-label]");
+        if (labelElement) labelElement.textContent = label;
+        else button.textContent = label;
+        button.setAttribute?.("aria-label", label);
+        button.setAttribute?.("title", label);
     });
 }
 

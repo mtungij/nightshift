@@ -15,11 +15,11 @@ final class WorkspaceShellController extends Controller
     {
         $actor = $request->user();
         abort_unless($actor->active && $actor->company_id && $actor->company->active && ! $actor->isPosTerminal(), 403);
-        $page = $request->validate(['page' => ['required', 'in:business-units,treasury,cash-handovers,audit,whatsapp']])['page'];
+        $page = $request->validate(['page' => ['required', 'in:business-units,treasury,cash-handovers,ticket-collections,audit,whatsapp']])['page'];
         if ($page === 'cash-handovers') {
             abort_unless(($actor->hasPermission('issue-drinks') && $actor->hasPermission('close-shifts')) || $actor->hasPermission('view-treasury') || $actor->hasPermission('receive-treasury') || $actor->hasPermission('review-cash-handovers'), 403);
         } else {
-            Gate::authorize(['business-units' => 'manage-business-units', 'treasury' => 'view-treasury', 'audit' => 'view-audit', 'whatsapp' => 'whatsapp.view_settings'][$page]);
+            Gate::authorize(['business-units' => 'manage-business-units', 'treasury' => 'view-treasury', 'ticket-collections' => 'receive-payments', 'audit' => 'view-audit', 'whatsapp' => 'whatsapp.view_settings'][$page]);
         }
         $branches = Branch::get(['id', 'name']);
         $shifts = Shift::where('user_id', $actor->id)->where('status', 'OPEN')->get(['id', 'branch_id', 'opened_at']);

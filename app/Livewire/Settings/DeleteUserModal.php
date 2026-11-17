@@ -4,6 +4,7 @@ namespace App\Livewire\Settings;
 
 use App\Concerns\PasswordValidationRules;
 use App\Livewire\Actions\Logout;
+use App\Services\CompanyAdminService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
@@ -23,7 +24,8 @@ class DeleteUserModal extends Component
             'password' => $this->currentPasswordRules(),
         ]);
 
-        tap(Auth::user(), $logout(...))->delete();
+        app(CompanyAdminService::class)->deleteAccount(Auth::user());
+        $logout();
 
         $this->redirect('/', navigate: true);
     }

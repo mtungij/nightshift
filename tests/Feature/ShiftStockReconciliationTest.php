@@ -173,7 +173,13 @@ class ShiftStockReconciliationTest extends TestCase
             $row = $this->row($r);
             $this->assertSame($status, $row['status']);
             $this->assertSame(D::mul(ltrim((string) $difference, '-'), $row['price']), $row['variance_value']);
-            $this->assertSame(D::mul($row['physical_sold'], $row['price']), $row['sales_value']);
+            $this->assertSame(
+                D::mul(
+                    D::sub($row['system_sold'], $row['returns'], 6),
+                    $row['price']
+                ),
+                $row['sales_value']
+            );
         }
     }
 
@@ -325,7 +331,7 @@ class ShiftStockReconciliationTest extends TestCase
         foreach (['en', 'sw'] as $locale) {
             $this->owner->forceFill(['language_preference' => $locale])->save();
             $this->actingAs($this->owner);
-            $this->get('/shift-stock/'.$this->shift->id.'/print')->assertOk()->assertSee($locale === 'sw' ? 'Hesabu ya Stock ya Zamu' : 'Stock Reconciliation')->assertSee('A4 landscape')->assertSee('300000.00')->assertSee('Serengeti Lite');
+            $this->get('/shift-stock/'.$this->shift->id.'/print')->assertOk()->assertSee($locale === 'sw' ? 'Hesabu ya Stock ya Zamu' : 'Shift Stock Count')->assertSee('A4 landscape')->assertSee('300000.00')->assertSee('Serengeti Lite');
         }
     }
 

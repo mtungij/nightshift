@@ -27,6 +27,11 @@ use Illuminate\Support\Facades\DB;
 final class AuditTrailService
 {
     public const ACTIONS = [
+        'COMPANY_ADMIN_CREATED' => 'Company administrator created',
+        'COMPANY_ADMIN_PROMOTED' => 'Company administrator promoted',
+        'COMPANY_ADMIN_DEMOTED' => 'Company administrator demoted',
+        'COMPANY_ADMIN_DEACTIVATED' => 'Company administrator deactivated',
+        'COMPANY_ADMIN_REACTIVATED' => 'Company administrator reactivated',
         'WHATSAPP_DEVICE_UPDATED' => 'WhatsApp Device Updated',
         'WHATSAPP_DEVICE_SAVED' => 'WhatsApp Device Updated',
         'WHATSAPP_CONNECTION_TEST_REQUESTED' => 'WhatsApp Connection Test Requested',

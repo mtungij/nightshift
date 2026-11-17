@@ -1,6 +1,7 @@
 <?php
 
 use App\Domain\TenantContext;
+use App\Models\BusinessUnit;
 use App\Models\StockLocation;
 use App\Services\BusinessUnitService;
 
@@ -13,5 +14,6 @@ $shared = app(TenantContext::class)->run($owner, function () use ($result) {
     return $store->id;
 });
 $result['shared_store_id'] = $shared;
+$result['unit_name'] = app(TenantContext::class)->run($owner, fn () => BusinessUnit::findOrFail($result['unit_id'])->name);
 file_put_contents('/tmp/nightshift-counter-binding-fixtures.json', json_encode($result, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
 copy('/tmp/nightshift-cashier-limit-baseline.json', '/tmp/nightshift-counter-binding-baseline.json');

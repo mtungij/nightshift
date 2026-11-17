@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Domain\Decimal as D;
+use App\Domain\OrderCollectionMode;
 use App\Domain\StaffVisibility;
 use App\Domain\TenantContext;
 use App\Models\Order;
@@ -31,7 +32,7 @@ final class PaymentService
             }
             $this->shifts->activeCashier($location->id);
             $this->stock->require($method !== 'Credit', 'Account settlement requires a received payment.');
-            $orders = Order::where('waiter_id', $waiter->id)->where('stock_location_id', $location->id)->whereIn('status', ['ISSUED', 'PARTIALLY_PAID'])->orderBy('id')->lockForUpdate()->get();
+            $orders = Order::where('waiter_id', $waiter->id)->where('stock_location_id', $location->id)->where('collection_mode', OrderCollectionMode::WaiterAccount->value)->whereIn('status', ['ISSUED', 'PARTIALLY_PAID'])->orderBy('id')->lockForUpdate()->get();
             $remaining = D::money($amount);
             $available = '0.00';
             foreach ($orders as $order) {
@@ -63,7 +64,7 @@ final class PaymentService
         return $this->tx->run(function () use ($id, $lines) {
             $o = Order::lockForUpdate()->findOrFail($id);
             Gate::authorize('view', $o);
-            $this->stock->require(in_array($o->status, ['ISSUED', 'PARTIALLY_PAID'], true), 'Only issued unpaid orders accept payments.');
+            $this->stock->require($o->collection_mode === OrderCollectionMode::WaiterAccount && in_array($o->status, ['ISSUED', 'PARTIALLY_PAID'], true), 'Only issued unpaid orders accept payments.');
             $cashier = $this->shifts->activeCashier($o->stock_location_id);
             $total = '0.00';
             $newCredit = '0.00';

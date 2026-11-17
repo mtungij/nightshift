@@ -284,14 +284,30 @@ try {
             installability.installabilityErrors.length === 0,
             installability.installabilityErrors,
         );
-        await click("[data-action=profile]");
+        await click("#profile-button");
+        check(
+            width + " profile opens below the navbar without an install control",
+            await run(`(() => {
+                const profile = document.querySelector('#workspace-profile');
+                const trigger = document.querySelector('#profile-button');
+                return trigger.getAttribute('aria-expanded') === 'true' &&
+                    profile.getBoundingClientRect().top >= trigger.getBoundingClientRect().bottom &&
+                    !profile.querySelector('[data-pwa-install]') && !document.querySelector('.modal');
+            })()`),
+        );
+        await click("#profile-button");
         await run(
             `(()=>{window.__installCalls=0;const e=new Event('beforeinstallprompt',{cancelable:true});e.prompt=async()=>{window.__installCalls++};e.userChoice=new Promise(resolve=>window.__resolveInstall=resolve);window.dispatchEvent(e)})()`,
         );
         check(
             width + " install action localized",
             await run(
-                `!document.querySelector('[data-pwa-install]').hidden && document.querySelector('[data-pwa-install]').textContent==='${width === 390 ? "Sakinisha App" : "Install App"}'`,
+                `(() => {
+                    const install = document.querySelector('.topbar [data-pwa-install]');
+                    return !install.hidden && !!install.querySelector('svg') &&
+                        install.title === '${width === 390 ? "Sakinisha App" : "Install App"}' &&
+                        install.getAttribute('aria-label') === install.title;
+                })()`,
             ),
         );
         await click("[data-pwa-install]");
@@ -307,7 +323,6 @@ try {
             width + " installed state hides action",
             await run("document.querySelector('[data-pwa-install]').hidden"),
         );
-        await click("[data-action=close-modal]");
         const cached = await run(
             "(async()=>{const urls=[];for(const name of await caches.keys()){if(name.startsWith('nightshift-static-'))for(const r of await(await caches.open(name)).keys())urls.push(r.url)}return urls})()",
         );

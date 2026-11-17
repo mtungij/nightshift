@@ -10,7 +10,7 @@ Company → Branch → Business Unit → Counter / Stock Location.
 
 `business_unit_user` grants one or several units to staff. `counter_user` additionally limits explicitly configured cashier counters. Owner and Super Admin have the separate `all-business-units` permission, alongside their existing branch permission. `manage-business-units` controls unit administration. Managers retain their existing role capabilities within their assigned units; a broad staff/report permission does not bypass unit access.
 
-Legacy staff initially receive General access at their existing branches. Compatibility for old staff-creation integrations is limited to General at assigned branches until their unit assignments are explicitly configured. An explicitly saved empty assignment gives no unit access. Newly created staff receive explicit assignments. Removing access cannot orphan an open shift. Owner/Admin can activate or deactivate staff from the assignment screen; deactivation blocks open shifts, unresolved handovers and nonzero treasury cash, so the terminal-disable cutover step is available without editing the database. Existing role/PIN management remains separate. Managers cannot replace the assignments of staff who have access outside that manager's units. Owner/Admin can edit branch memberships before adding units in those branches, with open-work and treasury safeguards.
+Staff Business Unit access comes from explicit assignments and existing broad administrative permissions. An explicitly saved empty assignment gives no unit access. Newly created staff receive explicit assignments. Removing access cannot orphan an open shift. Owner/Admin can activate or deactivate staff from the assignment screen; deactivation blocks open shifts, unresolved handovers and nonzero treasury cash, so the terminal-disable cutover step is available without editing the database. Existing role/PIN management remains separate. Managers cannot replace the assignments of staff who have access outside that manager's units. Owner/Admin can edit branch memberships before adding units in those branches, with open-work and treasury safeguards.
 
 POS Terminal scope comes from its explicit counter, company, branch and unit. A terminal's unit assignment must match that counter. Existing same-unit counter authorization checks remain in place. A cashier opening on behalf of another employee must also respect that employee's unit and explicit counter assignments.
 
@@ -26,7 +26,7 @@ Authorization and selected unit context are separate. Selection is bound to the 
 
 ## Products and prices
 
-There is one company product master. `business_unit_products` controls availability; `business_unit_prices` overrides each existing selling unit independently. Unconfigured products remain available by default, preserving existing catalogs. Explicitly disabling a product prevents backend order creation/issuance as well as hiding it from POS.
+There is one company product master. `business_unit_products` controls availability; `business_unit_prices` overrides each existing selling unit independently. Products become available through enabled assignments to explicit Business Units. Explicitly disabling a product prevents backend order creation/issuance as well as hiding it from POS.
 
 Price fallback is Business Unit override → company product-unit selling price. No counter price layer existed, so this change does not introduce one. Orders copy the price into their existing immutable historical line values; changing current pricing does not reprice old orders. POS prices and company defaults are returned separately so editing a product cannot accidentally replace a company price with a unit override.
 
@@ -69,9 +69,7 @@ Explicit unit edits, staff/unit and counter assignments, availability/pricing ch
 
 Both migrations are forward-only; `down()` refuses rollback. Restore a verified backup or apply a reviewed forward correction. They depend on the earlier operational shift and custody migrations already present in this workspace.
 
-Use a maintenance window and stop background operational writers during migration. Back up and verify the target database; use the normal migration identity with trigger privileges. Create General per existing branch and attach current locations/staff there. Do not invent Bar/Restaurant assignments. Historical financial records stay valid and receive General context without altering their monetary history. No production migration has been run by this task.
-
-To reorganize General into Bar and Restaurant: create the units, grant intended staff and Accountant access, finish shifts/debt/pending work, deactivate affected terminals, assign each counter/private store or explicit shared store, configure product availability/prices, verify staff/counter assignments, then reactivate terminals and open new shifts. Keep General access for staff who must review legacy operations; removing it deliberately removes their access to that old history. Never move a unit between branches; create the appropriate branch unit instead.
+The older migrations can contain historical unit assignments during an upgrade. Run the complete forward migration chain in a maintenance window. The retirement migration preserves referenced records and removes the retired unit from operational choices. Use the [legacy retirement runbook](legacy-business-unit-retirement.md) to reconcile any remaining stock or unfinished work.
 
 ## Files
 

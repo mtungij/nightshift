@@ -153,7 +153,9 @@ final class ShiftService
             return $shift->expected_cash;
         }
 
-        return D::add($shift->opening_cash, (string) Payment::withoutGlobalScopes()->where('company_id', $shift->company_id)->where('shift_id', $shift->id)->where('method', 'Cash')->sum('amount'));
+        $payments = (string) Payment::withoutGlobalScopes()->where('company_id', $shift->company_id)->where('shift_id', $shift->id)->where('method', 'Cash')->sum('amount');
+
+        return D::add(D::add($shift->opening_cash, $payments), app(TicketCollectionService::class)->collectedCash($shift));
     }
 
     /**
@@ -177,6 +179,7 @@ final class ShiftService
                 $this->stock->require(D::cmp($balance, '0') <= 0, __('ui.Cannot close shift. :name has an outstanding balance of TSh :balance.', ['name' => User::where('company_id', $shift->company_id)->findOrFail($shift->user_id)->name, 'balance' => $balance]));
                 $this->stock->require(! Order::where('shift_id', $shift->id)->whereIn('status', ['DRAFT', 'WAITING_FOR_ISSUE'])->exists(), 'Submit or cancel pending orders before closing the shift.');
             } else {
+                app(TicketCollectionService::class)->ensureNoPending($shift);
                 $blockers = $this->blockers($shift);
                 $this->stock->require($blockers === [], __('ui.Cannot close cashier shift. Settle balances and close waiter shifts: :waiters', ['waiters' => implode('; ', array_map(fn ($b) => $b['name'].' ('.($b['open'] ? __('ui.Open') : __('ui.Closed')).', TSh '.$b['balance'].')', $blockers))]));
                 $this->stock->require(array_key_exists('actual_cash', $data) && $data['actual_cash'] !== null, __('ui.Enter actual cash before closing the cashier shift.'));

@@ -42,8 +42,8 @@ class AdministrationUiTest extends TestCase
 
     public function test_audit_friendly_diff_and_raw_redaction_never_rewrite_history(): void
     {
-        $row = $this->audit(old: ['name' => 'General', 'active' => true], new: ['name' => 'Restaurant', 'active' => true, 'pin' => 'sensitive-pin', 'nested' => ['password' => 'sensitive-password', 'apiKey' => 'sensitive-key', 'authorization' => 'Bearer sensitive-bearer']]);
-        $response = $this->get('/audit-trail')->assertOk()->assertSee('Business Unit Updated')->assertSee('View details')->assertSee('General')->assertSee('Restaurant')
+        $row = $this->audit(old: ['name' => 'Bar', 'active' => true], new: ['name' => 'Restaurant', 'active' => true, 'pin' => 'sensitive-pin', 'nested' => ['password' => 'sensitive-password', 'apiKey' => 'sensitive-key', 'authorization' => 'Bearer sensitive-bearer']]);
+        $response = $this->get('/audit-trail')->assertOk()->assertSee('Business Unit Updated')->assertSee('View details')->assertSee('Bar')->assertSee('Restaurant')
             ->assertDontSee('sensitive-pin')->assertDontSee('sensitive-password')->assertDontSee('sensitive-key')->assertDontSee('sensitive-bearer');
         $presented = app(AuditTrailService::class)->present(collect([$row]))[0];
         $this->assertNotContains('Active', array_column($presented['changes'], 'field'));

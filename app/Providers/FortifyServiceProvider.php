@@ -6,6 +6,7 @@ use App\Actions\Fortify\CreateNewUser;
 use App\Actions\Fortify\ResetUserPassword;
 use App\Http\Requests\PinLoginRequest;
 use App\Http\Responses\StaffLoginResponse;
+use App\Models\User;
 use App\Services\StaffPinService;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -16,6 +17,7 @@ use Laravel\Fortify\Contracts\LoginResponse;
 use Laravel\Fortify\Contracts\TwoFactorLoginResponse;
 use Laravel\Fortify\Fortify;
 use Laravel\Fortify\Http\Requests\LoginRequest;
+use Laravel\Passkeys\Passkeys;
 
 class FortifyServiceProvider extends ServiceProvider
 {
@@ -44,6 +46,8 @@ class FortifyServiceProvider extends ServiceProvider
      */
     private function configureActions(): void
     {
+        Passkeys::authorizeLoginUsing(fn (Request $request, User $user): bool => ! $user->company_id
+            || ($user->active && $user->company->active));
         Fortify::authenticateUsing(function (Request $request) {
             if ($request->attributes->has('nightshift_pin_user')) {
                 return $request->attributes->get('nightshift_pin_user');

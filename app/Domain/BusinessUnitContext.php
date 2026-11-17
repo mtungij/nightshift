@@ -27,7 +27,7 @@ final class BusinessUnitContext
         if ($user->hasPermission('all-business-units')) {
             return null;
         }
-        $units = DB::table('business_units')->where('company_id', $user->company_id);
+        $units = DB::table('business_units')->where('company_id', $user->company_id)->whereNull('archived_at');
         if (! $user->hasPermission('all-branches') && ! $user->isPosTerminal()) {
             $units->whereIn('branch_id', DB::table('branch_user')->where('company_id', $user->company_id)->where('user_id', $user->id)->select('branch_id'));
         }
@@ -36,13 +36,7 @@ final class BusinessUnitContext
             return array_values($units->whereIn('id', DB::table('stock_locations')->where('company_id', $user->company_id)->where('id', $user->operationalTerminalLocationId())->where('active', true)->select('business_unit_id'))->pluck('id')->map(fn ($id) => (int) $id)->values()->all());
         }
 
-        return array_values($units->where(function ($q) use ($user) {
-            $q->whereIn('id', DB::table('business_unit_user')->where('company_id', $user->company_id)->where('user_id', $user->id)->select('business_unit_id'));
-            // Compatibility for pre-unit staff creation integrations: General only.
-            if (! $user->business_units_configured) {
-                $q->orWhere('code', 'GENERAL');
-            }
-        })->pluck('id')->map(fn ($id) => (int) $id)->values()->all());
+        return array_values($units->whereIn('id', DB::table('business_unit_user')->where('company_id', $user->company_id)->where('user_id', $user->id)->select('business_unit_id'))->pluck('id')->map(fn ($id) => (int) $id)->values()->all());
     }
 
     public function can(User $user, ?int $id): bool
@@ -50,9 +44,17 @@ final class BusinessUnitContext
         if (! $id) {
             return false;
         }
-        $unit = DB::table('business_units')->where('company_id', $user->company_id)->where('id', $id)->first();
+        $unit = DB::table('business_units')->where('company_id', $user->company_id)->where('id', $id)->whereNull('archived_at')->first();
 
         return $unit && $user->canAccessBranch($unit->branch_id) && (($ids = $this->ids($user)) === null || in_array($id, $ids, true));
+    }
+
+    public function canReviewArchived(User $user, int $branch, ?int $id): bool
+    {
+        return $id && $user->hasPermission('all-business-units') && $user->hasPermission('view-staff-operations')
+            && $user->canAccessBranch($branch)
+            && DB::table('business_units')->where('company_id', $user->company_id)->where('branch_id', $branch)
+                ->where('id', $id)->whereNotNull('archived_at')->exists();
     }
 
     public function select(?int $id): void
@@ -91,6 +93,13 @@ final class BusinessUnitContext
         if ($table === 'treasury_entries' || (! in_array($table, ['business_units', 'stock_locations', 'stocks'], true) && ! in_array($table, config('business_units.records'), true))) {
             return $query;
         }
+        if (in_array($table, ['business_units', 'stock_locations'], true)) {
+            $query->whereNull($model->qualifyColumn('archived_at'));
+        }
+        if ($table === 'stocks') {
+            $query->whereNotIn($model->qualifyColumn('stock_location_id'), DB::table('stock_locations')
+                ->where('company_id', app(TenantContext::class)->companyId())->whereNotNull('archived_at')->select('id'));
+        }
         $ids = $this->ids();
         $selection = $this->selected();
         if ($selection && $table !== 'business_units') {
@@ -102,7 +111,7 @@ final class BusinessUnitContext
         if ($table === 'business_units') {
             return $query->whereIn($model->qualifyColumn('id'), $ids);
         }
-        $locations = DB::table('stock_locations')->where('company_id', app(TenantContext::class)->companyId())->where(function ($q) use ($ids) {
+        $locations = DB::table('stock_locations')->where('company_id', app(TenantContext::class)->companyId())->whereNull('archived_at')->where(function ($q) use ($ids) {
             $q->whereIn('business_unit_id', $ids)->orWhere(fn ($q) => $q->where('is_shared', true)->whereIn('id', DB::table('business_unit_location')->whereIn('business_unit_id', $ids)->select('stock_location_id')));
         })->select('id');
         if ($table === 'stock_locations') {
@@ -177,9 +186,6 @@ final class BusinessUnitContext
         $locationId = $attributes['stock_location_id'] ?? $parent->stock_location_id ?? $attributes['source_location_id'] ?? null;
         $location = $locationId ? DB::table('stock_locations')->where('company_id', $model->company_id)->where('id', $locationId)->first() : null;
         $unit = $table === 'stock_movements' && $location ? $location->business_unit_id : ($parent->business_unit_id ?? $location?->business_unit_id);
-        if (! $unit && ! $location) {
-            $unit = DB::table('business_units')->where('company_id', $model->company_id)->where('branch_id', $attributes['branch_id'] ?? 0)->where('code', 'GENERAL')->value('id');
-        }
         if ($table === 'audit_logs') {
             $values = $model->getAttribute('new_values');
             $explicit = $values['business_unit_id'] ?? ($attributes['reference_type'] === 'BusinessUnit' ? $attributes['reference_id'] : null);

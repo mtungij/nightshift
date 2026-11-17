@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Domain\OrderCollectionMode;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -24,6 +25,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property numeric-string $amount_paid
  * @property numeric-string $balance
  * @property numeric-string $credit_amount
+ * @property OrderCollectionMode $collection_mode
  * @property string $status
  * @property int $created_by
  * @property int|null $issued_by
@@ -40,11 +42,13 @@ class Order extends TenantModel
 {
     protected $table = 'orders';
 
+    protected $attributes = ['collection_mode' => OrderCollectionMode::WaiterAccount->value];
+
     protected bool $branchScoped = true;
 
     protected function casts(): array
     {
-        return [...parent::casts(), 'issued_at' => 'datetime', 'closed_at' => 'datetime'];
+        return [...parent::casts(), 'collection_mode' => OrderCollectionMode::class, 'issued_at' => 'datetime', 'closed_at' => 'datetime'];
     }
 
     /** @return HasMany<OrderItem, $this> */

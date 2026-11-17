@@ -296,6 +296,11 @@ table {
 
 <body>
 
+@isset($pdfMetadata)
+    @include('reports.pdf-header', ['metadata' => $pdfMetadata])
+@endisset
+
+
 <div class="header">
     <div class="header-left">
         <div class="brand">NIGHTSHIFT</div>
@@ -499,6 +504,20 @@ table {
         <span class="total-label">{{ $t('Opening cash') }}</span>
         <span class="total-value">{{ $report['cash']['opening'] }}</span>
     </div>
+
+    @if(!empty($report['cash']['pending_ticket_count']))
+        <div class="total-box">
+            <span class="total-label">{{ $t('Pending Ticket Collections') }} ({{ $report['cash']['pending_ticket_count'] }})</span>
+            <span class="total-value">{{ $report['cash']['pending_ticket_amount'] }}</span>
+        </div>
+    @endif
+
+    @if(!empty($report['cash']['collected_ticket_amount']) && \App\Domain\Decimal::cmp($report['cash']['collected_ticket_amount'], '0') > 0)
+        <div class="total-box">
+            <span class="total-label">{{ $t('Collected Ticket Collections') }}</span>
+            <span class="total-value">{{ $report['cash']['collected_ticket_amount'] }}</span>
+        </div>
+    @endif
 
     <div class="total-box">
         <span class="total-label">{{ $t('Expected cash') }}</span>

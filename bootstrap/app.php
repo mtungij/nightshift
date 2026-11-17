@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Middleware\RedactPin;
+use App\Http\Middleware\RequireActiveCompanyUser;
 use App\Http\Middleware\RestrictPosTerminal;
 use App\Http\Middleware\SetLocale;
 use App\Http\Middleware\TrustTraefikProxies;
@@ -22,7 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->replace(TrustProxies::class, TrustTraefikProxies::class);
         $middleware->trimStrings(except: ['pin']);
-        $middleware->appendToGroup('web', [SetLocale::class, RedactPin::class, RestrictPosTerminal::class]);
+        $middleware->appendToGroup('web', [SetLocale::class, RedactPin::class, RequireActiveCompanyUser::class, RestrictPosTerminal::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->respond(function (Response $response) {

@@ -349,7 +349,7 @@ class BusinessUnitTest extends TestCase
         app(TransactionService::class)->run(fn () => app(BusinessUnitService::class)->product(['product_id' => $this->selling->product_id, 'business_unit_id' => $this->restaurant->id, 'available' => $available, 'prices' => [['product_unit_id' => $this->selling->id, 'selling_price' => $price]]]));
     }
 
-    public function test_new_branch_does_not_create_general_and_existing_operational_context_is_retained(): void
+    public function test_new_branch_creates_no_units_and_existing_operational_context_is_retained(): void
     {
         $location = StockLocation::where('name', 'Main Counter')->firstOrFail();
         $order = Order::firstOrFail();
@@ -362,16 +362,7 @@ class BusinessUnitTest extends TestCase
 
         $branch = Branch::create(['name' => 'Second branch']);
 
-        $this->assertFalse(
-            BusinessUnit::where('branch_id', $branch->id)
-                ->where('code', 'GENERAL')
-                ->exists()
-        );
-
-        $this->assertSame(
-            0,
-            BusinessUnit::where('branch_id', $branch->id)->count()
-        );
+        $this->assertDatabaseMissing('business_units', ['branch_id' => $branch->id]);
 
         $this->assertSame(
             $locationUnit,

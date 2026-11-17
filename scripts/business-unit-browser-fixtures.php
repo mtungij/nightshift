@@ -38,6 +38,8 @@ $result = app(TenantContext::class)->run($owner, function () use ($owner, $befor
     $branch = Branch::firstOrFail();
     $suffix = strtolower(Str::random(6));
     $result = ['owner' => $owner->username, 'company_id' => $owner->company_id, 'branch_id' => $branch->id, 'legacy_before' => $before, 'legacy_cutover_unchanged' => true, 'cases' => []];
+    $result['legacy_order_contexts'] = DB::table('operational_unit_contexts')->where('company_id', $owner->company_id)
+        ->where('record_type', 'orders')->orderBy('record_id')->pluck('business_unit_id', 'record_id')->all();
     $units = [];
     foreach (['Bar', 'Restaurant'] as $name) {
         $unit = $service->save(['branch_id' => $branch->id, 'name' => $name.' '.$suffix, 'code' => strtoupper($name.'_'.$suffix), 'active' => true]);

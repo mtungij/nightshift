@@ -131,6 +131,8 @@ final class StaffVisibility
 
         return $query->whereHas('waiter.branches', fn ($q) => $q->whereIn('branches.id', StockLocation::whereIn('id', $this->counters())->select('branch_id')))->where(function ($q) use ($actor) {
             $q->where('created_by', $actor->id)->orWhere('issued_by', $actor->id)
+                ->orWhere(fn ($q) => $q->where('collection_mode', OrderCollectionMode::PaidTicket->value)
+                    ->whereIn('issued_shift_id', Shift::where('user_id', $actor->id)->where('type', 'CASHIER')->select('id')))
                 ->orWhereIn('status', ['DRAFT', 'WAITING_FOR_ISSUE', 'ISSUED', 'PARTIALLY_PAID', 'VOID_REQUESTED'])
                 ->orWhereIn('id', Payment::where('received_by', $actor->id)->select('order_id'))
                 ->orWhereIn('id', PaymentAllocation::whereIn('payment_id', Payment::where('received_by', $actor->id)->select('id'))->select('order_id'));
@@ -200,7 +202,7 @@ final class StaffVisibility
     {
         $ids = app(BusinessUnitContext::class)->ids();
         if ($ids !== null) {
-            $query->where(fn (Builder $q) => $q->whereHas('businessUnits', fn ($q) => $q->whereIn('business_units.id', $ids))->orWhere(fn (Builder $q) => $q->where('business_units_configured', false)->whereHas('branches', fn ($q) => $q->whereIn('branches.id', DB::table('business_units')->whereIn('id', $ids)->where('code', 'GENERAL')->select('branch_id')))));
+            $query->whereHas('businessUnits', fn ($q) => $q->whereIn('business_units.id', $ids));
         }
 
         return $query;
@@ -239,7 +241,14 @@ final class StaffVisibility
 
     public function canViewShift(User $user, Shift $shift): bool
     {
-        return $user->company_id === $shift->company_id && $user->canAccessBranch($shift->branch_id) && $user->canAccessBusinessUnit($shift->business_unit_id)
+        if ($user->company_id !== $shift->company_id || ! $user->canAccessBranch($shift->branch_id)) {
+            return false;
+        }
+        if ($shift->status === 'CLOSED' && app(BusinessUnitContext::class)->canReviewArchived($user, $shift->branch_id, $shift->business_unit_id)) {
+            return true;
+        }
+
+        return $user->canAccessBusinessUnit($shift->business_unit_id)
             && ($this->broad($user) || ($shift->user_id === $user->id && ($shift->type !== 'CASHIER' || $this->settlementOnly($user))));
     }
 
@@ -261,6 +270,7 @@ final class StaffVisibility
         return in_array($order->stock_location_id, $this->counters($user), true)
             && User::where('company_id', $user->company_id)->find($order->waiter_id)?->canAccessBranch($order->branch_id)
             && ($order->created_by === $user->id || $order->issued_by === $user->id
+                || ($order->collection_mode === OrderCollectionMode::PaidTicket && Shift::whereKey($order->issued_shift_id)->where('user_id', $user->id)->where('type', 'CASHIER')->exists())
                 || in_array($order->status, ['DRAFT', 'WAITING_FOR_ISSUE', 'ISSUED', 'PARTIALLY_PAID', 'VOID_REQUESTED'], true)
                 || Payment::withoutGlobalScopes()->where('company_id', $user->company_id)->where('order_id', $order->id)->where('received_by', $user->id)->exists()
                 || PaymentAllocation::withoutGlobalScopes()->where('company_id', $user->company_id)->where('branch_id', $order->branch_id)->where('order_id', $order->id)->whereIn('payment_id', Payment::withoutGlobalScopes()->where('company_id', $user->company_id)->where('received_by', $user->id)->select('id'))->exists());

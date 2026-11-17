@@ -65,6 +65,7 @@ final class CashHandoverService
             $this->owner($shift);
             $this->stock->require($shift->status === 'OPEN', __('ui.This shift is already finalized.'));
             $this->stock->require($this->active($shift) === null, __('ui.This shift already has a cash handover.'));
+            app(TicketCollectionService::class)->ensureNoPending($shift);
             $report = app(ShiftStockService::class)->report($shift->id);
             $this->stock->require($report['blockers'] === [] && $report['complete'] && $report['totals']['ledger_mismatches'] === 0 && ($report['totals']['variance_count'] === 0 || $report['approved']), __('ui.Complete shift reconciliation before requesting cash receipt.'));
             $amount = D::money($data['amount']);

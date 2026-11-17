@@ -2,6 +2,7 @@
 
 use App\Concerns\PasswordValidationRules;
 use App\Livewire\Actions\Logout;
+use App\Services\CompanyAdminService;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
 
@@ -19,7 +20,8 @@ new class extends Component {
             'password' => $this->currentPasswordRules(),
         ]);
 
-        tap(Auth::user(), $logout(...))->delete();
+        app(CompanyAdminService::class)->deleteAccount(Auth::user());
+        $logout();
 
         $this->redirect('/', navigate: true);
     }
@@ -34,6 +36,10 @@ new class extends Component {
                 {{ __('Once your account is deleted, all of its resources and data will be permanently deleted. Please enter your password to confirm you would like to permanently delete your account.') }}
             </flux:subheading>
         </div>
+
+        @error('transaction')
+            <p role="alert" class="text-red-600 dark:text-red-400">{{ $message }}</p>
+        @enderror
 
         <flux:input wire:model="password" :label="__('Password')" type="password" viewable />
 

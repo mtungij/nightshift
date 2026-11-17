@@ -68,6 +68,13 @@
 
             <div><span>{{ $t('Expected cash') }}</span><strong>{{ $report['cash']['expected'] }}</strong></div>
 
+            @if(!empty($report['cash']['pending_ticket_count']))
+                <div><span>{{ $t('Pending Ticket Collections') }} ({{ $report['cash']['pending_ticket_count'] }})</span><strong>{{ $report['cash']['pending_ticket_amount'] }}</strong></div>
+                @can('receive-payments')<a class="button" href="{{ route('ticket-collections.index') }}">{{ $t('Ticket Collection') }}</a>@endcan
+            @endif
+            @if(!empty($report['cash']['collected_ticket_amount']) && \App\Domain\Decimal::cmp($report['cash']['collected_ticket_amount'], '0') > 0)
+                <div><span>{{ $t('Collected Ticket Collections') }}</span><strong>{{ $report['cash']['collected_ticket_amount'] }}</strong></div>
+            @endif
             @if(\App\Domain\Decimal::cmp((string) $report['cash']['waiter_outstanding'], '0') !== 0)
                 <div><span>{{ $t('Waiter outstanding') }}</span><strong>{{ $report['cash']['waiter_outstanding'] }}</strong></div>
             @endif
@@ -147,7 +154,7 @@
                         : ($sw ? 'Hakuna cash ya kukabidhi.' : 'No cash to hand over.') }}</p>
                 @endif
                 <label class="form-field"><span>{{ $t('Closing notes') }}</span><textarea name="notes" maxlength="2000"></textarea></label>
-                <button class="button primary" {{ empty($report['blockers']) && $report['complete'] && (!$report['totals']['variance_count'] || $report['approved']) && !$report['totals']['ledger_mismatches'] && (!$report['custody'] || $report['custody']['destination'] !== 'TREASURY' || in_array($report['custody']['status'], ['RECEIVED','APPROVED'])) ? '' : 'disabled' }}>{{ $t('Confirm and Close Shift') }}</button>
+                <button class="button primary" {{ empty($report['blockers']) && empty($report['cash']['pending_ticket_count']) && $report['complete'] && (!$report['totals']['variance_count'] || $report['approved']) && !$report['totals']['ledger_mismatches'] && (!$report['custody'] || $report['custody']['destination'] !== 'TREASURY' || in_array($report['custody']['status'], ['RECEIVED','APPROVED'])) ? '' : 'disabled' }}>{{ $t('Confirm and Close Shift') }}</button>
             </form>
         @endif
         @if($report['status'] === 'CLOSED')<p>{{ $t('Closed by') }}: {{ $report['closed_by'] }} · {{ $report['closed_at'] }}</p><p>{{ $report['closing_notes'] }}</p><p>{{ $t('Cash variance') }}: {{ $report['cash']['difference'] }}</p>@endif

@@ -12,6 +12,7 @@ use App\Http\Controllers\OpenShiftController;
 use App\Http\Controllers\ProductConfigurationController;
 use App\Http\Controllers\ReportShiftController;
 use App\Http\Controllers\ShiftStockController;
+use App\Http\Controllers\TicketCollectionController;
 use App\Http\Controllers\WhatsAppController;
 use App\Http\Controllers\WhatsAppScheduleController;
 use App\Http\Controllers\WorkspaceShellController;
@@ -56,6 +57,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/audit-trail', [AuditTrailController::class, 'index'])->name('audit.trail');
     Route::get('/business-units', [BusinessUnitController::class, 'index']);
     Route::post('/api/business-units/{action}', [BusinessUnitController::class, 'command'])->middleware('throttle:60,1');
+    Route::middleware([RequireOperationalShift::class, 'throttle:60,1', 'can:receive-payments'])->group(function () {
+        Route::get('/ticket-collections', [TicketCollectionController::class, 'index'])->name('ticket-collections.index');
+        Route::post('/ticket-collections/{id}', [TicketCollectionController::class, 'collect'])->whereNumber('id')->name('ticket-collections.collect');
+    });
     Route::get('/cash-handovers', [CashCustodyController::class, 'handoverIndex'])->name('cash.handovers');
     Route::get('/treasury/report', [CashCustodyController::class, 'report'])->name('treasury.report');
     Route::get('/treasury', [CashCustodyController::class, 'treasury'])->name('treasury');

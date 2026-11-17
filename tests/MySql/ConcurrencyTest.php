@@ -588,10 +588,10 @@ class ConcurrencyTest extends TestCase
     public function test_concurrent_unit_assignments_are_complete_sets(): void
     {
         $unit = $this->newUnit();
-        $general = $this->counter->business_unit_id;
+        $counterUnit = $this->counter->business_unit_id;
         $user = $this->freshCashier();
         $request = ['action' => 'unit-command', 'method' => 'assign', 'user_id' => $this->owner->id];
-        $results = $this->race([[...$request, 'payload' => ['user_id' => $user->id, 'unit_ids' => [$general]]], [...$request, 'payload' => ['user_id' => $user->id, 'unit_ids' => [$unit->id]]]]);
+        $results = $this->race([[...$request, 'payload' => ['user_id' => $user->id, 'unit_ids' => [$counterUnit]]], [...$request, 'payload' => ['user_id' => $user->id, 'unit_ids' => [$unit->id]]]]);
         $this->assertSame([200, 200], array_column($results, 'code'));
         $this->assertSame(1, DB::table('business_unit_user')->where('user_id', $user->id)->count());
     }

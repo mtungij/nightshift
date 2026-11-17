@@ -32,6 +32,7 @@ export function syncStaffScopes(form, changed) {
         for (const i of units.filter((i) => i.checked).slice(1)) i.checked = false;
     if (
         ["add-user", "add-waiter"].includes(form.dataset.form) &&
+        role !== "Company Admin / Owner" &&
         permitted.length === 1 &&
         !permitted.some((i) => i.checked)
     )

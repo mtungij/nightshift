@@ -37,7 +37,7 @@
             <div class="row"><span>{{ \App\Support\UiText::get('Discount') }}</span><span class="amount">{{ \App\Support\TicketAmountFormatter::format($ticket['discount']) }}</span></div>
         @endif
         <div class="row total"><span>{{ \App\Support\UiText::get('TOTAL') }} {{ $currency }}</span><span class="amount">{{ \App\Support\TicketAmountFormatter::format($ticket['total']) }}</span></div>
-        <div class="row status"><span>{{ \App\Support\UiText::get('Status') }}</span><strong>@if($copy === 'CASHIER COPY'){{ \App\Support\UiText::get('ISSUED') }} / @endif{{ \App\Support\UiText::get($ticket['status']) }}</strong></div>
+        <div class="row status"><span>{{ \App\Support\UiText::get('Status') }}</span><strong>@if($copy === 'CASHIER COPY' && $ticket['status'] !== 'PAID'){{ \App\Support\UiText::get('ISSUED') }} / @endif{{ \App\Support\UiText::get($ticket['status']) }}</strong></div>
         @if($copy === 'WAITER COPY')
             <div class="row outstanding"><span>{{ \App\Support\UiText::get('Outstanding Balance') }}</span><strong class="amount">{{ $currency }} {{ \App\Support\TicketAmountFormatter::format($ticket['outstanding']) }}</strong></div>
         @endif

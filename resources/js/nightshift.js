@@ -204,10 +204,6 @@ if (root) {
         html`<button type="button" class="button ${type}" data-action="${action}" ${attrs}>
             ${ico ? icon(ico) : ""}${tr(label)}
         </button>`;
-    const installAppAction = () => html`<div data-pwa-install-area hidden>
-        <button type="button" class="button" data-pwa-install hidden>${tr("Install App")}</button>
-        <p class="form-help">${tr("Install Nightshift on this device for faster access.")}</p>
-    </div>`;
     const link = (label, screen) =>
         html`<button class="text-link" data-nav="${screen}">${tr(label)}${icon("arrow")}</button>`;
     const badge = (text, color = "") => html`<span class="badge ${color}">${esc(tr(text))}</span>`;
@@ -236,6 +232,9 @@ if (root) {
     let period = "Today";
     let orderPage = 1;
     let modalTrigger = null;
+    let sidebarTrigger = null;
+    const mobileNavigation = matchMedia("(max-width: 720px)");
+    const companyAdminRole = "Company Admin / Owner";
     const roles = ["Manager", "Cashier", "Waiter", "Store Keeper", "Supervisor", "Accountant"];
     const terminal = () => db.role === "POS Terminal";
     const owner = () => ["Company Admin / Owner", "Super Admin"].includes(db.role);
@@ -369,7 +368,7 @@ if (root) {
                         ${screen === id ? 'aria-current="page"' : ""}
                         data-nav="${id}"
                     >
-                        ${icon(ico)}<span>${tr(label)}</span>${id === "orders" ? html`<span class="nav-count">${branchOrders().filter((o) => !["Paid", "Voided", "Cancelled", "Returned"].includes(o.status)).length}</span>` : ""}
+                        ${icon(ico)}<span class="nav-label">${tr(label)}</span>${id === "orders" ? html`<span class="nav-count">${branchOrders().filter((o) => !["Paid", "Voided", "Cancelled", "Returned"].includes(o.status)).length}</span>` : ""}
                     </button>`
                 );
             })
@@ -416,12 +415,15 @@ if (root) {
                     </button>
                 </div>
             </aside>
+            <div class="sidebar-scrim" data-action="close-navigation" aria-hidden="true" hidden></div>
             <div class="shell">
                 <header class="topbar">
                     <button
                         class="icon-button mobile-menu"
                         data-action="menu"
-                        aria-label="Toggle navigation"
+                        aria-label="${tr("Toggle navigation")}"
+                        aria-controls="sidebar"
+                        aria-expanded="false"
                     >
                         ${icon("menu")}
                     </button>
@@ -445,35 +447,88 @@ if (root) {
                             <span class="theme-sun">${icon("sun")}</span
                             ><span class="theme-moon">${icon("moon")}</span>
                         </button>
+                        <button
+                            type="button"
+                            class="icon-button compact-search-toggle"
+                            data-action="toggle-search"
+                            aria-label="${tr("Search the workspace")}"
+                            aria-controls="global-search"
+                            aria-expanded="false"
+                            ${terminal() ? "hidden" : ""}
+                        >
+                            ${icon("search")}
+                        </button>
                         <form
                             class="global-search"
                             id="global-search"
+                            role="search"
                             ${terminal() ? "hidden" : ""}
                         >
-                            ${icon("search")}<input
+                            <input
+                                type="search"
                                 name="query"
-                                aria-label="Search the workspace"
-                                placeholder="Search anything…"
+                                aria-label="${tr("Search the workspace")}"
+                                placeholder="${tr("Search anything…")}"
                                 autocomplete="off"
-                            /><kbd>⌘ K</kbd>
+                                enterkeyhint="search"
+                            />
+                            <button class="global-search-submit" type="submit" aria-label="${tr("Search")}">${icon("search")}</button>
+                            <kbd>⌘ K</kbd>
                         </form>
                         <button
+                            type="button"
+                            class="icon-button install-app-button"
+                            data-pwa-install
+                            aria-label="${tr("Install App")}"
+                            title="${tr("Install App")}"
+                            hidden
+                        >
+                            ${icon("download")}<span class="sr-only" data-pwa-install-label>${tr("Install App")}</span>
+                        </button>
+                        <button
+                            type="button"
                             class="icon-button"
                             data-nav="notifications"
                             ${terminal() ? "hidden" : ""}
-                            aria-label="Notifications"
+                            aria-label="${tr("Notifications")}"
+                            title="${tr("Notifications")}"
                         >
                             ${icon("bell")}<span class="notification-dot"></span>
                         </button>
                         <div class="top-separator"></div>
-                        <button class="profile-button" data-action="profile">
-                            ${avatar(db.user.name)}
-                            <div>
-                                <strong>${esc(db.user.name)}</strong
-                                ><small>${esc(tr(db.role))}</small>
+                        <div class="profile-control">
+                            <button
+                                type="button"
+                                class="profile-button"
+                                id="profile-button"
+                                data-action="profile"
+                                aria-label="${tr("Your account")}"
+                                aria-haspopup="dialog"
+                                aria-expanded="false"
+                                aria-controls="workspace-profile"
+                            >
+                                ${avatar(db.user.name)}
+                                <div>
+                                    <strong>${esc(db.user.name)}</strong>
+                                    <small>${esc(tr(db.role))}</small>
+                                </div>
+                                ${icon("down")}
+                            </button>
+                            <div class="workspace-profile" id="workspace-profile" role="dialog" aria-labelledby="workspace-profile-name" inert>
+                                <div class="workspace-profile-identity">
+                                    <strong id="workspace-profile-name">${esc(db.user.name)}</strong>
+                                    <span>${esc(tr(db.role))}</span>
+                                    <span>${esc(db.company)}</span>
+                                </div>
+                                <div class="workspace-profile-actions">
+                                    ${terminal() ? "" : html`<a href="/settings/profile">${icon("shield")}${tr("Profile & security")}</a>`}
+                                    <form method="POST" action="/logout">
+                                        <input type="hidden" name="_token" value="${esc(document.querySelector('[name="csrf-token"]').content)}">
+                                        <button type="submit">${icon("arrow")}${tr("Log out")}</button>
+                                    </form>
+                                </div>
                             </div>
-                            ${icon("down")}
-                        </button>
+                        </div>
                     </div>
                 </header>
                 <main class="content page-enter" id="main">
@@ -502,7 +557,7 @@ if (root) {
                                     ${icon(ico)}${tr(label)}
                                 </button>`,
                         )
-                        .join("")}<button data-action="menu">${icon("menu")}More</button>
+                        .join("")}<button data-action="menu" aria-controls="sidebar" aria-expanded="false">${icon("menu")}${tr("More")}</button>
                 </nav>
             </div>`;
         if (workspacePage) {
@@ -516,6 +571,7 @@ if (root) {
                     active.offsetTop - nav.offsetTop - nav.clientHeight / 2,
                 );
         }
+        setNavigation(false);
         window.NightshiftPwa?.syncControls();
         if (screen === "reports" && history.state?.nightshiftReport)
             queueMicrotask(() => openReport(history.state.nightshiftReport, true));
@@ -1267,6 +1323,11 @@ if (root) {
             footer()
         );
     }
+    function ticketCollectionLink() {
+        return permitted("receive-payments")
+            ? html`<a class="button" href="/ticket-collections">${tr("Ticket Collection")}</a>`
+            : "";
+    }
     function waitersScreen() {
         const active = tab || "All waiters";
         const list = branchWaiters().filter(
@@ -1300,7 +1361,7 @@ if (root) {
                                   .join("")}
                           </select>`
                         : ""
-                }${managerial() ? btn("Add waiter", "add-waiter", "primary", "plus") : ""}`,
+                }${ticketCollectionLink()}${managerial() ? btn("Add waiter", "add-waiter", "primary", "plus") : ""}`,
             ) +
             html`<div class="kpi-grid">
                 ${kpi("Total outstanding", cashValue(branchWaiters().reduce((s, w) => s + outstanding(w), 0)), "users", "red", "", "Live shift balance", false)}${kpi("Payments Received", cashValue(db.visibility?.settlement_only ? db.payments.filter((p) => !p.is_credit).reduce((s, p) => s + Number(p.amount), 0) : branchWaiters().reduce((s, w) => s + w.paid, 0)), "wallet", "green", "", "During the current shift", false)}${kpi("Active waiters", String(branchWaiters().filter((w) => w.active).length), "user", "blue", "", "On duty right now", false)}${kpi("Settled accounts", String(branchWaiters().filter((w) => outstanding(w) === 0).length), "check", "green", "", "Ready to close shift", false)}
@@ -1610,7 +1671,7 @@ ${esc(cartNote)}</textarea>
                                 <span>Total</span><span>${money(total)}</span>
                             </div>
                             <div class="cart-actions">
-                                ${btn("Send to cashier", "send-order", "primary", "arrow", cart.length ? "" : "disabled")}${db.role === "Waiter" ? btn("Save draft", "save-draft", "", "orders", cart.length ? "" : "disabled") : ""}${btn("Clear cart", "clear-cart", "small", "", cart.length ? "" : "disabled")}
+                                ${btn(paidTicketMode() ? "Issue paid ticket" : "Send to cashier", "send-order", "primary", "arrow", cart.length ? "" : "disabled")}${db.role === "Waiter" ? btn("Save draft", "save-draft", "", "orders", cart.length ? "" : "disabled") : ""}${btn("Clear cart", "clear-cart", "small", "", cart.length ? "" : "disabled")}
                             </div>
                             <p
                                 style="font-size:12px;color:var(--muted);margin:15px 0 0;text-align:center"
@@ -2232,7 +2293,7 @@ ${esc(cartNote)}</textarea>
             heading(
                 "Payments & settlements",
                 "Every payment in one place, from cash to mobile money.",
-                `${branchSelect()}${btn("Export payments", "export-payments", "", "download")}`,
+                `${branchSelect()}${ticketCollectionLink()}${btn("Export payments", "export-payments", "", "download")}`,
             ) +
             html`<div class="kpi-grid">
                     ${kpi("Cash collected", cashValue(db.shift.cashSales), "cash", "green", "", "Current cashier shift", false)}${kpi("Mobile money", cashValue(db.shift.mobile), "phone", "blue", "", "M-Pesa, Airtel & Mixx", false)}${kpi("Card payments", cashValue(db.shift.card), "wallet", "", "", "Current cashier shift", false)}${kpi("Total transactions", String(list.length), "orders", "", "", "Today’s settlements", false)}
@@ -2600,7 +2661,7 @@ ${esc(cartNote)}</textarea>
                                     <p>${esc(tr(db.role))}</p>
                                 </div>
                             </div>
-                            ${installAppAction()}${terminal() ? "" : html`<a class="button" href="/settings/profile">Profile & security</a>`}
+                            ${terminal() ? "" : html`<a class="button" href="/settings/profile">Profile & security</a>`}
                         </div>
                     </section>
                 </div>` +
@@ -2657,6 +2718,7 @@ ${esc(cartNote)}</textarea>
             );
         const staffFilters = [
             ["", "All staff"],
+            ...(db.can_manage_company_admins ? [[companyAdminRole, companyAdminRole]] : []),
             ["Waiter", "Waiters"],
             ["Cashier", "Cashiers"],
             ["Supervisor", "Supervisors"],
@@ -2717,6 +2779,7 @@ ${esc(cartNote)}</textarea>
                             "Phone",
                             "Status",
                             "Operational PIN",
+                            ...(db.can_manage_company_admins ? ["Actions"] : []),
                         ],
                         users.map((u, i) => [
                             html`<div class="table-avatar">
@@ -2737,6 +2800,14 @@ ${esc(cartNote)}</textarea>
                                       `data-id="${u.id}"`,
                                   )
                                 : "—",
+                            ...(db.can_manage_company_admins
+                                ? [u.role === companyAdminRole
+                                      ? btn("Edit role", "staff-admin-role", "small", "", `data-id="${u.id}"`) +
+                                        btn(u.active ? "Deactivate" : "Reactivate", "staff-admin-status", "small", "", `data-id="${u.id}"`)
+                                      : roles.includes(u.role)
+                                        ? btn("Promote to admin", "staff-admin-role", "small", "", `data-id="${u.id}"`)
+                                        : "—"]
+                                : []),
                         ]),
                     )}
                 </section>` +
@@ -3061,6 +3132,10 @@ ${esc(cartNote)}</textarea>
                 ${required ? "required" : ""}
                 ${disabled ? "disabled" : ""}
         /></label>`;
+    function paidTicketMode(order) {
+        return (order?.collection_mode ??
+            db.business_units?.find((unit) => unit.id === db.business_unit_id)?.order_collection_mode) === "PAID_TICKET";
+    }
     function cartPayload() {
         return {
             branch_id: db.branch_id,
@@ -3116,7 +3191,7 @@ ${esc(cartNote)}</textarea>
                 ${pinField(!available)}
                 <p data-pin-error role="alert" class="text-red"></p>`,
             html`<button type="submit" class="button primary" ${available ? "" : "disabled"}>
-                Confirm and Send to Cashier
+                ${tr(paidTicketMode(draft) ? "Confirm and issue paid ticket" : "Confirm and Send to Cashier")}
             </button>`,
             false,
             "serving-order",
@@ -3847,6 +3922,27 @@ ${esc(cartNote)}</textarea>
                 })),
             kind,
         );
+    async function editCompanyAdmin(action, id) {
+        const staff = db.team.find((user) => user.id === id);
+        if (!staff || !db.can_manage_company_admins) return;
+        const identity = html`<p class="modal-description">${esc(staff.name)} · ${esc(tr(staff.role))}</p>`;
+        const target = html`<input type="hidden" name="id" value="${id}">`;
+        if (action === "staff-admin-status") {
+            const label = staff.active ? "Deactivate" : "Reactivate";
+            return modal(label, identity + target + html`<input type="hidden" name="active" value="${staff.active ? "0" : "1"}">`, submitButton(label), false, action);
+        }
+        const demotion = staff.role === companyAdminRole;
+        if (demotion) db.staffAssignmentOptions = await api("staff-assignment-options");
+        modal(
+            demotion ? "Edit role" : "Promote to admin",
+            identity + target + select("Role", "role", demotion ? roles : [companyAdminRole]) +
+                (demotion ? select("Branch", "branch", db.branches.map((b) => [b.id, b.name])) + staffUnitFields() + staffCounterFields("cashier") : ""),
+            submitButton("Save"),
+            false,
+            action,
+        );
+        if (demotion) syncStaffScopes(document.querySelector('[data-form="staff-admin-role"]'));
+    }
     async function newBasicForm(type) {
         if (["add-user", "add-waiter"].includes(type)) {
             try {
@@ -3880,7 +3976,7 @@ ${esc(cartNote)}</textarea>
                     select(
                         "Role",
                         "role",
-                        owner() ? [...roles, "POS Terminal"] : roles,
+                        [...roles, ...(owner() ? ["POS Terminal"] : []), ...(db.can_manage_company_admins ? [companyAdminRole] : [])],
                         "Cashier",
                     ) +
                     html`<div data-staff-credentials>${staffCredentials("Cashier")}</div>` +
@@ -3968,7 +4064,11 @@ ${esc(cartNote)}</textarea>
     root.addEventListener("submit", (e) => {
         if (e.target.id === "global-search") {
             e.preventDefault();
-            globalSearch(new FormData(e.target).get("query"));
+            const query = new FormData(e.target).get("query");
+            if (String(query).trim()) {
+                setCompactSearch(false, true);
+                globalSearch(query);
+            }
         }
     });
     function globalSearch(query) {
@@ -3990,7 +4090,59 @@ ${esc(cartNote)}</textarea>
                 ${menus.map(([id, ico, label]) => html`<button class="nav-item" data-nav="${id}">${icon(ico)}${tr(label)}${icon("arrow")}</button>`).join("")}${products.map((p) => html`<button class="nav-item" data-action="search-product" data-id="${p.id}">${icon("box")}${p.name}<span style="margin-left:auto">${money(p.price)}</span></button>`).join("")}${waiters.map((w) => html`<button class="nav-item" data-action="waiter-profile" data-id="${w.id}">${icon("users")}${esc(w.name)}<span style="margin-left:auto">${money(outstanding(w))}</span></button>`).join("")}${orders.map((o) => html`<button class="nav-item" data-action="order-detail" data-id="${o.id}">${icon("orders")}${invoice(o.id)} · ${esc(o.table)}<span style="margin-left:auto">${money(o.total)}</span></button>`).join("")}${menus.length + products.length + waiters.length + orders.length === 0 ? html`<div class="empty-state">No results found. Try a product, waiter, invoice or page name.</div>` : ""}`,
         );
     }
+    function setProfile(open, restoreFocus = false) {
+        const button = root.querySelector("#profile-button");
+        const panel = root.querySelector("#workspace-profile");
+        if (!button || !panel) return;
+        button.setAttribute("aria-expanded", String(open));
+        if (!open && restoreFocus) button.focus();
+        panel.inert = !open;
+        if (open) panel.querySelector("a, button")?.focus();
+    }
+
+    function setCompactSearch(open, restoreFocus = false) {
+        const button = root.querySelector(".compact-search-toggle");
+        const form = root.querySelector("#global-search");
+        if (!button || !form) return;
+        if (!open && restoreFocus && button.getClientRects().length) button.focus();
+        button.setAttribute("aria-expanded", String(open));
+        form.classList.toggle("is-open", open);
+        if (open) form.elements.query.focus();
+    }
+
+    function setNavigation(open, restoreFocus = false) {
+        const sidebar = root.querySelector("#sidebar");
+        if (!sidebar) return;
+        sidebar.classList.toggle("open", open);
+        sidebar.inert = mobileNavigation.matches && !open;
+        root.querySelector(".sidebar-scrim").hidden = !open;
+        for (const button of root.querySelectorAll('[data-action="menu"]')) {
+            button.setAttribute("aria-expanded", String(open));
+        }
+        if (open) {
+            const nav = sidebar.querySelector(".nav-item.active") || sidebar.querySelector(".nav-item");
+            nav?.focus();
+        } else {
+            if (restoreFocus) sidebarTrigger?.focus();
+            sidebarTrigger = null;
+        }
+    }
+
+    mobileNavigation.addEventListener("change", () => {
+        setNavigation(false);
+        setCompactSearch(false);
+    });
+
+    root.addEventListener("focusout", (event) => {
+        const control = event.target.closest(".profile-control");
+        if (control && event.relatedTarget && !control.contains(event.relatedTarget)) {
+            setProfile(false);
+        }
+    });
+
     document.addEventListener("click", async (e) => {
+        if (!e.target.closest(".profile-control")) setProfile(false);
+        if (!e.target.closest(".compact-search-toggle, #global-search")) setCompactSearch(false);
         const nav = e.target.closest("[data-nav]");
         if (nav) {
             const parent = nav.closest('[data-action="waiter-profile"]');
@@ -4013,8 +4165,16 @@ ${esc(cartNote)}</textarea>
             }
             if (action === "my-orders-page") return loadMyOrders(Number(value));
             if (action === "close-modal") return closeModal();
-            if (action === "menu")
-                return document.getElementById("sidebar").classList.toggle("open");
+            if (action === "profile") return setProfile(target.getAttribute("aria-expanded") !== "true");
+            if (action === "toggle-search") {
+                return setCompactSearch(target.getAttribute("aria-expanded") !== "true", true);
+            }
+            if (action === "close-navigation") return setNavigation(false, true);
+            if (action === "menu") {
+                const open = target.getAttribute("aria-expanded") !== "true";
+                if (open) sidebarTrigger = target;
+                return setNavigation(open, true);
+            }
             if (action === "staff-filter") {
                 staffRole = value;
                 staffLabel = target.dataset.label;
@@ -4281,25 +4441,8 @@ ${esc(cartNote)}</textarea>
             if (action === "receipt")
                 return window.open(`/api/nightshift/receipts/${id}`, "_blank", "noopener");
             if (action === "read-notifications") return perform("notifications-read", {}, target);
-            if (action === "profile")
-                return modal(
-                    "Your account",
-                    html`<div class="profile-summary">
-                            ${avatar(db.user.name)}
-                            <div>
-                                <h3>${esc(db.user.name)}</h3>
-                                <p>${esc(tr(db.role))} · ${esc(db.company)}</p>
-                            </div>
-                        </div>
-                        ${installAppAction()}${terminal() ? "" : html`<a class="button" href="/settings/profile">Profile & security</a>`}
-                        <form method="POST" action="/logout" style="margin-top:15px">
-                            <input
-                                type="hidden"
-                                name="_token"
-                                value="${document.querySelector('[name="csrf-token"]').content}"
-                            /><button class="button danger" type="submit">Log out</button>
-                        </form>`,
-                );
+            if (["staff-admin-status", "staff-admin-role"].includes(action))
+                return await editCompanyAdmin(action, Number(id));
             if (action === "reprint-tickets")
                 return perform("ticket-reprint", { id: Number(id) }, target);
             if (action === "save-print-settings")
@@ -4545,7 +4688,9 @@ ${esc(cartNote)}</textarea>
                         toast(
                             result.print_error
                                 ? tr("Order saved. Printing failed; reprint from the order.")
-                                : "Sent to cashier. Drinks issued; waiter account updated.",
+                                : result.collection_mode === "PAID_TICKET"
+                                  ? tr("Paid ticket issued.")
+                                  : "Sent to cashier. Drinks issued; waiter account updated.",
                         );
                 } catch (error) {
                     form.querySelector("[data-pin-error]").textContent = error.message;
@@ -4707,6 +4852,17 @@ ${esc(cartNote)}</textarea>
                         ? { max_active_cashiers: Number(data.max_active_cashiers) }
                         : {}),
                 };
+            } else if (type === "staff-admin-status") {
+                command = type;
+                payload = { id: Number(data.id), active: data.active === "1" };
+            } else if (type === "staff-admin-role") {
+                command = type;
+                payload = { id: Number(data.id), role: data.role };
+                if (data.branch) {
+                    payload.branch_id = Number(data.branch);
+                    payload.business_unit_ids = new FormData(form).getAll("business_unit_ids").map(Number);
+                    payload.counter_ids = new FormData(form).getAll("cashier_counter_ids").map(Number);
+                }
             } else if (type === "add-user" || type === "add-waiter") {
                 const unitSelection = [
                     ...form.querySelectorAll('[name="business_unit_ids"]:checked:not(:disabled)'),
@@ -4714,7 +4870,7 @@ ${esc(cartNote)}</textarea>
                 const counterSelection = [
                     ...form.querySelectorAll('[name="cashier_counter_ids"]:checked:not(:disabled)'),
                 ];
-                if (!unitSelection.length) return toast("Select business units");
+                if (!unitSelection.length && data.role !== companyAdminRole) return toast("Select business units");
                 if (
                     data.role === "Cashier" &&
                     unitSelection.some(
@@ -4792,12 +4948,24 @@ ${esc(cartNote)}</textarea>
     });
     document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
+            if (root.querySelector('#profile-button[aria-expanded="true"]')) {
+                setProfile(false, true);
+                return;
+            }
+            if (root.querySelector('.compact-search-toggle[aria-expanded="true"]')) {
+                setCompactSearch(false, true);
+                return;
+            }
+            if (root.querySelector("#sidebar.open")) {
+                setNavigation(false, true);
+                return;
+            }
             closeModal();
-            document.getElementById("sidebar")?.classList.remove("open");
         }
-        if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        if ((e.metaKey || e.ctrlKey) && e.key === "k" && db && !terminal()) {
             e.preventDefault();
-            document.querySelector(".global-search input")?.focus();
+            if (mobileNavigation.matches) setCompactSearch(true);
+            else root.querySelector("#global-search input")?.focus();
         }
         if (e.key === "Enter" && e.target.matches('[role="button"][data-action]')) e.target.click();
         if (e.key === "Tab" && document.querySelector(".modal")) {
@@ -5075,8 +5243,8 @@ ${esc(cartNote)}</textarea>
                 shell();
             }
             if (
-                ["order-send", "ticket-reprint"].includes(command) &&
                 result.auto_print &&
+                (["order-send", "ticket-reprint"].includes(command) || result.collection_mode === "PAID_TICKET") &&
                 result.print_url
             ) {
                 const frame = document.createElement("iframe");
@@ -5086,6 +5254,14 @@ ${esc(cartNote)}</textarea>
                 document.querySelector("#issue-ticket-frame")?.remove();
                 frame.id = "issue-ticket-frame";
                 document.body.append(frame);
+            }
+            if (payload.id === db.user.id && command === "staff-admin-status" && !payload.active) {
+                document.querySelector('#workspace-profile form[action="/logout"]').requestSubmit();
+                return result;
+            }
+            if (payload.id === db.user.id && command === "staff-admin-role") {
+                location.href = "/dashboard";
+                return result;
             }
             if (command === "catalog-user") {
                 staffRole = payload.role;
@@ -5141,6 +5317,7 @@ ${esc(cartNote)}</textarea>
                       ? tr("No ticket copies are enabled.")
                       : command === "catalog-user"
                         ? tr(":role added successfully.", { role: tr(payload.role) })
+                        : command.startsWith("staff-admin-") ? "Admin access updated."
                         : "Saved. Stock, cash and ledger records are up to date.",
             );
             return result;

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\BusinessUnitContext;
+use App\Domain\OrderCollectionMode;
 use App\Domain\StaffVisibility;
 use App\Domain\TenantContext;
 use App\Models\Branch;
@@ -20,6 +21,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\Rule;
 
 final class BusinessUnitController extends Controller
 {
@@ -71,7 +73,7 @@ final class BusinessUnitController extends Controller
         $id = ['required', 'integer', 'min:1'];
         $ids = ['required', 'array', 'min:1', 'max:100'];
         $rules = match ($action) {
-            'save' => ['max_active_cashiers' => ['sometimes', 'integer', 'min:1', 'max:65535'], 'advanced_locations_enabled' => ['sometimes', 'boolean'], 'id' => ['nullable', 'integer', 'min:1'], 'branch_id' => $id, 'name' => ['required', 'string', 'max:100'], 'code' => ['required', 'string', 'max:30', 'regex:/^[A-Z0-9_-]+$/D'], 'active' => ['required', 'boolean']],
+            'save' => ['order_collection_mode' => ['sometimes', Rule::enum(OrderCollectionMode::class)], 'max_active_cashiers' => ['sometimes', 'integer', 'min:1', 'max:65535'], 'advanced_locations_enabled' => ['sometimes', 'boolean'], 'id' => ['nullable', 'integer', 'min:1'], 'branch_id' => $id, 'name' => ['required', 'string', 'max:100'], 'code' => ['required', 'string', 'max:30', 'regex:/^[A-Z0-9_-]+$/D'], 'active' => ['required', 'boolean']],
             'adopt-default' => ['id' => $id, 'stock_location_id' => $id],
             'cutover' => ['source_location_id' => $id, 'destination_business_unit_id' => $id, 'notes' => ['required', 'string', 'min:8', 'max:2000'], 'items' => ['required', 'array', 'min:1', 'max:100'], 'items.*.product_unit_id' => $id, 'items.*.quantity' => ['required', 'string', 'regex:/^\d{1,10}(\.\d{1,6})?$/D']],
             'location' => ['id' => $id, 'is_shared' => ['required', 'boolean'], 'unit_ids' => $ids, 'unit_ids.*' => [...$id, 'distinct']],

@@ -71,7 +71,7 @@ class ProductAvailabilityTest extends TestCase
         return app(CatalogService::class)->product($this->payload([$this->setting($this->restaurant, true, '2500')]));
     }
 
-    public function test_explicit_restaurant_product_has_no_implicit_general_or_bar_and_zero_stock_is_still_available(): void
+    public function test_explicit_restaurant_product_has_no_implicit_bar_and_zero_stock_is_still_available(): void
     {
         $p = $this->createMeal();
         $service = app(BusinessUnitService::class);
@@ -108,13 +108,11 @@ class ProductAvailabilityTest extends TestCase
         $this->assertSame('3000.00', $row['default_price']);
     }
 
-    public function test_availability_cutover_is_idempotent_without_creating_general_or_changing_explicit_assignments(): void
+    public function test_retirement_is_idempotent_and_preserves_explicit_product_assignments(): void
     {
         $p = $this->createMeal();
 
-        $this->assertFalse(
-            BusinessUnit::where('code', 'GENERAL')->exists()
-        );
+        $unitIds = DB::table('business_units')->orderBy('id')->pluck('id')->all();
 
         $before = DB::table('business_unit_products')
             ->whereIn('product_id', [$this->master->id, $p->id])
@@ -129,7 +127,7 @@ class ProductAvailabilityTest extends TestCase
             ->all();
 
         $migration = require database_path(
-            'migrations/2026_11_11_000005_make_product_availability_explicit.php'
+            'migrations/2026_11_18_000001_retire_legacy_business_units.php'
         );
 
         $migration->up();
@@ -148,7 +146,7 @@ class ProductAvailabilityTest extends TestCase
             ->all();
 
         $this->assertSame($before, $after);
-        $this->assertFalse(BusinessUnit::where('code', 'GENERAL')->exists());
+        $this->assertSame($unitIds, DB::table('business_units')->orderBy('id')->pluck('id')->all());
         $this->assertTrue(
             app(BusinessUnitService::class)->available($p->id, $this->restaurant->id)
         );

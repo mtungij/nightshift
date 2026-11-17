@@ -13,10 +13,10 @@ $f = json_decode(file_get_contents('/tmp/nightshift-business-unit-fixtures.json'
 $r = json_decode(file_get_contents('/tmp/nightshift-business-unit-browser/result.json'), true, 512, JSON_THROW_ON_ERROR);
 $company = $f['company_id'];
 $orders = DB::table('orders')->where('company_id', $company)->whereIn('id', $r['issued'])->get();
-$general = DB::table('business_units')->where('company_id', $company)->where('branch_id', $f['branch_id'])->where('code', 'GENERAL')->value('id');
-$legacy = DB::table('orders')->where('company_id', $company)->orderBy('id')->limit($f['legacy_before']['orders'])->pluck('id');
 $checks = ['legacy_cutover_unchanged' => $f['legacy_cutover_unchanged'], 'two_paid_orders' => $orders->count() === 2 && $orders->every(fn ($o) => $o->status === 'PAID'), 'sales_total' => bccomp((string) $orders->sum('total'), '4500', 2) === 0, 'payments_total' => bccomp((string) DB::table('payments')->where('company_id', $company)->sum('amount'), bcadd($f['legacy_before']['payment_total'], '4500', 2), 2) === 0, 'treasury_unchanged' => DB::table('treasury_entries')->count() === $f['legacy_before']['treasury'], 'single_product_master' => DB::table('products')->where('id', $f['product_id'])->count() === 1];
-$checks['legacy_orders_remain_general'] = DB::table('operational_unit_contexts')->where('company_id', $company)->where('record_type', 'orders')->whereIn('record_id', $legacy)->where('business_unit_id', $general)->count() === $legacy->count();
+$checks['legacy_order_contexts_preserved'] = DB::table('operational_unit_contexts')->where('company_id', $company)
+    ->where('record_type', 'orders')->whereIn('record_id', array_keys($f['legacy_order_contexts']))
+    ->orderBy('record_id')->pluck('business_unit_id', 'record_id')->all() === $f['legacy_order_contexts'];
 foreach ($f['cases'] as $kind => $case) {
     $order = $orders->firstWhere('id', $r['issued'][$kind]);
     $context = DB::table('operational_unit_contexts')->where('company_id', $company)->where('record_type', 'orders')->where('record_id', $order->id)->first();
