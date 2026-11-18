@@ -527,3 +527,27 @@ select:focus[data-flux-control] {
 .searchable-select-empty {
     color: var(--muted);
 }
+
+.receipt-stock-preview {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel2);
+}
+.receipt-stock-preview dt {
+    color: var(--muted);
+    font-size: 12px;
+}
+.receipt-stock-preview dd {
+    margin: 3px 0 0;
+    overflow-wrap: anywhere;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+.receipt-stock-preview [data-receipt-projected] {
+    color: var(--amber);
+}

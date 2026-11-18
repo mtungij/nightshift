@@ -1,6 +1,8 @@
 <?php
 
 return [
+    'receipt.current_stock' => 'Current stock',
+    'After receipt' => 'After receipt',
     'Search product…' => 'Search product…',
     'Search supplier…' => 'Search supplier…',
     'Search Business Unit…' => 'Search Business Unit…',

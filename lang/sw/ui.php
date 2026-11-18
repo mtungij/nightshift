@@ -1,6 +1,8 @@
 <?php
 
 return [
+    'receipt.current_stock' => 'Stock iliyopo',
+    'After receipt' => 'Stock baada ya kupokea',
     'Search product…' => 'Tafuta bidhaa…',
     'Search supplier…' => 'Tafuta msambazaji…',
     'Search Business Unit…' => 'Tafuta kitengo cha biashara…',

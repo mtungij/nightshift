@@ -7,6 +7,7 @@ import { mountProductAvailability, productAvailabilityPayload } from "./product-
 import { downloadPdf } from "./report-pdf.js";
 import { scopePicker, syncStaffScopes } from "./staff-scopes.js";
 import { quantity } from "./quantity.js";
+import { receiptStockPreview } from "./receipt-stock.js";
 import { refreshSearchableSelect } from "./searchable-select.js";
 import { t as tr, html } from "./localization.js";
 
@@ -3499,6 +3500,10 @@ ${esc(cartNote)}</textarea>
                         "supplier",
                         db.suppliers.map((s) => [s.id, s.name, s.contact]),
                     )}${input("Supplier invoice number (optional)", "reference", "text", "", false)}${contextSelect("Receiving location", "location", db.location_id)}${input("Receipt date", "date", "date", db.date)}${common}${input(`Cost per selected unit (${currencyLabel()})`, "cost", "number", 0)}
+                    <dl class="receipt-stock-preview full" data-receipt-stock aria-live="polite">
+                        <div><dt>${tr("receipt.current_stock")}</dt><dd data-receipt-current>—</dd></div>
+                        <div><dt>After receipt</dt><dd data-receipt-projected>—</dd></div>
+                    </dl>
                 </div>`,
                 submitButton("Confirm receipt"),
                 false,
@@ -3540,11 +3545,24 @@ ${esc(cartNote)}</textarea>
             helper.className = "form-help";
             helper.dataset.receivingContext = "";
             form.querySelector(".modal-body").prepend(helper);
+            if (type === "grn") {
+                form.elements.quantity.addEventListener("input", () => updateReceiptStock(form));
+                form.elements.unit.addEventListener("change", () => updateReceiptStock(form));
+            }
             await updateStockProducts(form, type);
         }
     }
     function stockProduct(form, id) {
         return form.stockProducts?.find((p) => p.id === Number(id));
+    }
+    function updateReceiptStock(form) {
+        const summary = form.querySelector("[data-receipt-stock]");
+        if (!summary) return;
+        const { product, unit, quantity } = form.elements;
+        const preview = receiptStockPreview(stockProduct(form, product.value), unit.value, quantity.value);
+        const display = (value) => value == null ? "—" : `${value} ${tr(preview.baseUnit)}`;
+        summary.querySelector("[data-receipt-current]").textContent = display(preview?.current);
+        summary.querySelector("[data-receipt-projected]").textContent = display(preview?.projected);
     }
     function updateStockUnit(form) {
         const p = stockProduct(form, form.elements.product.value),
@@ -3554,6 +3572,7 @@ ${esc(cartNote)}</textarea>
             .join("");
         select.disabled = !select.options.length;
         refreshSearchableSelect(select);
+        updateReceiptStock(form);
     }
     async function updateStockProducts(form, type) {
         const location =

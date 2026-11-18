@@ -8,10 +8,12 @@ use App\Models\Branch;
 use App\Models\BusinessUnit;
 use App\Models\Permission;
 use App\Models\Product;
+use App\Models\ProductUnit;
 use App\Models\Role;
 use App\Models\Stock;
 use App\Models\StockLocation;
 use App\Models\Supplier;
+use App\Models\Unit;
 use App\Models\User;
 use App\Services\BusinessUnitService;
 use App\Services\CatalogService;
@@ -271,5 +273,53 @@ class ProductAvailabilityTest extends TestCase
         $this->assertDatabaseHas('stock_movements', ['product_id' => $p->id, 'stock_location_id' => $this->counter->id, 'quantity' => '2.000000', 'movement_type' => 'GRN']);
         $this->assertSame($payments, DB::table('payments')->count());
         $this->assertSame($orders, DB::table('orders')->count());
+    }
+
+    public function test_receipt_stock_preview_reads_exact_location_and_uses_the_posted_balance(): void
+    {
+        $product = app(CatalogService::class)->product($this->payload([$this->setting($this->bar), $this->setting($this->restaurant)]));
+        $crate = ProductUnit::create(['product_id' => $product->id, 'unit_id' => Unit::where('name', 'Crate')->firstOrFail()->id, 'conversion_quantity' => '24', 'selling_price' => '3000']);
+        $barLocation = $this->bar->default_stock_location_id;
+        $otherBarLocation = StockLocation::where('business_unit_id', $this->bar->id)
+            ->where('active', true)->where('id', '!=', $barLocation)->firstOrFail();
+        foreach ([[$barLocation, '24'], [$otherBarLocation->id, '99'], [$this->counter->id, '3.125']] as [$id, $quantity]) {
+            Stock::create(['branch_id' => $this->bar->branch_id, 'stock_location_id' => $id, 'product_id' => $product->id, 'quantity' => $quantity]);
+        }
+        $preview = fn (string $query) => collect($this->getJson('/api/nightshift/location-products?purpose=receive&'.$query)->assertOk()->json('products'))->firstWhere('id', $product->id);
+
+        $bar = $preview('business_unit_id='.$this->bar->id);
+        $this->assertSame('24.000000', $bar['current_stock']);
+        $this->assertSame($product->baseUnit->name, $bar['base_unit']);
+        $this->assertContains(['Crate', '24.000000', '3000.00', $crate->id], $bar['units']);
+        $this->assertSame('99.000000', $preview('stock_location_id='.$otherBarLocation->id)['current_stock']);
+        $this->assertSame('3.125000', $preview('stock_location_id='.$this->counter->id)['current_stock']);
+        $this->assertSame('0.000000', $preview('business_unit_id='.$this->restaurant->id)['current_stock']);
+
+        $this->postJson('/api/nightshift/commands/grn', [
+            'idempotency_key' => (string) Str::uuid(), 'business_unit_id' => $this->bar->id,
+            'supplier_id' => Supplier::firstOrFail()->id, 'received_on' => '2026-11-11',
+            'items' => [['product_unit_id' => $crate->id, 'quantity' => '2', 'unit_cost' => '1000']],
+            'projected_balance' => '999999',
+        ])->assertOk();
+        $this->assertSame('72.000000', $preview('business_unit_id='.$this->bar->id)['current_stock']);
+        $this->assertDatabaseHas('stock_movements', ['stock_location_id' => $barLocation, 'product_id' => $product->id, 'quantity' => '48.000000', 'movement_type' => 'GRN']);
+    }
+
+    public function test_receipt_stock_preview_rejects_foreign_locations_and_unassigned_units(): void
+    {
+        $viewer = User::factory()->create();
+        $preview = '/api/nightshift/location-products?purpose=receive&';
+        $this->actingAs($viewer)->getJson($preview.'stock_location_id='.$this->bar->default_stock_location_id)->assertNotFound();
+        $this->getJson($preview.'business_unit_id='.$this->bar->id)->assertNotFound();
+
+        $role = Role::create(['name' => 'Scoped stock receiver']);
+        $role->permissions()->attach(Permission::where('name', 'receive-stock')->firstOrFail());
+        $receiver = User::factory()->create(['company_id' => $this->owner->company_id, 'role_id' => $role->id, 'business_units_configured' => true]);
+        $receiver->branches()->attach($this->bar->branch_id, ['company_id' => $receiver->company_id]);
+        $receiver->businessUnits()->attach($this->bar->id, ['company_id' => $receiver->company_id]);
+        $this->actingAs($receiver)->getJson($preview.'business_unit_id='.$this->bar->id)->assertOk()
+            ->assertJsonStructure(['products' => [['current_stock', 'base_unit']]]);
+        $this->getJson($preview.'business_unit_id='.$this->restaurant->id)->assertNotFound();
+        $this->getJson($preview.'stock_location_id='.$this->counter->id)->assertNotFound();
     }
 }

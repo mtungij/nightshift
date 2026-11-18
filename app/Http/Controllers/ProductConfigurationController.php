@@ -53,8 +53,18 @@ final class ProductConfigurationController extends Controller
             }
         });
 
+        $receiving = $data['purpose'] === 'receive';
+        if ($receiving) {
+            $query->with('baseUnit:id,name')->addSelect([
+                'receipt_stock_quantity' => Stock::select('quantity')->where('stock_location_id', $location->id)
+                    ->whereColumn('stocks.product_id', 'products.id'),
+            ])->withCasts(['receipt_stock_quantity' => 'decimal:6']);
+        }
+
         return response()->json(['location' => ['id' => $location->id, 'name' => $location->name, 'is_shared' => (bool) $location->is_shared, 'business_unit' => $location->business_unit_id ? BusinessUnit::find($location->business_unit_id)?->name : null],
-            'products' => $query->with('sellingUnits.unit')->orderBy('name')->get()->map(fn ($p) => ['id' => $p->id, 'name' => $p->name, 'cost' => $p->purchase_cost, 'units' => $p->sellingUnits->map(fn ($u) => [$u->unit->name, $u->conversion_quantity, $u->selling_price, $u->id])->all()])->all(),
+            'products' => $query->with('sellingUnits.unit')->orderBy('name')->get()->map(fn ($p) => ['id' => $p->id, 'name' => $p->name, 'cost' => $p->purchase_cost, 'units' => $p->sellingUnits->map(fn ($u) => [$u->unit->name, $u->conversion_quantity, $u->selling_price, $u->id])->all(),
+                ...($receiving ? ['current_stock' => $p->getAttribute('receipt_stock_quantity') ?? '0.000000', 'base_unit' => $p->baseUnit->name] : []),
+            ])->all(),
         ])->header('Cache-Control', 'private, no-store');
     }
 }
