@@ -3,6 +3,9 @@ import "./pwa.js";
 import "./whatsapp.js";
 import "./shift-stock.js";
 import "./cash-custody.js";
+import { mountSearchableSelects } from "./searchable-select.js";
+
+mountSearchableSelects(document.body);
 
 // FormData captures the submitted credential before clearing the field, so
 // neither a completed form nor the back/forward cache retains the entered PIN.

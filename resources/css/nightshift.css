@@ -150,9 +150,10 @@ html.dark .nightshift {
     width: 14px;
 }
 .nav-scroll {
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
     flex: 1;
-    padding: 0 13px;
+    padding: 0 13px 12px;
     scrollbar-width: thin;
     scrollbar-color: #30333b transparent;
 }
@@ -217,27 +218,6 @@ html.dark .nightshift {
 .nav-item .chevron {
     margin-left: auto;
     width: 13px;
-}
-.sidebar-foot {
-    padding: 16px;
-    border-top: 1px solid var(--line);
-    margin-top: 15px;
-}
-.shift-live {
-    border: 1px solid #67c59c26;
-    background: #67c59c07;
-    border-radius: 7px;
-    padding: 10px 12px;
-    font-size: 12px;
-}
-.shift-live .dot {
-    margin-right: 7px;
-}
-.shift-live small {
-    display: block;
-    color: var(--muted);
-    margin: 4px 0 0 15px;
-    font-size: 12px;
 }
 .dot {
     width: 6px;
@@ -4317,6 +4297,9 @@ body > .language-switch {
     min-height: 0;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
+}
+.nightshift .sidebar .nav-item {
+    min-height: 44px;
 }
 .nightshift .nav-label {
     min-width: 0;

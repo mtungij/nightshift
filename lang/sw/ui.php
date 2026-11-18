@@ -1,6 +1,15 @@
 <?php
 
 return [
+    'Search product…' => 'Tafuta bidhaa…',
+    'Search supplier…' => 'Tafuta msambazaji…',
+    'Search Business Unit…' => 'Tafuta kitengo cha biashara…',
+    'Search stock location…' => 'Tafuta eneo la stock…',
+    'Search branch…' => 'Tafuta tawi…',
+    'Search staff…' => 'Tafuta mfanyakazi…',
+    'Search category…' => 'Tafuta kundi…',
+    'Search table…' => 'Tafuta meza…',
+    'No matching options' => 'Hakuna kinacholingana',
     'Suggested images' => 'Picha Zinazopendekezwa',
     'Suggested for :category' => 'Picha za :category',
     'Choose custom image' => 'Chagua picha yako',

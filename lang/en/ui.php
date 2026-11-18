@@ -1,6 +1,15 @@
 <?php
 
 return [
+    'Search product…' => 'Search product…',
+    'Search supplier…' => 'Search supplier…',
+    'Search Business Unit…' => 'Search Business Unit…',
+    'Search stock location…' => 'Search stock location…',
+    'Search branch…' => 'Search branch…',
+    'Search staff…' => 'Search staff…',
+    'Search category…' => 'Search category…',
+    'Search table…' => 'Search table…',
+    'No matching options' => 'No matching options',
     'Suggested images' => 'Suggested images',
     'Suggested for :category' => 'Suggested for :category',
     'Choose custom image' => 'Choose custom image',

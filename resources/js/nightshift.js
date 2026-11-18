@@ -7,6 +7,7 @@ import { mountProductAvailability, productAvailabilityPayload } from "./product-
 import { downloadPdf } from "./report-pdf.js";
 import { scopePicker, syncStaffScopes } from "./staff-scopes.js";
 import { quantity } from "./quantity.js";
+import { refreshSearchableSelect } from "./searchable-select.js";
 import { t as tr, html } from "./localization.js";
 
 const root = document.getElementById("app");
@@ -347,6 +348,7 @@ if (root) {
             .join("");
     }
     function shell() {
+        const sidebarScroll = root.querySelector(".nav-scroll")?.scrollTop ?? 0;
         if (
             (screen === "shift-stock" && !allowed("shifts")) ||
             (screen !== "shift-stock" && !allowed(screen) && screen !== "profile")
@@ -374,18 +376,6 @@ if (root) {
                     ${icon("down")}
                 </div>
                 <nav class="nav-scroll" aria-label="Main navigation">${navigation()}</nav>
-                <div class="sidebar-foot" ${terminal() ? "hidden" : ""}>
-                    <div class="shift-live">
-                        <span class="dot" style="${db.shift.active ? "" : "background:#888"}"></span
-                        >${tr(db.shift.active ? "Current shift is live" : "Shift is closed")}<small
-                            >${esc(db.branch)} ·
-                            ${db.shift.active ? db.shifts.find((s) => s.id === db.shift.id)?.opened_at?.slice(11, 16) || "Open" : "Ready for a new shift"}</small
-                        >
-                    </div>
-                    <button class="nav-item" data-action="help">
-                        ${icon("help")}Help & getting started${icon("chevron", "chevron")}
-                    </button>
-                </div>
             </aside>
             <div class="sidebar-scrim" data-action="close-navigation" aria-hidden="true" hidden></div>
             <div class="shell">
@@ -542,6 +532,16 @@ if (root) {
                     0,
                     active.offsetTop - nav.offsetTop - nav.clientHeight / 2,
                 );
+        } else if (!mobileNavigation.matches) {
+            const nav = root.querySelector(".nav-scroll");
+            const active = nav.querySelector(".nav-item.active");
+            nav.scrollTop = sidebarScroll;
+            if (active) {
+                const menu = nav.getBoundingClientRect();
+                const item = active.getBoundingClientRect();
+                if (item.top < menu.top) nav.scrollTop += item.top - menu.top;
+                else if (item.bottom > menu.bottom) nav.scrollTop += item.bottom - menu.bottom;
+            }
         }
         setNavigation(false);
         window.NightshiftPwa?.syncControls();
@@ -1749,6 +1749,7 @@ ${esc(cartNote)}</textarea>
                                 : label;
                         return html`<option
                             value="${esc(val)}"
+                            ${Array.isArray(o) && o[2] ? `data-search-text="${esc(o[2])}"` : ""}
                             ${String(val) === String(selected) ? "selected" : ""}
                         >
                             ${esc(display)}
@@ -3477,7 +3478,7 @@ ${esc(cartNote)}</textarea>
         const locations = db.locations.map((l) => [l.id, l.name]);
         const units = (db.pos_unit_options || db.business_units)
             .filter((u) => u.active && (!db.branch_id || u.branch_id === db.branch_id))
-            .map((u) => [u.id, u.name]);
+            .map((u) => [u.id, u.name, db.branches.find((b) => b.id === u.branch_id)?.name]);
         const contextSelect = (label, name, selected) =>
             select(
                 simple ? "Business Unit" : label,
@@ -3485,11 +3486,10 @@ ${esc(cartNote)}</textarea>
                 simple ? units : locations,
                 simple ? db.business_unit_id : selected,
             );
-        const selectedProduct = db.products[0];
         const common =
-            select("Product", "product", productOptions()) +
+            select("Product", "product", []) +
             input("Quantity", "quantity", "number", 1) +
-            select("Unit", "unit", selectedProduct?.units.map((u) => u[0]) || []);
+            select("Unit", "unit", []);
         if (type === "grn")
             modal(
                 "Receive goods",
@@ -3497,7 +3497,7 @@ ${esc(cartNote)}</textarea>
                     ${select(
                         "Supplier",
                         "supplier",
-                        db.suppliers.map((s) => [s.id, s.name]),
+                        db.suppliers.map((s) => [s.id, s.name, s.contact]),
                     )}${input("Supplier invoice number (optional)", "reference", "text", "", false)}${contextSelect("Receiving location", "location", db.location_id)}${input("Receipt date", "date", "date", db.date)}${common}${input(`Cost per selected unit (${currencyLabel()})`, "cost", "number", 0)}
                 </div>`,
                 submitButton("Confirm receipt"),
@@ -3552,13 +3552,24 @@ ${esc(cartNote)}</textarea>
         select.innerHTML = (p?.units || [])
             .map((u) => html`<option value="${esc(u[0])}">${esc(u[0])}</option>`)
             .join("");
+        select.disabled = !select.options.length;
+        refreshSearchableSelect(select);
     }
     async function updateStockProducts(form, type) {
         const location =
             type === "transfer" ? form.elements.from.value : form.elements.location.value;
         const sequence = (form.stockSequence || 0) + 1;
+        const products = form.elements.product;
+        const current = products.value;
         form.stockSequence = sequence;
         form.stockLoading = true;
+        form.stockProducts = [];
+        products.replaceChildren();
+        products.disabled = true;
+        refreshSearchableSelect(products);
+        updateStockUnit(form);
+        const receivingContext = form.querySelector("[data-receiving-context]");
+        receivingContext.textContent = tr("Wait for the product list to finish loading.");
         const submit = form.querySelector("[type=submit]");
         submit.disabled = true;
         try {
@@ -3570,25 +3581,29 @@ ${esc(cartNote)}</textarea>
                         purpose: type === "grn" ? "receive" : type,
                     }),
             );
-            if (form.stockSequence !== sequence) return;
+            if (form.stockSequence !== sequence || !form.isConnected) return;
             form.stockProducts = data.products;
-            const current = form.elements.product.value;
-            form.elements.product.innerHTML = data.products
+            products.innerHTML = data.products
                 .map((p) => html`<option value="${p.id}">${esc(p.name)}</option>`)
                 .join("");
             if (data.products.some((p) => String(p.id) === current))
-                form.elements.product.value = current;
+                products.value = current;
+            products.disabled = !data.products.length;
+            refreshSearchableSelect(products);
             updateStockUnit(form);
-            form.querySelector("[data-receiving-context]").textContent = data.location.is_shared
+            receivingContext.textContent = data.location.is_shared
                 ? tr("Shared across Business Units")
                 : tr("Business Unit") + ": " + (data.location.business_unit || "");
             if (!data.products.length)
-                form.querySelector("[data-receiving-context]").textContent +=
+                receivingContext.textContent +=
                     " · " + tr("No products are available at this location.");
             form.stockLoading = false;
             submit.disabled = !data.products.length;
         } catch (error) {
-            toast(error.message);
+            if (form.stockSequence === sequence && form.isConnected) {
+                receivingContext.textContent = error.message;
+                toast(error.message);
+            }
         }
     }
     let productEditorMaster = null;
@@ -4969,7 +4984,7 @@ ${esc(cartNote)}</textarea>
         if (e.key === "Tab" && document.querySelector(".modal")) {
             const elements = [
                 ...document.querySelectorAll(
-                    '.modal button:not(:disabled),.modal input:not([type="hidden"]):not(:disabled),.modal select:not(:disabled),.modal textarea:not(:disabled)',
+                    '.modal button:not(:disabled),.modal input:not([type="hidden"]):not(:disabled),.modal select:not(.searchable-select-native):not(:disabled),.modal textarea:not(:disabled)',
                 ),
             ];
             const first = elements[0];
