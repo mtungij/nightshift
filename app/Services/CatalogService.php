@@ -17,11 +17,10 @@ use App\Models\Supplier;
 use App\Models\Unit;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use Throwable;
 
 final class CatalogService
 {
@@ -34,67 +33,65 @@ final class CatalogService
     {
         Gate::authorize('manage-products');
 
-        $imagePath = null;
-        try {
+        return $this->tx->run(function () use ($data) {
+            $category = Category::whereKey($data['category_id'])->firstOrFail();
+            $base = Unit::whereKey($data['base_unit_id'])->firstOrFail();
+            $p = isset($data['id']) ? Product::whereKey($data['id'])->firstOrFail() : new Product;
+            $creating = ! $p->exists;
+            $old = $p->exists ? $p->only(['name', 'sku', 'purchase_cost', 'minimum_stock']) : [];
+            $sku = trim((string) ($data['sku'] ?? ''));
+            if ($sku === '') {
+                $sku = $p->exists ? $p->sku : 'NS-'.strtoupper((string) Str::ulid());
+                while (! $p->exists && Product::where('sku', $sku)->exists()) {
+                    $sku = 'NS-'.strtoupper((string) Str::ulid());
+                }
+            }
+            $this->stock->require(! Product::where('sku', $sku)->when($p->exists, fn ($q) => $q->where('id', '!=', $p->id))->exists(), 'SKU already exists.');
+            $p->fill(['name' => $data['name'], 'sku' => $sku, 'barcode' => $data['barcode'] ?? null, 'brand' => array_key_exists('brand', $data) ? $data['brand'] : $p->brand, 'category_id' => $category->id, 'base_unit_id' => $base->id, 'purchase_cost' => D::money($data['purchase_cost']), 'minimum_stock' => D::quantity($data['minimum_stock']), 'active' => $data['active'] ?? true, 'image_url' => array_key_exists('image_url', $data) ? $data['image_url'] : $p->image_url]);
+            $p->save();
+            $oldPrices = [];
+            foreach ($data['units'] as $line) {
+                $unit = Unit::whereKey($line['unit_id'])->firstOrFail();
+                $conversion = D::quantity($line['conversion_quantity']);
+                $price = D::money($line['selling_price']);
+                $this->stock->require(D::cmp($conversion, '0') > 0 && D::cmp($price, '0') >= 0, 'Invalid unit conversion or price.');
+                $u = ProductUnit::firstOrNew(['product_id' => $p->id, 'unit_id' => $unit->id]);
+                $oldPrices[$unit->name] = $u->selling_price;
+                $u->fill(['conversion_quantity' => $conversion, 'selling_price' => $price]);
+                $u->save();
+            }
+            if (array_key_exists('business_units', $data)) {
+                $availableUnits = collect($data['business_units'])
+                    ->filter(fn ($row) => (bool) ($row['available'] ?? false));
+
+                $this->stock->require(
+                    $availableUnits->isNotEmpty(),
+                    __('ui.Choose at least one Business Unit for this product.')
+                );
+
+                app(BusinessUnitService::class)->configureProduct($p, $data['business_units'], $creating);
+            }
+            $images = app(ProductImageService::class);
+            $previous = $p->image_path;
+            $imageChange = null;
             if (($data['image'] ?? null) instanceof UploadedFile) {
-                $imagePath = $data['image']->store('product-images/'.app(TenantContext::class)->companyId(), 'local');
-                if ($imagePath === false) {
-                    throw new \RuntimeException('Product image could not be stored.');
-                }
+                $path = $images->store($p->company_id, $data['image']);
+                DB::afterRollBack(fn () => $images->delete($p->company_id, $path));
+                $p->update(['image_path' => $path]);
+                $imageChange = $previous ? 'replaced' : 'added';
+            } elseif (($data['remove_image'] ?? false) && $previous) {
+                $p->update(['image_path' => null]);
+                $imageChange = 'removed';
             }
-
-            return $this->tx->run(function () use ($data, $imagePath) {
-                $category = Category::whereKey($data['category_id'])->firstOrFail();
-                $base = Unit::whereKey($data['base_unit_id'])->firstOrFail();
-                $p = isset($data['id']) ? Product::whereKey($data['id'])->firstOrFail() : new Product;
-                $creating = ! $p->exists;
-                $old = $p->exists ? $p->only(['name', 'sku', 'purchase_cost', 'minimum_stock']) : [];
-                $sku = trim((string) ($data['sku'] ?? ''));
-                if ($sku === '') {
-                    $sku = $p->exists ? $p->sku : 'NS-'.strtoupper((string) Str::ulid());
-                    while (! $p->exists && Product::where('sku', $sku)->exists()) {
-                        $sku = 'NS-'.strtoupper((string) Str::ulid());
-                    }
-                }
-                $this->stock->require(! Product::where('sku', $sku)->when($p->exists, fn ($q) => $q->where('id', '!=', $p->id))->exists(), 'SKU already exists.');
-                $p->fill(['name' => $data['name'], 'sku' => $sku, 'barcode' => $data['barcode'] ?? null, 'brand' => array_key_exists('brand', $data) ? $data['brand'] : $p->brand, 'category_id' => $category->id, 'base_unit_id' => $base->id, 'purchase_cost' => D::money($data['purchase_cost']), 'minimum_stock' => D::quantity($data['minimum_stock']), 'active' => $data['active'] ?? true, 'image_url' => array_key_exists('image_url', $data) ? $data['image_url'] : $p->image_url]);
-                $p->save();
-                $oldPrices = [];
-                foreach ($data['units'] as $line) {
-                    $unit = Unit::whereKey($line['unit_id'])->firstOrFail();
-                    $conversion = D::quantity($line['conversion_quantity']);
-                    $price = D::money($line['selling_price']);
-                    $this->stock->require(D::cmp($conversion, '0') > 0 && D::cmp($price, '0') >= 0, 'Invalid unit conversion or price.');
-                    $u = ProductUnit::firstOrNew(['product_id' => $p->id, 'unit_id' => $unit->id]);
-                    $oldPrices[$unit->name] = $u->selling_price;
-                    $u->fill(['conversion_quantity' => $conversion, 'selling_price' => $price]);
-                    $u->save();
-                }
-                if (array_key_exists('business_units', $data)) {
-                    $availableUnits = collect($data['business_units'])
-                        ->filter(fn ($row) => (bool) ($row['available'] ?? false));
-
-                    $this->stock->require(
-                        $availableUnits->isNotEmpty(),
-                        __('ui.Choose at least one Business Unit for this product.')
-                    );
-
-                    app(BusinessUnitService::class)->configureProduct($p, $data['business_units'], $creating);
-                }
-                if ($imagePath) {
-                    $p->update(['image_path' => $imagePath]);
-                }
-                $this->audit->record('PRODUCT_EDITED', 'Inventory', 'Product', $p->id, $old, $p->only(['name', 'sku', 'purchase_cost', 'minimum_stock']));
-                $this->audit->record('PRICE_CHANGED', 'Inventory', 'Product', $p->id, $oldPrices, ['units' => $data['units']]);
-
-                return $p;
-            });
-        } catch (Throwable $error) {
-            if ($imagePath) {
-                Storage::disk('local')->delete($imagePath);
+            if ($imageChange && $previous) {
+                DB::afterCommit(fn () => $images->delete($p->company_id, $previous));
             }
-            throw $error;
-        }
+            $this->audit->record('PRODUCT_EDITED', 'Inventory', 'Product', $p->id, $old,
+                $p->only(['name', 'sku', 'purchase_cost', 'minimum_stock']) + ($imageChange ? ['image_change' => $imageChange] : []));
+            $this->audit->record('PRICE_CHANGED', 'Inventory', 'Product', $p->id, $oldPrices, ['units' => $data['units']]);
+
+            return $p;
+        });
     }
 
     /**

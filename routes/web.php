@@ -79,8 +79,8 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/shift-stock/{id}/print', [ShiftStockController::class, 'sheet'])->whereNumber('id');
     Route::post('/api/nightshift/my-orders/close', [MyOrdersController::class, 'close'])->middleware('throttle:60,1')->block(10, 10);
     Route::get('/dashboard', Workspace::class)->middleware(RequireOperationalShift::class)->name('dashboard')->block(10, 10);
+    Route::get('/api/nightshift/products/{id}/image', [NightshiftController::class, 'productImage'])->middleware(RequireOperationalShift::class)->whereNumber('id')->name('nightshift.product-image');
     Route::prefix('api/nightshift')->middleware(['throttle:120,1', RequireOperationalShift::class])->group(function () {
-        Route::get('/products/{id}/image', [NightshiftController::class, 'productImage'])->name('nightshift.product-image');
         Route::prefix('my-orders')->group(function () {
             Route::get('/staff', [MyOrdersController::class, 'staff'])->block(10, 10);
             Route::post('/verify', [MyOrdersController::class, 'verify'])->middleware('throttle:20,1')->block(10, 10);

@@ -1,6 +1,12 @@
 <?php
 
 return [
+    'Product Image' => 'Product Image',
+    'Choose a file to replace the current image.' => 'Choose a file to replace the current image.',
+    'Remove image' => 'Remove image',
+    'Choose a valid product image.' => 'Choose a valid product image.',
+    ':quantity :unit available' => ':quantity :unit available',
+    'Selling unit for :product' => 'Selling unit for :product',
     'At least one active Company Admin / Owner must remain.' => 'At least one active Company Admin / Owner must remain.',
     'Resolve the waiter’s open orders and outstanding balance before changing their role.' => 'Resolve the waiter’s open orders and outstanding balance before changing their role.',
     'Set a login PIN for this employee before promoting them.' => 'Set a login PIN for this employee before promoting them.',

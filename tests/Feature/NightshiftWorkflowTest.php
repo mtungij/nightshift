@@ -25,6 +25,7 @@ use App\Models\User;
 use App\Models\VoidRequest;
 use App\Models\WaiterLedgerEntry;
 use App\Services\AdjustmentService;
+use App\Services\CatalogService;
 use App\Services\GoodsReceiptService;
 use App\Services\OrderService;
 use App\Services\PaymentService;
@@ -38,6 +39,7 @@ use App\Support\StockMovementPresenter;
 use Database\Seeders\NightshiftDemoSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\Support\CompletesStockCount;
@@ -738,22 +740,94 @@ class NightshiftWorkflowTest extends TestCase
     public function test_product_image_upload_is_stored_previewable_idempotent_and_tenant_scoped(): void
     {
         Storage::fake('local');
-        $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=');
         $key = (string) Str::uuid();
-        $data = ['payload' => json_encode([...$this->uxProductData(), 'idempotency_key' => $key]), 'image' => UploadedFile::fake()->createWithContent('product.png', $png)];
+        $data = ['payload' => json_encode([...$this->uxProductData(), 'idempotency_key' => $key]), 'image' => UploadedFile::fake()->image('product.png', 800, 400)];
         $response = $this->post('/api/nightshift/commands/product', $data, ['Accept' => 'application/json'])->assertOk();
         $product = Product::findOrFail($response->json('id'));
         Storage::disk('local')->assertExists($product->image_path);
         $this->assertNull($product->image_url);
         $image = $this->getJson('/api/nightshift/bootstrap')->assertOk()->json('products');
         $url = collect($image)->firstWhere('id', $product->id)['image'];
-        $this->get($url)->assertOk()->assertHeader('X-Content-Type-Options', 'nosniff');
+        $file = $this->get($url)->assertOk()->assertHeader('X-Content-Type-Options', 'nosniff')->assertHeader('Content-Type', 'image/webp');
+        $this->assertSame([640, 320], array_slice(getimagesize(Storage::disk('local')->path($product->image_path)), 0, 2));
+        $this->get($url, ['If-None-Match' => $file->headers->get('ETag')])->assertStatus(304);
+        $this->getJson('/api/nightshift/product-configuration/'.$product->id)->assertOk()->assertJsonPath('product.image', $url);
         $this->post('/api/nightshift/commands/product', $data, ['Accept' => 'application/json'])->assertOk()->assertJsonPath('id', $product->id);
         $this->assertCount(1, Storage::disk('local')->allFiles('product-images'));
         $this->command('product', [...$this->uxProductData(), 'id' => $product->id])->assertOk();
         $this->assertSame($product->image_path, $product->fresh()->image_path);
+        $this->actingAs($this->waiter);
+        $this->get($url)->assertOk();
+        $this->command('product', [...$this->uxProductData(), 'id' => $product->id, 'remove_image' => true])->assertForbidden();
+
         $this->actingAs(User::factory()->create());
         $this->getJson(route('nightshift.product-image', $product->id))->assertNotFound();
+        $foreignCategory = Category::create(['name' => 'Beer']);
+        $foreignUnit = Unit::create(['name' => 'Bottle']);
+        $this->uploadProductImage([...$this->uxProductData(), 'id' => $product->id, 'category_id' => $foreignCategory->id, 'base_unit_id' => $foreignUnit->id],
+            UploadedFile::fake()->image('foreign.png'))->assertNotFound();
+        Storage::disk('local')->assertExists($product->image_path);
+    }
+
+    public function test_product_image_replacement_rolls_back_and_removal_retains_category_fallback(): void
+    {
+        $disk = Storage::fake('local');
+        $id = $this->product->id;
+        $data = [...$this->uxProductData(), 'id' => $id];
+        $this->uploadProductImage($data, UploadedFile::fake()->image('first.png'))->assertOk();
+        $original = $this->product->fresh()->image_path;
+        $files = $disk->allFiles();
+
+        DB::beginTransaction();
+        $rolledBack = app(CatalogService::class)->product($data + ['image' => UploadedFile::fake()->image('rolled-back.png')])->image_path;
+        $disk->assertExists([$original, $rolledBack]);
+        DB::rollBack();
+        $this->assertSame($original, $this->product->fresh()->image_path);
+        $this->assertSame($files, $disk->allFiles());
+
+        $this->uploadProductImage($data, UploadedFile::fake()->image('second.jpg'))->assertOk();
+        $replacement = $this->product->fresh()->image_path;
+        $this->assertNotSame($original, $replacement);
+        $disk->assertMissing($original)->assertExists($replacement);
+        $this->command('product', [...$data, 'active' => false])->assertOk();
+        $disk->assertExists($replacement);
+        $this->command('product', $data + ['remove_image' => true])->assertOk();
+        $disk->assertMissing($replacement);
+        $this->assertNull($this->product->fresh()->image_path);
+        $this->getJson('/api/nightshift/product-configuration/'.$id)->assertOk()
+            ->assertJsonPath('product.image', null)
+            ->assertJsonPath('product.category_image', '/images/product-categories/beer.webp');
+        $this->assertSame(['added', 'replaced', 'removed'], AuditLog::where('action', 'PRODUCT_EDITED')->where('reference_id', $id)
+            ->orderBy('id')->get()->pluck('new_values.image_change')->filter()->values()->all());
+    }
+
+    public function test_product_image_payload_supports_missing_files_and_unmapped_categories(): void
+    {
+        Storage::fake('local');
+        $id = $this->product->id;
+        $data = [...$this->uxProductData(), 'id' => $id];
+        $config = '/api/nightshift/product-configuration/'.$id;
+        $this->getJson($config)->assertOk()->assertJsonPath('product.image', null)
+            ->assertJsonPath('product.category_image', '/images/product-categories/beer.webp');
+        $this->command('product', $data + ['image_path' => 'other/tenant.webp'])->assertUnprocessable()->assertJsonValidationErrors('image_path');
+
+        $this->uploadProductImage($data, UploadedFile::fake()->image('missing.png'))->assertOk();
+        Storage::disk('local')->delete($this->product->fresh()->image_path);
+        $url = $this->getJson($config)->assertJsonPath('product.category_image', '/images/product-categories/beer.webp')->json('product.image');
+        $this->get($url)->assertNotFound();
+
+        $unknown = Category::create(['name' => 'House Supplies']);
+        $this->command('product', [...$data, 'category_id' => $unknown->id, 'remove_image' => true])->assertOk();
+        $this->getJson($config)->assertOk()->assertJsonPath('product.image', null)
+            ->assertJsonPath('product.category_image', null);
+    }
+
+    private function uploadProductImage(array $data, UploadedFile $file): \Illuminate\Testing\TestResponse
+    {
+        return $this->post('/api/nightshift/commands/product', [
+            'payload' => json_encode([...$data, 'idempotency_key' => (string) Str::uuid()]),
+            'image' => $file,
+        ], ['Accept' => 'application/json']);
     }
 
     public function test_invalid_and_oversized_product_images_are_rejected_without_creating_products(): void

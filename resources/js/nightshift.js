@@ -1,6 +1,7 @@
 import { mountReportShifts } from "./report-shifts.js";
 import { renderCounterCard } from "./counter-cards.js";
 import { updateCashierOccupancy } from "./counter-cashiers.js";
+import { showProductImageFallback } from "./product-images.js";
 import { productSellingUnits } from "./product-selling-units.js";
 import { mountProductAvailability, productAvailabilityPayload } from "./product-availability.js";
 import { downloadPdf } from "./report-pdf.js";
@@ -19,38 +20,9 @@ if (root) {
         )
             toast(tr("Order saved. Printing failed; reprint from the order."));
     });
-    document.addEventListener(
-        "error",
-        (event) => {
-            if (event.target.matches?.(".product-photo")) {
-                event.target.hidden = true;
-                event.target.nextElementSibling.hidden = false;
-            }
-        },
-        true,
-    );
-    document.addEventListener("change", (event) => {
-        if (!event.target.matches?.("[data-input=product-image]")) return;
-        const file = event.target.files[0];
-        const preview = event.target.closest(".form-field").querySelector(".product-image-preview");
-        if (preview.dataset.url) URL.revokeObjectURL(preview.dataset.url);
-        event.target.setCustomValidity("");
-        if (!file) {
-            preview.innerHTML = icon("box");
-            return;
-        }
-        if (
-            !["image/jpeg", "image/png", "image/webp"].includes(file.type) ||
-            file.size > 2 * 1024 * 1024
-        ) {
-            event.target.setCustomValidity(tr("Choose a JPG, JPEG, PNG or WEBP image up to 2 MB."));
-            event.target.reportValidity();
-            preview.innerHTML = icon("box");
-            return;
-        }
-        preview.dataset.url = URL.createObjectURL(file);
-        preview.innerHTML = `<img src="${esc(preview.dataset.url)}" alt="${esc(tr("Product image preview"))}" />`;
-    });
+    document.addEventListener("error", (event) => {
+        if (event.target.matches?.(".product-photo")) showProductImageFallback(event.target);
+    }, true);
     const paths = {
         dashboard: html`<rect x="3" y="3" width="7" height="7" rx="1.5" /><rect
                 x="14"
@@ -1442,17 +1414,23 @@ if (root) {
                 ${footer()}`
         );
     }
-    function productVisual(p) {
-        if (p.image)
-            return html`<img
-                    class="product-photo"
-                    src="${esc(p.image)}"
-                    alt="${esc(p.name)}"
-                    loading="lazy"
-                /><span class="product-photo-fallback" hidden>${icon("box")}</span>`;
-        return ["cocktail", "food"].includes(p.style)
+    function productVisual(p, loading = "lazy") {
+        const fallback = ["cocktail", "food"].includes(p.style)
             ? icon(p.style)
-            : html`<span class="bottle ${p.style}"></span>`;
+            : html`<span class="bottle ${esc(p.style)}"></span>`;
+        const source = p.image || p.category_image;
+        if (!source) return fallback;
+
+        return html`<img
+            class="product-photo"
+            src="${esc(source)}"
+            alt="${esc(p.name)}"
+            width="160"
+            height="160"
+            loading="${loading}"
+            decoding="async"
+            ${p.image && p.category_image ? `data-category-image="${esc(p.category_image)}"` : ""}
+        /><span class="product-photo-fallback" hidden>${fallback}</span>`;
     }
     function posScreen() {
         const counter = db.locations.find((l) => l.id === db.location_id && l.type === "COUNTER");
@@ -1517,21 +1495,17 @@ if (root) {
                         ${
                             list
                                 .map(
-                                    (p) =>
+                                    (p, index) =>
                                         html`<article class="product-card">
-                                            <div class="product-visual">${productVisual(p)}</div>
+                                            <div class="product-visual">${productVisual(p, index < 3 ? "eager" : "lazy")}</div>
                                             <h3>${esc(p.name)}</h3>
-                                            <small
-                                                >${quantity(p.stock)}
-                                                ${tr(p.category === "Beer" ? "bottles" : "units")}
-                                                available</small
-                                            ><strong id="price-${p.id}"
+                                            <small>${tr(":quantity :unit available", { quantity: quantity(p.stock), unit: tr(p.category === "Beer" ? "bottles" : "units") })}</small><strong id="price-${p.id}"
                                                 >${money(p.units[0][2])}</strong
                                             ><select
                                                 class="select-control"
                                                 data-change="unit"
                                                 data-id="${p.id}"
-                                                aria-label="Selling unit for ${esc(p.name)}"
+                                                aria-label="${esc(tr("Selling unit for :product", { product: p.name }))}"
                                             >
                                                 ${p.units.map((u, i) => html`<option value="${i}">${esc(u[0])} ${u[1] > 1 ? "· " + quantity(u[1]) + " bottles" : ""}</option>`).join("")}</select
                                             >${btn("Add to order", "add-cart", "small", "plus", `data-id="${p.id}" ${p.stock <= 0 ? "disabled" : ""}`)}
@@ -1850,8 +1824,7 @@ ${esc(cartNote)}</textarea>
                                                 <td>
                                                     <div class="table-avatar">
                                                         <div
-                                                            class="product-thumb"
-                                                            style="width:29px;height:32px"
+                                                            class="product-thumb inventory-product-thumb"
                                                         >
                                                             ${productVisual(p)}
                                                         </div>
@@ -3078,6 +3051,7 @@ ${esc(cartNote)}</textarea>
     }
 
     function modal(title, body, actions = "", wide = false, formAction = "") {
+        releaseProductPreview();
         modalTrigger = document.activeElement;
         document.getElementById("modal-root").innerHTML = html`<div class="modal-backdrop">
             <section
@@ -3105,6 +3079,7 @@ ${esc(cartNote)}</textarea>
             ?.focus();
     }
     function closeModal() {
+        releaseProductPreview();
         clearMyOrders();
         if (document.getElementById("report-filters")) history.replaceState(null, "");
         document.getElementById("modal-root").innerHTML = "";
@@ -3638,19 +3613,18 @@ ${esc(cartNote)}</textarea>
                         "baseUnit",
                         db.unitRecords.map((u) => u.name),
                         p?.baseUnit || "Bottle",
-                    )}${input(`Purchase cost (${currencyLabel()})`, "cost", "number", p?.cost || 0)}${input(`Single unit selling price (${currencyLabel()})`, "price", "number", p?.price || 0)}${html`<div class="info-box">Stock is managed through goods receipts, transfers and approved adjustments.</div>`}${input("Minimum stock", "min", "number", p?.min || 0)}${select("Status", "active", ["Active", "Inactive"], p?.active === false ? "Inactive" : "Active")}${field(
-                        "Upload Product Image",
-                        "image",
-                        html`<input
-                                type="file"
-                                name="image"
-                                accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
-                                data-input="product-image"
-                            /><small>${tr("Optional · JPG, JPEG, PNG, WEBP · up to 2 MB")}</small>
-                            <div class="product-image-preview">
-                                ${p?.image ? html`<img src="${esc(p.image)}" alt="${esc(p.name)}" />` : icon("box")}
-                            </div>`,
-                    )}
+                    )}${input(`Purchase cost (${currencyLabel()})`, "cost", "number", p?.cost || 0)}${input(`Single unit selling price (${currencyLabel()})`, "price", "number", p?.price || 0)}${html`<div class="info-box">Stock is managed through goods receipts, transfers and approved adjustments.</div>`}${input("Minimum stock", "min", "number", p?.min || 0)}${select("Status", "active", ["Active", "Inactive"], p?.active === false ? "Inactive" : "Active")}
+                    <div class="form-field product-image-field">
+                        <div class="product-image-preview">${p ? productVisual(p, "eager") : icon("box")}</div>
+                        <div class="product-image-controls">
+                            <label for="product-upload">Product Image</label>
+                            ${p?.image ? html`<span class="form-help">Choose a file to replace the current image.</span>` : ""}
+                            <input id="product-upload" type="file" name="image"
+                                accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" />
+                            <small>${tr("Optional · JPG, JPEG, PNG, WEBP · up to 2 MB")}</small>
+                            ${p?.image ? html`<label class="product-image-remove"><input name="remove_image" type="checkbox" />Remove image</label>` : ""}
+                        </div>
+                    </div>
                 </div>
 
                 <h3 style="font-size:12px;margin:5px 0 15px">Optional selling units</h3>
@@ -3663,6 +3637,16 @@ ${esc(cartNote)}</textarea>
             "product",
         );
         const form = document.querySelector("[data-form=product]");
+        const picker = form.elements.image;
+        const remove = form.elements.remove_image;
+        picker.addEventListener("change", () => {
+            if (picker.files.length && remove) remove.checked = false;
+            updateProductPreview(form, p);
+        });
+        remove?.addEventListener("change", () => {
+            if (remove.checked) picker.value = "";
+            updateProductPreview(form, p);
+        });
         mountProductAvailability(
             form,
             configuration,
@@ -3670,6 +3654,43 @@ ${esc(cartNote)}</textarea>
             db.business_unit_id,
         );
     }
+    function releaseProductPreview() {
+        const preview = document.querySelector(".modal .product-image-preview");
+        if (preview?.dataset.url) {
+            URL.revokeObjectURL(preview.dataset.url);
+            delete preview.dataset.url;
+        }
+    }
+
+    function updateProductPreview(form, product) {
+        releaseProductPreview();
+        const preview = form.querySelector(".product-image-preview");
+        const picker = form.elements.image;
+        const file = picker.files[0];
+        const removing = form.elements.remove_image?.checked;
+        picker.setCustomValidity("");
+        if (!file) {
+            preview.innerHTML = product
+                ? productVisual({ ...product, image: removing ? null : product.image }, "eager")
+                : icon("box");
+            return;
+        }
+        if ((file.type && !["image/jpeg", "image/png", "image/webp"].includes(file.type))
+            || file.size > 2 * 1024 * 1024) {
+            picker.setCustomValidity(tr("Choose a JPG, JPEG, PNG or WEBP image up to 2 MB."));
+            picker.reportValidity();
+            preview.innerHTML = product ? productVisual(product, "eager") : icon("box");
+            return;
+        }
+        preview.dataset.url = URL.createObjectURL(file);
+        preview.innerHTML = productVisual({
+            image: preview.dataset.url,
+            category_image: product?.category_image,
+            style: product?.style,
+            name: form.elements.name.value || tr("Product image preview"),
+        }, "eager");
+    }
+
     let reportName = "Daily Sales";
     function reportRows() {
         return activeReport;
@@ -4734,6 +4755,7 @@ ${esc(cartNote)}</textarea>
                 payload = productPayload(data);
                 const image = form.querySelector("[name=image]").files[0];
                 if (image) payload.image = image;
+                if (form.elements.remove_image?.checked) payload.remove_image = true;
             } else if (["grn", "transfer", "adjustment"].includes(type)) {
                 if (form.stockLoading)
                     throw Error(tr("Wait for the product list to finish loading."));

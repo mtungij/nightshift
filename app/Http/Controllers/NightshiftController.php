@@ -20,6 +20,7 @@ use App\Services\CompanyAdminService;
 use App\Services\GoodsReceiptService;
 use App\Services\OrderService;
 use App\Services\PaymentService;
+use App\Services\ProductImageService;
 use App\Services\ReportFilterService;
 use App\Services\ReportPdfService;
 use App\Services\ReportService;
@@ -122,13 +123,17 @@ final class NightshiftController extends Controller
         });
     }
 
-    public function productImage(int $id): StreamedResponse
+    public function productImage(Request $request, ProductImageService $images, int $id): StreamedResponse
     {
         $product = Product::whereKey($id)->firstOrFail();
         $path = $product->image_path;
-        abort_unless($path && str_starts_with($path, 'product-images/'.$product->company_id.'/') && Storage::disk('local')->exists($path), 404);
+        abort_unless($images->ownsPath($product->company_id, $path) && Storage::disk('local')->exists($path), 404);
 
-        return Storage::disk('local')->response($path, null, ['Cache-Control' => 'private, no-cache', 'X-Content-Type-Options' => 'nosniff']);
+        $response = Storage::disk('local')->response($path, null, ['Cache-Control' => 'private, no-cache', 'X-Content-Type-Options' => 'nosniff']);
+        $response->setEtag($images->version($path));
+        $response->isNotModified($request);
+
+        return $response;
     }
 
     public function report(Request $request, string $name, ReportService $reports): JsonResponse

@@ -951,6 +951,15 @@ html.dark .nightshift {
     place-items: center;
     flex-shrink: 0;
 }
+.inventory-product-thumb {
+    width: 40px;
+    height: 40px;
+    padding: 2px;
+}
+.inventory-product-thumb .icon {
+    width: 22px;
+    height: 22px;
+}
 .bottle {
     display: block;
     position: relative;
@@ -1376,12 +1385,16 @@ html.dark .nightshift {
     background: var(--panel);
     text-align: left;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
 }
 .product-visual {
-    height: 95px;
+    height: clamp(96px, 16vw, 132px);
     display: grid;
+    grid-template-rows: minmax(0, 1fr);
     place-items: center;
     background: radial-gradient(ellipse at bottom, #eab66a0d, transparent 75%);
+    padding: 6px;
     border-radius: 7px;
     margin-bottom: 10px;
 }
@@ -1397,10 +1410,12 @@ html.dark .nightshift {
     font-size: 12px;
     margin: 0 0 3px;
     font-weight: 600;
+    overflow-wrap: anywhere;
 }
 .product-card > small {
     font-size: 12px;
     color: var(--muted);
+    flex-grow: 1;
 }
 .product-card strong {
     display: block;
@@ -1414,9 +1429,10 @@ html.dark .nightshift {
     font-size: 12px;
     margin-top: 10px;
 }
-.product-card > .button {
+.nightshift .product-card > .button {
     width: 100%;
     margin-top: 9px;
+    min-height: 44px;
 }
 .cart-header {
     padding: 18px;
@@ -2544,9 +2560,6 @@ html.dark .nightshift {
     .sales-panel .sales-chart {
         height: 150px;
     }
-    .product-card > .button {
-        min-height: 37px;
-    }
     .cart-jump {
         display: flex;
         position: fixed;
@@ -3114,7 +3127,7 @@ body > .language-switch {
     }
 }
 .nightshift .product-grid {
-    grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(160px, 100%), 1fr));
 }
 @media (max-width: 1100px) {
     .nightshift .pos-layout {

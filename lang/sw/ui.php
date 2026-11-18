@@ -1,6 +1,12 @@
 <?php
 
 return [
+    'Product Image' => 'Picha ya Bidhaa',
+    'Choose a file to replace the current image.' => 'Chagua faili ili kubadilisha picha ya sasa.',
+    'Remove image' => 'Ondoa picha',
+    'Choose a valid product image.' => 'Chagua picha halali ya bidhaa.',
+    ':quantity :unit available' => ':unit :quantity zilizopo',
+    'Selling unit for :product' => 'Kipimo cha kuuza :product',
     'At least one active Company Admin / Owner must remain.' => 'Lazima abaki angalau Msimamizi wa Biashara / Mmiliki mmoja anayefanya kazi.',
     'Resolve the waiter’s open orders and outstanding balance before changing their role.' => 'Kamilisha oda zilizo wazi na salio linalodaiwa la mhudumu kabla ya kubadilisha jukumu lake.',
     'Set a login PIN for this employee before promoting them.' => 'Weka PIN ya kuingia ya mfanyakazi huyu kabla ya kumpandisha cheo.',
