@@ -32,17 +32,60 @@ final class ProductImageService
         'coffee' => 'coffee',
     ];
 
-    /** @return array{image: ?string, category_image: ?string} */
+    /** @return array<string, string> */
+    public function presetUrls(): array
+    {
+        static $urls = [];
+        if ($urls !== []) {
+            return $urls;
+        }
+        foreach (array_unique(self::CATEGORY_IMAGES) as $slug) {
+            $urls[$slug.'-01'] = $this->categoryUrl($slug);
+            if ($slug === 'coffee') {
+                continue;
+            }
+            foreach (['02', '03', '04'] as $number) {
+                $id = $slug.'-'.$number;
+                $urls[$id] = "/images/product-gallery/{$slug}/{$id}.webp";
+            }
+        }
+
+        return $urls;
+    }
+
+    /** @return array<string, array{default: string, presets: array<string, string>}> */
+    public function gallery(): array
+    {
+        $presets = $this->presetUrls();
+        $gallery = [];
+        foreach (self::CATEGORY_IMAGES as $category => $slug) {
+            $gallery[$category] = [
+                'default' => $this->categoryUrl($slug),
+                'presets' => array_filter($presets, fn (string $id) => str_starts_with($id, $slug.'-'), ARRAY_FILTER_USE_KEY),
+            ];
+        }
+
+        return $gallery;
+    }
+
+    private function categoryUrl(string $slug): string
+    {
+        return "/images/product-categories/{$slug}.webp";
+    }
+
+    /** @return array{image: ?string, preset_image: ?string, category_image: ?string} */
     public function presentation(Product $product): array
     {
         $path = $product->image_path;
         $category = self::CATEGORY_IMAGES[mb_strtolower(trim($product->category->name))] ?? null;
+        $preset = $this->presetUrls()[$product->image_preset ?? ''] ?? null;
 
         return [
             'image' => $this->ownsPath($product->company_id, $path)
                 ? route('nightshift.product-image', ['id' => $product->id, 'v' => $this->version($path)], false)
-                : null,
-            'category_image' => $category ? "/images/product-categories/{$category}.webp" : null,
+                : $preset,
+            'preset_image' => $preset,
+            'category_image' => $category ? $this->categoryUrl($category) : null,
         ];
     }
 

@@ -822,6 +822,71 @@ class NightshiftWorkflowTest extends TestCase
             ->assertJsonPath('product.category_image', null);
     }
 
+    public function test_product_image_gallery_lists_local_presets_and_rejects_arbitrary_ids(): void
+    {
+        $gallery = $this->getJson('/api/nightshift/product-configuration')->assertOk()->json('image_gallery');
+        foreach (['beer', 'wine', 'whisky', 'vodka', 'gin', 'spirits', 'champagne', 'energy drinks', 'soft drinks', 'water', 'cocktails', 'food', 'juice', 'milkshakes'] as $category) {
+            $slug = str_replace(' ', '-', $category);
+            $this->assertCount(4, $gallery[$category]['presets']);
+            $this->assertSame("/images/product-categories/{$slug}.webp", $gallery[$category]['presets'][$slug.'-01']);
+            $this->assertSame("/images/product-gallery/{$slug}/{$slug}-03.webp", $gallery[$category]['presets'][$slug.'-03']);
+        }
+        $this->assertArrayNotHasKey('house supplies', $gallery);
+        foreach (['beer-99', '../beer-02.webp', '/tmp/beer.webp', 'https://example.test/wine-03.webp', 'wine/wine-03.webp'] as $invalid) {
+            $this->command('product', $this->uxProductData() + ['image_preset' => $invalid])
+                ->assertUnprocessable()->assertJsonValidationErrors('image_preset');
+        }
+        $this->assertNull($this->product->fresh()->image_preset);
+        $foreign = User::factory()->create();
+        $this->actingAs($foreign);
+        $foreignCategory = Category::create(['name' => 'Beer']);
+        $foreignUnit = Unit::create(['name' => 'Bottle']);
+        $this->command('product', [...$this->uxProductData(), 'id' => $this->product->id, 'category_id' => $foreignCategory->id,
+            'base_unit_id' => $foreignUnit->id, 'image_preset' => 'beer-01'])->assertNotFound();
+    }
+
+    public function test_product_image_gallery_resolves_preserves_and_removes_explicit_choices(): void
+    {
+        $disk = Storage::fake('local');
+        $data = $this->uxProductData() + ['image_preset' => 'beer-03'];
+        $id = $this->command('product', $data)->assertOk()->json('id');
+        $config = '/api/nightshift/product-configuration/'.$id;
+        $beer = '/images/product-gallery/beer/beer-03.webp';
+        $wine = Category::create(['name' => 'Wine']);
+        $data = [...$this->uxProductData(), 'id' => $id, 'category_id' => $wine->id];
+
+        $this->getJson($config)->assertOk()->assertJsonPath('product.image', $beer);
+        $this->assertSame('beer-03', Product::findOrFail($id)->image_preset);
+        $this->command('product', $data)->assertOk();
+        $this->getJson($config)->assertOk()->assertJsonPath('product.image', $beer)
+            ->assertJsonPath('product.category_image', '/images/product-categories/wine.webp');
+        $snapshot = $this->getJson('/api/nightshift/bootstrap')->assertOk()->assertJsonMissingPath('image_gallery');
+        $this->assertSame($beer, collect($snapshot->json('products'))->firstWhere('id', $id)['image']);
+
+        $this->uploadProductImage($data + ['image_preset' => 'wine-04'], UploadedFile::fake()->image('custom.png'))->assertOk();
+        $custom = Product::findOrFail($id);
+        $disk->assertExists($custom->image_path);
+        $this->assertNull($custom->image_preset);
+        $this->command('product', [...$data, 'category_id' => $this->product->category_id])->assertOk();
+        $this->assertSame($custom->image_path, $custom->fresh()->image_path);
+
+        $this->command('product', $data + ['image_preset' => 'wine-04'])->assertOk();
+        $disk->assertMissing($custom->image_path);
+        $this->assertNull($custom->fresh()->image_path);
+        $this->getJson($config)->assertOk()->assertJsonPath('product.image', '/images/product-gallery/wine/wine-04.webp');
+        $this->command('product', $data + ['remove_image' => true])->assertOk();
+        $this->assertNull($custom->fresh()->image_preset);
+        $this->assertNull($custom->fresh()->image_path);
+        $this->getJson($config)->assertOk()->assertJsonPath('product.image', null)
+            ->assertJsonPath('product.category_image', '/images/product-categories/wine.webp');
+        $this->assertSame(['preset_selected', 'replaced', 'preset_selected', 'removed'], AuditLog::where('action', 'PRODUCT_EDITED')->where('reference_id', $id)
+            ->orderBy('id')->get()->pluck('new_values.image_change')->filter()->values()->all());
+
+        $custom->fresh()->update(['image_preset' => 'retired-preset']);
+        $this->getJson($config)->assertOk()->assertJsonPath('product.image', null)
+            ->assertJsonPath('product.category_image', '/images/product-categories/wine.webp');
+    }
+
     private function uploadProductImage(array $data, UploadedFile $file): \Illuminate\Testing\TestResponse
     {
         return $this->post('/api/nightshift/commands/product', [

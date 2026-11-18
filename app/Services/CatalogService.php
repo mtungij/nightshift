@@ -73,15 +73,20 @@ final class CatalogService
             }
             $images = app(ProductImageService::class);
             $previous = $p->image_path;
+            $previousPreset = $p->image_preset;
+            $preset = $data['image_preset'] ?? null;
             $imageChange = null;
             if (($data['image'] ?? null) instanceof UploadedFile) {
                 $path = $images->store($p->company_id, $data['image']);
                 DB::afterRollBack(fn () => $images->delete($p->company_id, $path));
-                $p->update(['image_path' => $path]);
-                $imageChange = $previous ? 'replaced' : 'added';
-            } elseif (($data['remove_image'] ?? false) && $previous) {
-                $p->update(['image_path' => null]);
+                $p->update(['image_path' => $path, 'image_preset' => null]);
+                $imageChange = ($previous || $previousPreset) ? 'replaced' : 'added';
+            } elseif (($data['remove_image'] ?? false) && ($previous || $previousPreset)) {
+                $p->update(['image_path' => null, 'image_preset' => null]);
                 $imageChange = 'removed';
+            } elseif ($preset !== null && ($previous || $previousPreset !== $preset)) {
+                $p->update(['image_path' => null, 'image_preset' => $preset]);
+                $imageChange = 'preset_selected';
             }
             if ($imageChange && $previous) {
                 DB::afterCommit(fn () => $images->delete($p->company_id, $previous));

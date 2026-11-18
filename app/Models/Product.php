@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\DB;
  * @property numeric-string $purchase_cost
  * @property numeric-string $minimum_stock
  * @property string|null $image_path
+ * @property string|null $image_preset
  * @property string|null $image_url
  * @property string $visual_style
  * @property bool $active

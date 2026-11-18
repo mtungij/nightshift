@@ -1,6 +1,13 @@
 <?php
 
 return [
+    'Suggested images' => 'Picha Zinazopendekezwa',
+    'Suggested for :category' => 'Picha za :category',
+    'Choose custom image' => 'Chagua picha yako',
+    'Selected image' => 'Picha iliyochaguliwa',
+    'Use category default' => 'Tumia picha ya kawaida ya kundi',
+    'Category default' => 'Picha ya kawaida ya kundi',
+    ':category image option :number' => 'Chaguo la picha :number la :category',
     'Product Image' => 'Picha ya Bidhaa',
     'Choose a file to replace the current image.' => 'Chagua faili ili kubadilisha picha ya sasa.',
     'Remove image' => 'Ondoa picha',

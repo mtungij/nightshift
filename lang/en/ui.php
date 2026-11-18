@@ -1,6 +1,13 @@
 <?php
 
 return [
+    'Suggested images' => 'Suggested images',
+    'Suggested for :category' => 'Suggested for :category',
+    'Choose custom image' => 'Choose custom image',
+    'Selected image' => 'Selected image',
+    'Use category default' => 'Use category default',
+    'Category default' => 'Category default',
+    ':category image option :number' => ':category image option :number',
     'Product Image' => 'Product Image',
     'Choose a file to replace the current image.' => 'Choose a file to replace the current image.',
     'Remove image' => 'Remove image',

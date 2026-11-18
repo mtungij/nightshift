@@ -1,7 +1,7 @@
 import { mountReportShifts } from "./report-shifts.js";
 import { renderCounterCard } from "./counter-cards.js";
 import { updateCashierOccupancy } from "./counter-cashiers.js";
-import { showProductImageFallback } from "./product-images.js";
+import { mountProductImages, showProductImageFallback } from "./product-images.js";
 import { productSellingUnits } from "./product-selling-units.js";
 import { mountProductAvailability, productAvailabilityPayload } from "./product-availability.js";
 import { downloadPdf } from "./report-pdf.js";
@@ -1429,7 +1429,8 @@ if (root) {
             height="160"
             loading="${loading}"
             decoding="async"
-            ${p.image && p.category_image ? `data-category-image="${esc(p.category_image)}"` : ""}
+            ${p.preset_image && p.preset_image !== source ? `data-preset-image="${esc(p.preset_image)}"` : ""}
+            ${p.category_image && p.category_image !== source ? `data-category-image="${esc(p.category_image)}"` : ""}
         /><span class="product-photo-fallback" hidden>${fallback}</span>`;
     }
     function posScreen() {
@@ -3614,18 +3615,27 @@ ${esc(cartNote)}</textarea>
                         db.unitRecords.map((u) => u.name),
                         p?.baseUnit || "Bottle",
                     )}${input(`Purchase cost (${currencyLabel()})`, "cost", "number", p?.cost || 0)}${input(`Single unit selling price (${currencyLabel()})`, "price", "number", p?.price || 0)}${html`<div class="info-box">Stock is managed through goods receipts, transfers and approved adjustments.</div>`}${input("Minimum stock", "min", "number", p?.min || 0)}${select("Status", "active", ["Active", "Inactive"], p?.active === false ? "Inactive" : "Active")}
+                </div>
+                <fieldset class="product-image-editor">
+                    <legend>Product Image</legend>
                     <div class="form-field product-image-field">
-                        <div class="product-image-preview">${p ? productVisual(p, "eager") : icon("box")}</div>
+                        <div class="product-image-preview"></div>
                         <div class="product-image-controls">
-                            <label for="product-upload">Product Image</label>
-                            ${p?.image ? html`<span class="form-help">Choose a file to replace the current image.</span>` : ""}
+                            <p class="product-image-status" data-product-image-status role="status"></p>
+                            <label for="product-upload">Choose custom image</label>
                             <input id="product-upload" type="file" name="image"
                                 accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" />
                             <small>${tr("Optional · JPG, JPEG, PNG, WEBP · up to 2 MB")}</small>
-                            ${p?.image ? html`<label class="product-image-remove"><input name="remove_image" type="checkbox" />Remove image</label>` : ""}
+                            <label class="product-image-remove" title="Use category default" hidden>
+                                <input name="remove_image" type="checkbox" />Remove image
+                            </label>
                         </div>
                     </div>
-                </div>
+                    <section class="product-image-suggestions" aria-label="Suggested images" hidden>
+                        <h3></h3>
+                        <div class="product-image-options"></div>
+                    </section>
+                </fieldset>
 
                 <h3 style="font-size:12px;margin:5px 0 15px">Optional selling units</h3>
                 <div class="form-grid">
@@ -3637,15 +3647,11 @@ ${esc(cartNote)}</textarea>
             "product",
         );
         const form = document.querySelector("[data-form=product]");
-        const picker = form.elements.image;
-        const remove = form.elements.remove_image;
-        picker.addEventListener("change", () => {
-            if (picker.files.length && remove) remove.checked = false;
-            updateProductPreview(form, p);
-        });
-        remove?.addEventListener("change", () => {
-            if (remove.checked) picker.value = "";
-            updateProductPreview(form, p);
+        form.productImageSelection = mountProductImages(form, {
+            product: p,
+            galleries: configuration.image_gallery,
+            renderImage: productVisual,
+            releasePreview: releaseProductPreview,
         });
         mountProductAvailability(
             form,
@@ -3660,35 +3666,6 @@ ${esc(cartNote)}</textarea>
             URL.revokeObjectURL(preview.dataset.url);
             delete preview.dataset.url;
         }
-    }
-
-    function updateProductPreview(form, product) {
-        releaseProductPreview();
-        const preview = form.querySelector(".product-image-preview");
-        const picker = form.elements.image;
-        const file = picker.files[0];
-        const removing = form.elements.remove_image?.checked;
-        picker.setCustomValidity("");
-        if (!file) {
-            preview.innerHTML = product
-                ? productVisual({ ...product, image: removing ? null : product.image }, "eager")
-                : icon("box");
-            return;
-        }
-        if ((file.type && !["image/jpeg", "image/png", "image/webp"].includes(file.type))
-            || file.size > 2 * 1024 * 1024) {
-            picker.setCustomValidity(tr("Choose a JPG, JPEG, PNG or WEBP image up to 2 MB."));
-            picker.reportValidity();
-            preview.innerHTML = product ? productVisual(product, "eager") : icon("box");
-            return;
-        }
-        preview.dataset.url = URL.createObjectURL(file);
-        preview.innerHTML = productVisual({
-            image: preview.dataset.url,
-            category_image: product?.category_image,
-            style: product?.style,
-            name: form.elements.name.value || tr("Product image preview"),
-        }, "eager");
     }
 
     let reportName = "Daily Sales";
@@ -4752,10 +4729,9 @@ ${esc(cartNote)}</textarea>
                 };
             } else if (type === "product") {
                 command = "product";
-                payload = productPayload(data);
+                payload = { ...productPayload(data), ...form.productImageSelection.payload() };
                 const image = form.querySelector("[name=image]").files[0];
                 if (image) payload.image = image;
-                if (form.elements.remove_image?.checked) payload.remove_image = true;
             } else if (["grn", "transfer", "adjustment"].includes(type)) {
                 if (form.stockLoading)
                     throw Error(tr("Wait for the product list to finish loading."));

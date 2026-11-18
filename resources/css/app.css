@@ -87,11 +87,29 @@ select:focus[data-flux-control] {
 .product-photo-fallback[hidden] {
     display: none;
 }
+.product-image-editor {
+    min-width: 0;
+    margin: 0 0 16px;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+.product-image-editor > legend {
+    padding-inline: 6px;
+    color: var(--text);
+    font-weight: 600;
+}
 .product-image-field {
-    grid-column: 1 / -1;
     display: grid;
     grid-template-columns: 120px minmax(0, 1fr);
     align-items: center;
+}
+.product-image-status {
+    color: var(--text);
+    font-weight: 600;
+}
+.product-image-status:empty {
+    display: none;
 }
 .product-image-preview {
     display: grid;
@@ -118,6 +136,62 @@ select:focus[data-flux-control] {
     width: fit-content;
     min-height: 36px;
 }
+.product-image-editor [hidden] {
+    display: none;
+}
+.product-image-suggestions h3 {
+    margin-bottom: 8px;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+}
+.product-image-options {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 88px));
+    gap: 8px;
+}
+.product-image-options button {
+    position: relative;
+    display: grid;
+    aspect-ratio: 1;
+    min-height: 44px;
+    min-width: 44px;
+    place-items: center;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel2);
+    cursor: pointer;
+}
+.product-image-options button:hover,
+.product-image-options button[aria-pressed="true"] {
+    border-color: var(--amber);
+}
+.product-image-options button:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 2px;
+}
+.product-image-options img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+.product-image-check {
+    display: none;
+    position: absolute;
+    inset: 3px 3px auto auto;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--amber);
+    color: var(--panel);
+    font-size: 12px;
+    font-weight: 700;
+    place-items: center;
+}
+.product-image-options button[aria-pressed="true"] .product-image-check {
+    display: grid;
+}
 .product-image-remove input[type="checkbox"] {
     width: 16px;
     height: 16px;
@@ -133,6 +207,9 @@ select:focus[data-flux-control] {
 @media (max-width: 520px) {
     .product-image-field {
         grid-template-columns: minmax(0, 1fr);
+    }
+    .product-image-options {
+        grid-template-columns: repeat(3, minmax(0, 88px));
     }
 }
 
