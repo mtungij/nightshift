@@ -2,6 +2,7 @@ import "./nightshift.js";
 import "./pwa.js";
 import "./whatsapp.js";
 import "./shift-stock.js";
+import "./shift-close-wizard.js";
 import "./cash-custody.js";
 import { mountSearchableSelects } from "./searchable-select.js";
 

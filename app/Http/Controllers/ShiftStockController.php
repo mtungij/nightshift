@@ -12,19 +12,36 @@ use App\Services\ShiftStockService;
 use App\Support\UiText;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 
 final class ShiftStockController extends Controller
 {
     public function show(int $id, ShiftStockService $service): JsonResponse
     {
-        return response()->json($service->report($id));
+        return response()->json($service->report($id))->header('Cache-Control', 'private, no-store');
     }
 
-    public function page(int $id, ShiftStockService $service): View
+    public function page(Request $request, int $id, ShiftStockService $service): View|Response
     {
         $report = $service->report($id);
-        $recipients = $report['can_edit'] ? User::where('company_id', app(TenantContext::class)->companyId())->where('active', true)->get()->filter(fn ($u) => $u->canAccessBranch(Shift::findOrFail($id)->branch_id) && $u->canAccessBusinessUnit(Shift::findOrFail($id)->business_unit_id) && (app(OperationalShift::class)->type($u) === 'CASHIER' || $u->hasPermission('receive-treasury')))->map(fn ($u) => ['id' => $u->id, 'name' => $u->name, 'cashier' => app(OperationalShift::class)->type($u) === 'CASHIER', 'treasury' => $u->hasPermission('receive-treasury')])->values() : collect();
+        $shift = Shift::findOrFail($id);
+        $actor = app(TenantContext::class)->user();
+        $recipients = collect();
+        if ($report['can_edit']) {
+            $operational = app(OperationalShift::class);
+            $recipients = User::where('company_id', $actor->company_id)->where('active', true)->orderBy('name')->get()
+                ->filter(fn ($user) => $user->canAccessBranch($shift->branch_id) && $user->canAccessBusinessUnit($shift->business_unit_id))
+                ->map(fn ($user) => [
+                    'id' => $user->id, 'name' => $user->name,
+                    'cashier' => $operational->type($user) === 'CASHIER' && $user->canAccessCounter($shift->stock_location_id),
+                    'treasury' => $user->hasPermission('receive-treasury'),
+                ])->filter(fn ($recipient) => $recipient['cashier'] || $recipient['treasury'])->values();
+        }
+        if ($actor->role->name === 'Cashier' && $shift->user_id === $actor->id
+            && (($report['status'] === 'OPEN' && $report['can_edit']) || ($report['status'] === 'CLOSED' && $request->boolean('close')))) {
+            return response()->view('shift-close-wizard', compact('report', 'recipients'))->header('Cache-Control', 'private, no-store');
+        }
 
         return view('shift-stock', compact('report', 'recipients'));
     }

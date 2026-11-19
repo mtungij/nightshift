@@ -105,6 +105,9 @@ final class NightshiftController extends Controller
                 'product' => app(CatalogService::class)->product($data),'notifications-read' => $this->readNotifications(),default => app(CatalogService::class)->save(substr($command, 8), $data)
             };
 
+            if ($command === 'shift-stock-count') {
+                return ['id' => $result->id, 'status' => null, 'revision' => $result->revision];
+            }
             if ($command === 'counter-sale') {
                 return ['id' => $result->id, 'status' => $result->status, 'order_source' => $result->order_source->value, 'ticket_url' => route('nightshift.issue-ticket', $result->id, false)];
             }

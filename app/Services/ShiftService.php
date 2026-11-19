@@ -182,6 +182,9 @@ final class ShiftService
                 app(TicketCollectionService::class)->ensureNoPending($shift);
                 $blockers = $this->blockers($shift);
                 $this->stock->require($blockers === [], __('ui.Cannot close cashier shift. Settle balances and close waiter shifts: :waiters', ['waiters' => implode('; ', array_map(fn ($b) => $b['name'].' ('.($b['open'] ? __('ui.Open') : __('ui.Closed')).', TSh '.$b['balance'].')', $blockers))]));
+                if (isset($data['reconciliation_basis'])) {
+                    app(ShiftStockService::class)->ready($shift, $data['reconciliation_basis'], (int) ($data['reconciliation_revision'] ?? 0));
+                }
                 $this->stock->require(array_key_exists('actual_cash', $data) && $data['actual_cash'] !== null, __('ui.Enter actual cash before closing the cashier shift.'));
                 $expected = $this->expected($shift);
                 $actual = D::money($data['actual_cash'] ?? '0');
@@ -193,7 +196,7 @@ final class ShiftService
                 $shift->cash_difference = $difference;
             }
             $shift->closing_notes = $data['notes'] ?? null;
-            if ($shift->type === 'CASHIER') {
+            if ($shift->type === 'CASHIER' && ! isset($data['reconciliation_basis'])) {
                 app(ShiftStockService::class)->ready($shift);
             }
             $handover = $shift->type === 'CASHIER' ? app(CashHandoverService::class)->disposition($shift) : null;

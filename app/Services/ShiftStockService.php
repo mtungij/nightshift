@@ -84,8 +84,23 @@ final class ShiftStockService
         return $this->tx->run(function () use ($id) {
             $shift = $this->accessible($id);
             $report = $this->build($shift);
-            $handover = app(CashHandoverService::class)->active($shift);
-            $report['custody'] = $handover ? app(CashHandoverService::class)->present($handover) : null;
+            $cashHandover = app(CashHandoverService::class);
+            $handover = $cashHandover->active($shift);
+            $report['custody'] = $handover ? $cashHandover->present($handover) : null;
+            if ($report['status'] === 'OPEN') {
+                $report['close_requirements'] = [
+                    'stock' => $this->stockProblem($report),
+                    'handover' => $cashHandover->dispositionProblem($shift, $handover, $report['basis'], $report['custody']['status'] ?? null),
+                ];
+                $report['pending_tickets'] = $report['cash']['pending_ticket_count']
+                    ? app(TicketCollectionService::class)->forShift($shift)->where('status', 'PENDING')
+                        ->with('order.waiter')->orderBy('id')->limit(20)->get()->map(fn ($ticket) => [
+                            'invoice' => $ticket->order->invoice_number,
+                            'waiter' => $ticket->order->waiter?->name,
+                            'amount' => $ticket->amount,
+                        ])->all()
+                    : [];
+            }
             $user = app(TenantContext::class)->user();
             if (! $user->hasPermission('manage-inventory') && ! $user->hasPermission('view-reports')) {
                 foreach ($report['rows'] as &$row) {
@@ -266,14 +281,33 @@ final class ShiftStockService
         });
     }
 
+    /** @param array<string, mixed> $report */
+    private function stockProblem(array $report): ?string
+    {
+        return match (true) {
+            $report['totals']['ledger_mismatches'] !== 0 => 'ledger',
+            ! $report['complete'] => 'count',
+            $report['totals']['variance_count'] !== 0 && ! $report['approved'] => 'approval',
+            default => null,
+        };
+    }
+
     // ShiftService calls this before changing status; company lock spans both operations.
     /** @return array<string, mixed> */
-    public function ready(Shift $shift): array
+    public function ready(Shift $shift, ?string $basis = null, ?int $revision = null): array
     {
         $report = $this->build($shift);
-        $this->stock->require($report['totals']['ledger_mismatches'] === 0, 'Stock balances do not match the ledger. Investigate before closing.');
-        $this->stock->require($report['complete'], 'Complete stock reconciliation before closing this shift.');
-        $this->stock->require($report['totals']['variance_count'] === 0 || $report['approved'], 'A manager must approve the stock variances before closing.');
+        if ($basis !== null) {
+            abort_unless(! $report['stale'] && hash_equals($report['basis'], $basis) && $report['revision'] === $revision,
+                409, __('ui.Shift reconciliation changed. Refresh and review again.'));
+        }
+        $message = match ($this->stockProblem($report)) {
+            'ledger' => 'Stock balances do not match the ledger. Investigate before closing.',
+            'count' => 'Complete stock reconciliation before closing this shift.',
+            'approval' => 'A manager must approve the stock variances before closing.',
+            default => null,
+        };
+        $this->stock->require($message === null, $message ?? '');
 
         return $report;
     }

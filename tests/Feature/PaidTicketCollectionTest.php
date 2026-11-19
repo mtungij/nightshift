@@ -161,6 +161,7 @@ class PaidTicketCollectionTest extends TestCase
         $shift = Shift::findOrFail($ticket->cashier_shift_id);
         $report = app(ShiftStockService::class)->report($shift->id);
         $this->assertSame(1, $report['cash']['pending_ticket_count']);
+        $this->get('/shift-stock/'.$shift->id.'?close=1')->assertOk()->assertSee('Open Ticket Collection')->assertSee($order->invoice_number)->assertSee($order->total);
         $this->assertSame($order->total, $report['cash']['pending_ticket_amount']);
         $this->command('shift-close', ['id' => $shift->id, 'actual_cash' => '0'])
             ->assertUnprocessable()->assertJsonValidationErrors('transaction');

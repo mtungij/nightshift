@@ -1337,7 +1337,7 @@ if (root) {
                                   .join("")}
                           </select>`
                         : ""
-                }${ticketCollectionLink()}${managerial() ? btn("Add waiter", "add-waiter", "primary", "plus") : ""}`,
+                }${ticketCollectionLink()}${db.role === "Cashier" && db.shift.active && permitted("close-shifts") ? btn("Close Shift", "close-shift", "primary", "lock") : ""}${managerial() ? btn("Add waiter", "add-waiter", "primary", "plus") : ""}`,
             ) +
             html`<div class="kpi-grid">
                 ${kpi("Total outstanding", cashValue(branchWaiters().reduce((s, w) => s + outstanding(w), 0)), "users", "red", "", "Live shift balance", false)}${kpi("Payments Received", cashValue(db.visibility?.settlement_only ? db.payments.filter((p) => !p.is_credit).reduce((s, p) => s + Number(p.amount), 0) : branchWaiters().reduce((s, w) => s + w.paid, 0)), "wallet", "green", "", "During the current shift", false)}${kpi("Active waiters", String(branchWaiters().filter((w) => w.active).length), "user", "blue", "", "On duty right now", false)}${kpi("Settled accounts", String(branchWaiters().filter((w) => outstanding(w) === 0).length), "check", "green", "", "Ready to close shift", false)}
@@ -2166,7 +2166,7 @@ ${esc(cartNote)}</textarea>
                 branchSelect() +
                     btn("Open shift", "open-shift", "", "plus") +
                     (db.shift.active
-                        ? btn("Close cashier shift", "close-shift", "primary", "lock")
+                        ? btn(db.role === "Cashier" ? "Close Shift" : "Close cashier shift", "close-shift", "primary", "lock")
                         : ""),
             ) +
             tabs(["Current shifts", "Shift history"], tab || "Current shifts") +
@@ -2176,7 +2176,7 @@ ${esc(cartNote)}</textarea>
                     .filter((s) => s.type === "CASHIER" && s.status === "OPEN")
                     .map(
                         (s) =>
-                            html`<a class="button" href="/dashboard#shift-stock/${s.id}"
+                            html`<a class="button" href="${db.role === "Cashier" ? `/shift-stock/${s.id}?close=1` : `/dashboard#shift-stock/${s.id}`}"
                                 >${esc(s.number)} ·
                                 ${esc(s.business_unit || "—")}${s.show_location ? " · " + esc(db.locations.find((l) => l.id === s.stock_location_id)?.name || "") : ""}</a
                             >`,
@@ -5633,6 +5633,10 @@ ${esc(cartNote)}</textarea>
     }
     function shiftCloseModal() {
         if (!db.shift.active) return toast("You do not have an open cashier shift.");
+        if (db.role === "Cashier") {
+            location.href = `/shift-stock/${db.shift.id}?close=1`;
+            return;
+        }
         navigate(`shift-stock/${db.shift.id}`);
     }
     function productPayload(data) {

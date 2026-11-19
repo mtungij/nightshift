@@ -208,26 +208,39 @@ final class CashHandoverService
         $this->event($h, 'OPENED', $last->amount, $last->difference, null, $shift->id);
     }
 
+    public function dispositionProblem(Shift $shift, ?CashHandover $handover, string $basis, ?string $status = null): ?string
+    {
+        $zero = D::cmp($shift->actual_cash, '0') === 0;
+        if (! $handover) {
+            return $zero ? null : 'Select where the counted cash is being handed over.';
+        }
+        if (D::cmp($handover->amount, $shift->actual_cash) !== 0) {
+            return 'Hand over the full counted cash amount.';
+        }
+        $status ??= $this->latest($handover)->status;
+        if ($handover->destination === 'TREASURY' && ! in_array($status, ['RECEIVED', 'APPROVED'], true)) {
+            return 'The accountant or admin must confirm cash receipt before final close.';
+        }
+        if ($handover->destination === 'NEXT_CASHIER' && $status !== 'PENDING') {
+            return 'The next cashier handover is not pending receipt.';
+        }
+        if (! in_array($handover->destination, ['TREASURY', 'NEXT_CASHIER'], true) && ($handover->destination !== 'NONE' || ! $zero)) {
+            return 'Select where the counted cash is being handed over.';
+        }
+
+        return $handover->basis !== null && ! hash_equals($handover->basis, $basis)
+            ? 'Cash or stock changed. Cancel the unreceived handover and reconcile again.'
+            : null;
+    }
+
     public function disposition(Shift $shift): CashHandover
     {
-        $h = $this->active($shift);
-        if (D::cmp($shift->actual_cash, '0') === 0 && ! $h) {
-            $h = $this->create($shift, $shift->user_id, null, 'NONE', '0');
-        }
-        $this->stock->require($h !== null, __('ui.Select where the counted cash is being handed over.'));
-        $h ??= throw new \LogicException('Missing cash disposition');
-        $this->stock->require(D::cmp($h->amount, $shift->actual_cash) === 0, __('ui.Hand over the full counted cash amount.'));
-        if ($h->destination === 'TREASURY') {
-            $this->stock->require(in_array($this->latest($h)->status, ['RECEIVED', 'APPROVED'], true), __('ui.The accountant or admin must confirm cash receipt before final close.'));
-        } elseif ($h->destination === 'NEXT_CASHIER') {
-            $this->stock->require($this->latest($h)->status === 'PENDING', __('ui.The next cashier handover is not pending receipt.'));
-        } else {
-            $this->stock->require($h->destination === 'NONE' && D::cmp($shift->actual_cash, '0') === 0, __('ui.Select where the counted cash is being handed over.'));
-        }
+        $handover = $this->active($shift);
         $report = app(ShiftStockService::class)->report($shift->id);
-        $this->stock->require($h->basis === null || hash_equals($h->basis, $report['basis']), __('ui.Cash or stock changed. Cancel the unreceived handover and reconcile again.'));
+        $problem = $this->dispositionProblem($shift, $handover, $report['basis'], $report['custody']['status'] ?? null);
+        $this->stock->require($problem === null, $problem === null ? '' : __('ui.'.$problem));
 
-        return $h;
+        return $handover ?? $this->create($shift, $shift->user_id, null, 'NONE', '0');
     }
 
     /** @return array<string, mixed> */

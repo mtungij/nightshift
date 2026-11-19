@@ -97,6 +97,75 @@ class ShiftStockReconciliationTest extends TestCase
         return app(OrderService::class)->issue($order->id);
     }
 
+    public function test_cashier_wizard_shows_waiter_blockers_and_requires_explicit_counts_and_cash(): void
+    {
+        $url = '/shift-stock/'.$this->shift->id.'?close=1';
+        $this->get($url)->assertOk()->assertSee('Stock Reconciliation')->assertDontSee('cashier-close-wizard');
+        $this->actingAs($this->cashier);
+        $page = $this->get($url)->assertOk()->assertSee('cashier-close-wizard')->assertSee('Pending Orders')
+            ->assertSee($this->waiter->name)->assertSee('Settle the outstanding waiter balance.')
+            ->assertSee('Cash Reconciliation');
+        $this->assertMatchesRegularExpression('/data-physical-count value=""/', $page->getContent());
+        $this->assertMatchesRegularExpression('/data-wizard-actual value=""/', $page->getContent());
+        $this->getJson('/api/nightshift/shift-stock/'.$this->shift->id)->assertOk()
+            ->assertJsonPath('cash.actual', null)->assertJsonPath('close_requirements.stock', 'count');
+        $this->cashier->forceFill(['language_preference' => 'sw'])->save();
+        $this->get($url)->assertOk()->assertSee('Oda Zinazosubiri')->assertSee('Ukusanyaji wa Tiketi')
+            ->assertSee('Ulinganishaji wa Cash')->assertSee('Funga Zamu');
+    }
+
+    public function test_reviewed_close_restores_saved_counts_and_freezes_cash_after_confirmed_handover(): void
+    {
+        $this->settleCounterWaiters($this->shift->stock_location_id);
+        $this->actingAs($this->cashier);
+        $r = $this->service->report($this->shift->id);
+        $actual = D::sub($r['cash']['expected'], '1');
+        $save = ['id' => $this->shift->id, 'basis' => $r['basis'], 'revision' => $r['revision'],
+            'counts' => array_map(fn ($row) => ['product_id' => $row['product_id'], 'quantity' => $row['expected']], $r['rows'])];
+        $this->postJson('/api/nightshift/commands/shift-stock-count', [...$save, 'idempotency_key' => (string) Str::uuid()])->assertJsonValidationErrors('actual_cash');
+        $this->postJson('/api/nightshift/commands/shift-stock-count', [...$save, 'actual_cash' => $actual, 'idempotency_key' => (string) Str::uuid()])
+            ->assertOk()->assertJsonPath('revision', 1);
+        $this->getJson('/api/nightshift/shift-stock/'.$this->shift->id)->assertOk()->assertJsonPath('complete', true)
+            ->assertJsonPath('cash.actual', $actual)->assertJsonPath('cash.expected', app(ShiftService::class)->expected($this->shift))
+            ->assertJsonPath('close_requirements.stock', null)->assertJsonPath('close_requirements.handover', 'Select where the counted cash is being handed over.');
+        $url = '/shift-stock/'.$this->shift->id.'?close=1';
+        $this->get($url)->assertOk()->assertSee('data-wizard-actual value="'.$actual.'"', false);
+        $close = ['id' => $this->shift->id, 'actual_cash' => $actual, 'reconciliation_basis' => $r['basis'], 'reconciliation_revision' => 1];
+        $this->postJson('/api/nightshift/commands/shift-close', [...$close, 'idempotency_key' => (string) Str::uuid()])
+            ->assertUnprocessable()->assertJsonPath('errors.transaction.0', 'Explain the cash shortage or excess.');
+        $this->prepareCashDisposition($this->shift);
+        $this->getJson('/api/nightshift/shift-stock/'.$this->shift->id)->assertJsonPath('close_requirements.handover', null);
+        $this->postJson('/api/nightshift/commands/shift-close', [...$close, 'notes' => 'Cash short after repeat count', 'idempotency_key' => (string) Str::uuid()])
+            ->assertOk()->assertJsonPath('status', 'CLOSED');
+        $this->get($url)->assertOk()->assertSee('Shift closed successfully.')->assertSee('Print Shift Report');
+        $this->get('/shift-stock/'.$this->shift->id.'/print')->assertOk()->assertSee($this->shift->number);
+        $this->get('/dashboard')->assertRedirect('/open-shift');
+        $this->assertDatabaseHas('shift_stock_snapshots', ['shift_id' => $this->shift->id, 'kind' => 'CLOSING']);
+        $this->assertDatabaseHas('audit_logs', ['reference_id' => $this->shift->id, 'action' => 'SHIFT_CLOSED']);
+    }
+
+    public function test_review_conflicts_with_a_payment_or_stock_change_after_saving(): void
+    {
+        $report = $this->save();
+        $order = Order::where('stock_location_id', $this->shift->stock_location_id)->whereNotNull('issued_at')->firstOrFail();
+        Payment::create(['branch_id' => $this->shift->branch_id, 'shift_id' => $this->shift->id, 'order_id' => $order->id,
+            'number' => 'WIZARD-TEST-PAYMENT', 'method' => 'M-Pesa', 'amount' => '5000', 'is_credit' => false, 'received_by' => $this->owner->id]);
+        $fresh = $this->service->report($this->shift->id);
+        $this->assertTrue($fresh['stale']);
+        $this->assertSame($report['cash']['expected'], $fresh['cash']['expected']);
+        $this->assertSame('5000.00', $fresh['cash']['methods']['M-Pesa']['net']);
+        $this->actingAs($this->cashier);
+        $close = fn (array $r) => $this->postJson('/api/nightshift/commands/shift-close', [
+            'id' => $this->shift->id, 'actual_cash' => $r['cash']['actual'], 'reconciliation_basis' => $r['basis'],
+            'reconciliation_revision' => $r['revision'], 'idempotency_key' => (string) Str::uuid(),
+        ]);
+        $close($report)->assertConflict()->assertJsonPath('message', 'Shift reconciliation changed. Refresh and review again.');
+        $report = $this->save();
+        $this->move('1');
+        $close($report)->assertConflict();
+        $this->assertSame('OPEN', $this->shift->fresh()->status);
+    }
+
     public function test_opening_is_frozen_and_every_expected_balance_matches_current_stock(): void
     {
         $snapshot = ShiftStockSnapshot::where('shift_id', $this->shift->id)->where('kind', 'OPENING')->firstOrFail();
@@ -189,6 +258,7 @@ class ShiftStockReconciliationTest extends TestCase
         $this->actingAs($this->cashier);
         $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => app(ShiftService::class)->expected($this->shift), 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
         $r = $this->save('-2', 'Two bottles missing after recount');
+        $this->assertSame('approval', $r['close_requirements']['stock']);
         $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => app(ShiftService::class)->expected($this->shift), 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
         $this->postJson('/api/nightshift/commands/shift-stock-approve', ['id' => $this->shift->id, 'basis' => $r['basis'], 'revision' => $r['revision'], 'note' => 'Manager reviewed missing bottles', 'idempotency_key' => (string) Str::uuid()])->assertForbidden();
         $this->actingAs($this->owner);
@@ -376,6 +446,7 @@ class ShiftStockReconciliationTest extends TestCase
         $stock->update(['quantity' => D::sub($stock->quantity, '1', 6)]);
         $r = $this->save();
         $this->assertSame(1, $r['totals']['ledger_mismatches']);
+        $this->assertSame('ledger', $r['close_requirements']['stock']);
         $before = StockMovement::count();
         $this->postJson('/api/nightshift/commands/shift-close', ['id' => $this->shift->id, 'actual_cash' => app(ShiftService::class)->expected($this->shift), 'idempotency_key' => (string) Str::uuid()])->assertUnprocessable();
         $this->assertSame($before, StockMovement::count());
