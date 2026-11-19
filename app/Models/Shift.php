@@ -16,6 +16,7 @@ use Carbon\CarbonInterface;
  * @property string $number
  * @property string $type
  * @property string $status
+ * @property bool $allow_counter_sales
  * @property CarbonInterface $opened_at
  * @property CarbonInterface|null $closed_at
  * @property numeric-string $opening_cash
@@ -57,6 +58,6 @@ class Shift extends TenantModel
 
     protected function casts(): array
     {
-        return [...parent::casts(), 'opened_at' => 'datetime', 'closed_at' => 'datetime', 'override_at' => 'datetime'];
+        return [...parent::casts(), 'opened_at' => 'datetime', 'closed_at' => 'datetime', 'override_at' => 'datetime', 'allow_counter_sales' => 'boolean'];
     }
 }

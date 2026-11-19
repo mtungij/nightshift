@@ -882,3 +882,28 @@ select:focus[data-flux-control] {
         width: 100%;
     }
 }
+
+.shift-counter-sales {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 44px;
+    margin-block: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    cursor: pointer;
+}
+.shift-counter-sales[hidden] {
+    display: none;
+}
+.shift-counter-sales input {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    accent-color: var(--amber);
+}
+.shift-counter-sales small {
+    display: block;
+    color: var(--muted);
+}

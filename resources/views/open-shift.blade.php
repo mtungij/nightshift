@@ -25,6 +25,13 @@
                 </select>
             </label>
             <p data-cashier-occupancy role="status"></p><p data-cashier-capacity-message class="form-help"></p>
+            @if($cashier && auth()->user()->canEnableCounterSales())
+                <input type="hidden" name="allow_counter_sales" value="0">
+                <label class="shift-counter-sales">
+                    <input type="checkbox" name="allow_counter_sales" value="1" @checked(old('allow_counter_sales', true))>
+                    <span><strong>{{ \App\Support\UiText::get('Counter Sale') }}</strong><small>{{ \App\Support\UiText::get('Allow direct sales to walk-in customers') }}</small></span>
+                </label>
+            @endif
             @if($cashier)
                 <p>{{ \App\Support\UiText::get('Opening cash defaults to zero. Confirmed handover cash is applied automatically.') }}</p>
                 @foreach($handovers as $handover)

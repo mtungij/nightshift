@@ -2178,7 +2178,7 @@ ${esc(cartNote)}</textarea>
                         (s) =>
                             html`<a class="button" href="${db.role === "Cashier" ? `/shift-stock/${s.id}?close=1` : `/dashboard#shift-stock/${s.id}`}"
                                 >${esc(s.number)} ·
-                                ${esc(s.business_unit || "—")}${s.show_location ? " · " + esc(db.locations.find((l) => l.id === s.stock_location_id)?.name || "") : ""}</a
+                                ${esc(s.business_unit || "—")}${s.show_location ? " · " + esc(db.locations.find((l) => l.id === s.stock_location_id)?.name || "") : ""} · ${tr("Counter Sale")}: ${tr(s.allow_counter_sales ? "Enabled" : "Disabled")}</a
                             >`,
                     )
                     .join("")}
@@ -2194,6 +2194,7 @@ ${esc(cartNote)}</textarea>
                               "Expected cash",
                               "Actual cash",
                               "Difference",
+                              "Counter Sale",
                           ],
                           db.shifts
                               .filter((s) => s.status === "CLOSED")
@@ -2208,6 +2209,7 @@ ${esc(cartNote)}</textarea>
                                       (s.type === "CASHIER"
                                           ? `<a class="button small" href="/dashboard#shift-stock/${s.id}">${tr("Stock Reconciliation")}</a>`
                                           : ""),
+                                  s.type === "CASHIER" ? tr(s.allow_counter_sales ? "Enabled" : "Disabled") : "—",
                               ]),
                       )}
                   </section>`
@@ -2237,6 +2239,7 @@ ${esc(cartNote)}</textarea>
                                           </div>`,
                                   )
                                   .join("")}
+                              ${db.shift.id ? html`<div class="detail-row"><span>${tr("Counter Sale")}</span><strong>${tr(db.shift.allow_counter_sales ? "Enabled" : "Disabled")}</strong></div>` : ""}
                               <div class="balance-line">
                                   <span>Expected cash in drawer</span
                                   ><strong class="text-amber">${money(expected)}</strong>
@@ -4932,6 +4935,7 @@ ${esc(cartNote)}</textarea>
                         ? { stock_location_id: Number(data.stock_location_id) }
                         : {}),
                     type: data.type,
+                    allow_counter_sales: data.allow_counter_sales === "1",
                     opening_cash: data.opening || "0",
                     opening_reason: data.openingReason || null,
                 };
@@ -5614,7 +5618,12 @@ ${esc(cartNote)}</textarea>
                             .join("")}
                     </select></label
                 >`}${select("Shift type", "type", ["CASHIER", "WAITER"], permitted("issue-drinks") ? "CASHIER" : "WAITER")}${permitted("authorize-opening-cash") ? input(`Opening cash (${currencyLabel()})`, "opening", "number", 0) + input("Opening cash reason", "openingReason") : `<p>${tr("Opening cash defaults to zero. Confirmed handover cash is applied automatically.")}</p>`}
-            </div>`,
+            </div>
+            <label class="shift-counter-sales" data-shift-counter-sales hidden>
+                <input type="checkbox" name="allow_counter_sales" value="1" disabled>
+                <span><strong>${tr("Counter Sale")}</strong><small>${tr("Allow direct sales to walk-in customers")}</small></span>
+            </label>
+            <p class="form-help" role="status" data-counter-sale-ineligible hidden>${tr("This employee does not have permission to use Counter Sale.")}</p>`,
             submitButton("Open shift"),
             false,
             "open-shift",
@@ -5629,6 +5638,21 @@ ${esc(cartNote)}</textarea>
         message.dataset.cashierCapacityMessage = "";
         message.className = "form-help";
         form.querySelector(".modal-body").append(message);
+        const option = form.querySelector("[data-shift-counter-sales]");
+        const checkbox = form.elements.allow_counter_sales;
+        const ineligible = form.querySelector("[data-counter-sale-ineligible]");
+        function updateCounterSaleOption() {
+            const cashierShift = form.elements.type.value === "CASHIER";
+            const employee = users.find((user) => user.id === Number(form.elements.user.value));
+            const eligible = cashierShift && !!employee?.can_enable_counter_sales;
+            option.hidden = checkbox.disabled = !eligible;
+            checkbox.checked = eligible;
+            ineligible.hidden = !cashierShift || !employee || eligible;
+        }
+        form.addEventListener("change", (event) => {
+            if (["user", "type"].includes(event.target.name)) updateCounterSaleOption();
+        });
+        updateCounterSaleOption();
         updateCashierOccupancy(form);
     }
     function shiftCloseModal() {

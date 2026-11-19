@@ -157,6 +157,12 @@ class User extends Authenticatable implements PasskeyUser
         return $this->active && $this->company_id && (! $this->isPosTerminal() || in_array($permission, ['create-orders', 'view-orders'], true)) && $this->role->permissions()->where('name', $permission)->exists();
     }
 
+    public function canEnableCounterSales(): bool
+    {
+        return ! in_array($this->role?->name, ['Waiter', 'Store Keeper', 'POS Terminal'], true)
+            && $this->hasPermission('counter-sales') && $this->hasPermission('issue-drinks');
+    }
+
     public function canAccessBranch(int $id): bool
     {
         if ($this->isPosTerminal()) {

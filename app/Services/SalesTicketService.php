@@ -94,6 +94,12 @@ class SalesTicketService
         });
     }
 
+    /** @return array<string, string|null> */
+    public function receiptDetails(Company $company): array
+    {
+        return $company->only(['receipt_header', 'receipt_footer', 'address', 'phone', 'tin', 'vrn']);
+    }
+
     /** @return array<string, mixed> */
     public function data(Order $order): array
     {
@@ -106,11 +112,11 @@ class SalesTicketService
             : ($issue->debit ?? $order->total);
         $enteredBy = User::where('company_id', $order->company_id)->find($order->created_by);
 
-        return ['counter_sale' => $direct, 'show_location' => $direct || app(UnitOperationalService::class)->showLocation($order->company_id, $order->business_unit_id, $order->stock_location_id), 'business_unit' => BusinessUnit::withoutGlobalScopes()->where('company_id', $order->company_id)->whereKey($order->business_unit_id)->value('name') ?? '—', 'order_id' => $order->id, 'business' => $company->trading_name ?: $company->name, 'branch' => Branch::findOrFail($order->branch_id)->name, 'invoice' => $order->invoice_number, 'order_note' => $order->order_note,
+        return [...$this->receiptDetails($company), 'counter_sale' => $direct, 'show_location' => $direct || app(UnitOperationalService::class)->showLocation($order->company_id, $order->business_unit_id, $order->stock_location_id), 'business_unit' => BusinessUnit::withoutGlobalScopes()->where('company_id', $order->company_id)->whereKey($order->business_unit_id)->value('name') ?? '—', 'order_id' => $order->id, 'business' => $company->trading_name ?: $company->name, 'branch' => Branch::findOrFail($order->branch_id)->name, 'invoice' => $order->invoice_number, 'order_note' => $order->order_note,
             'issued_at' => $order->issued_at?->copy()->timezone($company->timezone ?: 'Africa/Dar_es_Salaam')->format('d M Y H:i'),
             'entered_via' => $enteredBy?->isPosTerminal() ? $enteredBy->name : null,
             'waiter' => $direct ? null : User::where('company_id', $order->company_id)->findOrFail($order->waiter_id)->name,
-            'cashier' => $direct ? User::where('company_id', $order->company_id)->find($order->issued_by)?->name : null,
+            'cashier' => User::where('company_id', $order->company_id)->find($order->issued_by)?->name,
             'payments' => $direct ? Payment::where('order_id', $order->id)->where('amount', '>', 0)->orderBy('id')->get(['method', 'amount'])->toArray() : [],
             'table' => ServiceTable::find($order->service_table_id)->name ?? '—', 'counter' => StockLocation::withoutGlobalScopes()->where('company_id', $order->company_id)->findOrFail($order->stock_location_id)->name,
             'items' => $order->items->map(fn ($item) => $item->only(['product_name', 'quantity', 'unit_name', 'unit_price', 'total']))->all(),
@@ -139,7 +145,11 @@ class SalesTicketService
     {
         $order = app(OrderService::class)->accessible($batch->order_id);
 
-        return array_replace($batch->ticket, ['outstanding' => $this->outstanding($order)]);
+        $ticket = $batch->ticket + $this->receiptDetails(app(TenantContext::class)->user()->company);
+        $ticket['cashier'] ??= User::where('company_id', $order->company_id)->find($order->issued_by)?->name;
+        $ticket['outstanding'] = $this->outstanding($order);
+
+        return $ticket;
     }
 
     public function dispatch(string $token): bool

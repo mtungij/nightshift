@@ -6,6 +6,7 @@ use App\Domain\OrderCollectionMode;
 use App\Domain\StaffVisibility;
 use App\Http\Requests\NightshiftCommandRequest;
 use App\Models\Branch;
+use App\Models\BusinessUnit;
 use App\Models\BusinessNotification;
 use App\Models\Order;
 use App\Models\Payment;
@@ -219,7 +220,18 @@ final class NightshiftController extends Controller
             return $this->issueTicket($id);
         }
 
-        return view('receipt', ['order' => $o->load('items'), 'company' => auth()->user()->company, 'branch' => Branch::findOrFail($o->branch_id), 'waiter' => User::where('company_id', $o->company_id)->findOrFail($o->waiter_id), 'cashier' => User::where('company_id', $o->company_id)->find($o->issued_by), 'table' => ServiceTable::find($o->service_table_id), 'payments' => PaymentAllocation::where('order_id', $o->id)->get()->map(fn ($a) => Payment::findOrFail($a->payment_id))]);
+        $tickets = app(SalesTicketService::class);
+        $company = auth()->user()->company;
+
+        return view('receipt', [
+            'order' => $o->load('items'), 'company' => $company, 'receiptDetails' => $tickets->receiptDetails($company),
+            'branch' => Branch::findOrFail($o->branch_id), 'waiter' => User::where('company_id', $o->company_id)->findOrFail($o->waiter_id),
+            'cashier' => User::where('company_id', $o->company_id)->find($o->issued_by), 'table' => ServiceTable::find($o->service_table_id),
+            'counter' => StockLocation::withoutGlobalScopes()->where('company_id', $o->company_id)->findOrFail($o->stock_location_id),
+            'businessUnit' => BusinessUnit::withoutGlobalScopes()->where('company_id', $o->company_id)->whereKey($o->business_unit_id)->value('name'),
+            'payments' => PaymentAllocation::where('order_id', $o->id)->get()->map(fn ($a) => ['method' => Payment::findOrFail($a->payment_id)->method, 'amount' => $a->amount])->all(),
+            'paperWidth' => $tickets->preferences()['paper_width'],
+        ]);
     }
 
     public function issueTicket(int $id): View

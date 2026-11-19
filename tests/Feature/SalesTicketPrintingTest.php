@@ -97,7 +97,7 @@ class SalesTicketPrintingTest extends TestCase
         $this->assertSame(0, DB::transactionLevel());
         $this->assertSame($response->json('id'), $batch->order_id);
         $this->assertSame(app(WaiterLedgerService::class)->visibleBalance($this->waiter->id), $batch->ticket['outstanding']);
-        $page = $this->get($response->json('print_url'))->assertOk()->assertSee('WAITER COPY')->assertSee('CASHIER COPY')->assertSee('ISSUED / UNPAID')->assertSee('Subtotal')->assertSee('Discount')->assertSee('Waiter outstanding after this order')->assertSee($batch->ticket['outstanding'])->assertSee('size:80mm 200mm', false)->assertSee('background:#fff', false)->assertSee('Unit price')->assertSee('Line total');
+        $page = $this->get($response->json('print_url'))->assertOk()->assertSee('WAITER COPY')->assertSee('CASHIER COPY')->assertSee('ISSUED / UNPAID')->assertSee('Subtotal')->assertSee('Discount')->assertSee('Waiter outstanding after this order')->assertSee(TicketAmountFormatter::format($batch->ticket['outstanding']))->assertSee('size: 80mm 200mm; margin: 0', false)->assertSee('background: #fff', false)->assertDontSee('class="reprint"', false)->assertSee('Unit price')->assertSee('Line total');
         $this->assertMatchesRegularExpression('/break-before:\s*page/', $page->getContent());
         $this->assertSame(2, substr_count($page->getContent(), '<article class="ticket"'));
         $this->assertSame(1, substr_count($page->getContent(), 'Waiter outstanding after this order'));
@@ -305,7 +305,7 @@ class SalesTicketPrintingTest extends TestCase
         $this->command('payment', ['id' => $send->json('id'), 'lines' => [['method' => 'Cash', 'amount' => $original->ticket['total']]]])->assertOk();
         $before = $this->accounting();
         $response = $this->command('ticket-reprint', ['id' => $send->json('id')])->assertOk();
-        $this->get($response->json('print_url'))->assertOk()->assertSee($original->ticket['outstanding'])->assertSee('REPRINT');
+        $this->get($response->json('print_url'))->assertOk()->assertSee(TicketAmountFormatter::format($original->ticket['outstanding']))->assertSee('REPRINT')->assertSee($original->ticket['issued_at']);
         $this->assertSame($before, $this->accounting());
         $this->assertSame('PAID', Order::findOrFail($send->json('id'))->status);
     }
@@ -344,12 +344,12 @@ class SalesTicketPrintingTest extends TestCase
         $data['items'] = array_map(fn ($quantity) => ['product_unit_id' => $this->unit->id, 'quantity' => $quantity], ['4.0000', '1.5', '0.75']);
         $send = $this->command('order-send', $data)->assertOk()->assertJsonPath('copies', ['WAITER COPY', 'CASHIER COPY']);
         $before = $this->accounting();
-        $page = $this->get($send->json('print_url'))->assertOk()->assertSee('data-paper-width="58mm"', false)->assertSee('size:58mm 200mm;margin:0', false)->assertSee('width:48mm', false)->assertSee($name)->assertSee('4 × Piece')->assertSee('1.5 × Piece')->assertSee('0.75 × Piece')->assertDontSee('4.0000 ×')->assertSee('Outstanding Balance')->assertSee('18,750.00')->assertSee('ISSUED / UNPAID')->assertDontSee('<table', false);
+        $page = $this->get($send->json('print_url'))->assertOk()->assertSee('data-paper-width="58mm"', false)->assertSee('size: 58mm 200mm; margin: 0', false)->assertSee('--content-width: 48mm', false)->assertSee($name)->assertSee('4 × Piece')->assertSee('1.5 × Piece')->assertSee('0.75 × Piece')->assertDontSee('4.0000 ×')->assertSee('Outstanding Balance')->assertSee('18,750')->assertSee('ISSUED / UNPAID')->assertDontSee('<table', false);
         $this->assertSame(2, substr_count($page->getContent(), '<article class="ticket"'));
         $this->assertSame(1, substr_count($page->getContent(), 'Outstanding Balance'));
         $this->assertSame($before, $this->accounting());
         $batch = SalesTicketBatch::firstOrFail();
-        $this->assertSame('18,750.00', TicketAmountFormatter::format($batch->ticket['total']));
+        $this->assertSame('18,750', TicketAmountFormatter::format($batch->ticket['total']));
         $this->postJson($send->json('print_url').'/dispatch')->assertJsonPath('print', true);
         $this->postJson($send->json('print_url').'/dispatch')->assertJsonPath('print', false);
         $this->assertSame($before, $this->accounting());
@@ -381,8 +381,31 @@ class SalesTicketPrintingTest extends TestCase
         $this->get($send->json('print_url'))->assertOk()->assertSee('NAKALA YA MHUDUMU')->assertSee('NAKALA YA KESHIA')->assertSee('HAIJALIPWA')->assertSee('JUMLA')->assertSee('Salio Linalodaiwa');
         $this->assertSame('Upana wa Karatasi', UiText::get('Paper Width'));
         $this->assertSame('9,999,999,999.99', TicketAmountFormatter::format('9999999999.99'));
+        $this->assertSame('-2,500', TicketAmountFormatter::format('-2500.00'));
+        $this->assertSame('2,500.00', TicketAmountFormatter::format('2500.00', 'USD'));
         $this->assertSame('0.75', QuantityFormatter::format('0.750000'));
         $this->assertSame('4', QuantityFormatter::format('4.000000'));
+    }
+
+    public function test_invoice_receipt_shows_actual_payment_status_and_configured_footer(): void
+    {
+        $this->owner->company->update(['receipt_footer' => 'Asante from the staff', 'address' => '1 Garden Road', 'tin' => '123456789']);
+        $this->command('print-settings', $this->settings(['paper_width' => '58mm']))->assertOk();
+        $initial = $this->command('order-send', [...$this->payload(), 'discount' => '500'])->assertOk();
+        $order = Order::findOrFail($initial->json('id'));
+        $this->command('payment', ['id' => $order->id, 'lines' => [['method' => 'Cash', 'amount' => '1000.50'], ['method' => 'M-Pesa', 'amount' => '500']]])->assertOk();
+
+        $page = $this->get('/api/nightshift/receipts/'.$order->id)->assertOk()
+            ->assertSee('data-paper-width="58mm"', false)->assertSee('CUSTOMER RECEIPT')
+            ->assertSee($this->waiter->name)->assertSee('Waiter Order')->assertSee('Main Counter')
+            ->assertSee('<dt>Cash</dt><dd>1,000.50</dd>', false)
+            ->assertSee('<dt>M-Pesa</dt><dd>500</dd>', false)
+            ->assertSee('<dt>Discount</dt><dd>500</dd>', false)
+            ->assertSee('<dt>Amount Paid</dt><dd>1,500.50</dd>', false)
+            ->assertSee('PARTIALLY PAID')->assertSee('1 Garden Road')->assertSee('TIN 123456789')
+            ->assertDontSee('class="reprint"', false)->assertDontSee('Thank you!')
+            ->assertSee('Headers and footers to Off');
+        $this->assertSame(1, substr_count($page->getContent(), 'Asante from the staff'));
     }
 
     public function test_invalid_print_settings_are_rejected(): void
@@ -468,7 +491,7 @@ class SalesTicketPrintingTest extends TestCase
         $sent = $this->command('order-send', ['id' => $order->id, 'waiter_id' => $order->waiter_id, 'pin' => '0123'])->assertOk();
         $this->assertSame($originalTotal, $order->fresh()->total);
         $this->assertSame('500.00', $order->fresh()->discount);
-        $this->get($sent->json('print_url'))->assertOk()->assertSee('500.00')->assertSee('Last sofa in VIP');
+        $this->get($sent->json('print_url'))->assertOk()->assertSee('<dt>Discount</dt><dd>500</dd>', false)->assertSee('Last sofa in VIP');
     }
 
     public function test_missing_notes_and_legacy_batch_snapshots_do_not_print_empty_note_sections(): void

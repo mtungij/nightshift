@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Domain\OperationalShift;
 use App\Models\Branch;
 use App\Models\BusinessUnit;
+use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Shift;
 use App\Models\StockLocation;
@@ -91,6 +92,64 @@ class OperationalShiftRoutingTest extends TestCase
         }
 
         return $user;
+    }
+
+    public function test_eligible_cashier_gets_a_checked_switch_and_can_turn_it_off(): void
+    {
+        $cashier = $this->staff('Cashier');
+        $cashier->role->permissions()->attach(Permission::where('name', 'counter-sales')->value('id'));
+        $this->actingAs($cashier);
+        $this->get('/open-shift')->assertOk()->assertSee('Allow direct sales to walk-in customers')
+            ->assertSee('name="allow_counter_sales" value="1" checked', false);
+        $this->post('/open-shift', ['stock_location_id' => $this->counter->id, 'allow_counter_sales' => '0'])->assertRedirect('/dashboard#waiters');
+        $this->assertFalse(Shift::where('user_id', $cashier->id)->sole()->allow_counter_sales);
+        $this->getJson('/api/nightshift/bootstrap?pos_context=1')->assertJsonPath('counter_sale_shift', null);
+    }
+
+    public function test_admin_opens_an_eligible_cashier_shift_with_the_selected_flag(): void
+    {
+        $cashier = $this->staff('Cashier');
+        $cashier->role->permissions()->attach(Permission::where('name', 'counter-sales')->value('id'));
+        $team = $this->getJson('/api/nightshift/bootstrap')->assertOk()->json('team');
+        $this->assertTrue(collect($team)->firstWhere('id', $cashier->id)['can_enable_counter_sales']);
+        $this->assertFalse(collect($team)->firstWhere('role', 'Manager')['can_enable_counter_sales']);
+        $request = ['user_id' => $cashier->id, 'stock_location_id' => $this->counter->id, 'type' => 'CASHIER'];
+        $post = fn (bool $allow) => $this->postJson('/api/nightshift/commands/shift-open', [...$request, 'allow_counter_sales' => $allow, 'idempotency_key' => (string) Str::uuid()]);
+        $id = $post(true)->assertOk()->json('id');
+        $shift = Shift::findOrFail($id);
+        $this->assertTrue($shift->allow_counter_sales);
+        $this->actingAs($cashier);
+        $this->getJson('/api/nightshift/bootstrap?pos_context=1')->assertOk()->assertJsonPath('counter_sale_shift.id', $shift->id);
+        $this->actingAs($this->owner);
+        $this->completeStockCount($shift);
+        app(ShiftService::class)->close($shift->id, ['actual_cash' => '0']);
+        $this->assertSame('CLOSED', $shift->fresh()->status);
+        $this->assertTrue($shift->fresh()->allow_counter_sales);
+        $second = $post(false)->assertOk()->json('id');
+        $this->assertFalse(Shift::findOrFail($second)->allow_counter_sales);
+    }
+
+    public function test_shift_open_rejects_tampered_counter_sale_flags(): void
+    {
+        $cashier = $this->staff('Cashier');
+        $waiter = $this->staff('Waiter');
+        $foreign = User::factory()->create();
+        $permission = Permission::where('name', 'counter-sales')->value('id');
+        $waiter->role->permissions()->attach($permission);
+        $post = fn (User $employee, string $type) => $this->postJson('/api/nightshift/commands/shift-open', [
+            'user_id' => $employee->id, 'type' => $type, 'stock_location_id' => $this->counter->id,
+            'allow_counter_sales' => true, 'idempotency_key' => (string) Str::uuid(),
+        ]);
+        $post($cashier, 'CASHIER')->assertJsonValidationErrors('transaction');
+        $post($waiter, 'WAITER')->assertJsonValidationErrors('transaction');
+        $post($foreign, 'CASHIER')->assertNotFound();
+
+        $this->actingAs($cashier);
+        $this->get('/open-shift')->assertOk()->assertDontSee('name="allow_counter_sales"', false);
+        $this->from('/open-shift')->post('/open-shift', ['stock_location_id' => $this->counter->id, 'allow_counter_sales' => '1'])
+            ->assertRedirect('/open-shift')->assertSessionHasErrors('transaction');
+        $this->actingAs($waiter);
+        $this->get('/open-shift')->assertOk()->assertDontSee('name="allow_counter_sales"', false);
     }
 
     #[DataProvider('staffRoles')]

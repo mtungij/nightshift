@@ -48,10 +48,10 @@ final class OpenShiftController extends Controller
             return redirect($shifts->destination($user));
         }
         $data = $request->validate(['business_unit_id' => ['required_without:stock_location_id', 'integer', 'min:1'], 'stock_location_id' => ['nullable', 'required_without:business_unit_id', 'integer', 'min:1'],
-            'opening_cash' => ['prohibited'], 'handover_id' => ['nullable', 'integer', 'min:1'],
+            'opening_cash' => ['prohibited'], 'allow_counter_sales' => ['sometimes', 'boolean'], 'handover_id' => ['nullable', 'integer', 'min:1'],
             'user_id' => ['prohibited'], 'type' => ['prohibited'], 'company_id' => ['prohibited'],
         ]);
-        $service->open(['user_id' => $user->id, 'type' => $shifts->type($user), 'business_unit_id' => $data['business_unit_id'] ?? null, 'stock_location_id' => $data['stock_location_id'] ?? null, 'handover_id' => $data['handover_id'] ?? null]);
+        $service->open(['user_id' => $user->id, 'type' => $shifts->type($user), 'business_unit_id' => $data['business_unit_id'] ?? null, 'stock_location_id' => $data['stock_location_id'] ?? null, 'handover_id' => $data['handover_id'] ?? null, 'allow_counter_sales' => $data['allow_counter_sales'] ?? false]);
 
         return redirect($shifts->destination($user));
     }

@@ -21,6 +21,7 @@ use App\Models\WaiterLedgerEntry;
 use App\Services\ReportService;
 use App\Services\ShiftService;
 use App\Services\ShiftStockService;
+use App\Services\StaffPinService;
 use Database\Seeders\NightshiftDemoSeeder;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -60,9 +61,10 @@ class CounterSaleTest extends TestCase
         return ProductUnit::whereHas('product', fn ($q) => $q->where('sku', 'BR-001'))->whereHas('unit', fn ($q) => $q->where('name', $name))->firstOrFail();
     }
 
-    private function allowCashier(): void
+    private function allowCashier(bool $allowCounterSales = true): void
     {
         $this->cashier->role->permissions()->syncWithoutDetaching(Permission::where('name', 'counter-sales')->firstOrFail());
+        $this->shift->update(['allow_counter_sales' => $allowCounterSales]);
         $this->actingAs($this->cashier);
     }
 
@@ -88,9 +90,29 @@ class CounterSaleTest extends TestCase
         return Stock::where('stock_location_id', $this->shift->stock_location_id)->where('product_id', $this->bottle->product_id)->firstOrFail()->quantity;
     }
 
+    public function test_existing_shift_defaults_off_and_still_allows_waiter_orders(): void
+    {
+        $this->assertFalse($this->shift->allow_counter_sales);
+        $waiter = User::where('email', 'asha@nightshift.test')->firstOrFail();
+        app(StaffPinService::class)->set($waiter->id, '0123');
+        $this->allowCashier(false);
+        $this->getJson('/api/nightshift/bootstrap?pos_context=1')->assertOk()
+            ->assertJsonPath('counter_sale_shift', null)->assertJsonPath('shift.allow_counter_sales', false);
+        $stock = $this->stock();
+        $this->command('counter-sale', $this->sale())->assertUnprocessable()
+            ->assertJsonPath('errors.transaction.0', 'Counter Sale is disabled for this shift.');
+        $this->assertSame($stock, $this->stock());
+        $this->command('order-send', [
+            'waiter_id' => $waiter->id, 'pin' => '0123', 'stock_location_id' => $this->shift->stock_location_id,
+            'discount' => '0', 'items' => $this->sale()['items'],
+        ])->assertOk()->assertJsonPath('status', 'ISSUED');
+        $this->assertDatabaseMissing('orders', ['order_source' => OrderSource::CashierDirect->value]);
+    }
+
     public function test_checkout_is_atomic_idempotent_and_scoped_to_own_shift_in_a_paid_ticket_unit(): void
     {
         BusinessUnit::findOrFail($this->shift->business_unit_id)->update(['order_collection_mode' => OrderCollectionMode::PaidTicket]);
+        $this->shift->update(['allow_counter_sales' => true]);
         $this->actingAs($this->cashier);
         $this->command('counter-sale', $this->sale())->assertForbidden();
         $this->allowCashier();
@@ -126,12 +148,20 @@ class CounterSaleTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['action' => 'COUNTER_SALE_PAID', 'reference_id' => (string) $id, 'user_id' => $this->cashier->id]);
 
         $sale->assertJsonPath('copies', ['CUSTOMER RECEIPT']);
-        $this->get($sale->json('print_url'))->assertOk()->assertSee('Counter Sale')->assertSee('M-Pesa')->assertSee($this->cashier->name)->assertDontSee('WAITER COPY');
+        $original = $this->get($sale->json('print_url'))->assertOk()->assertSee('data-paper-width="80mm"', false)
+            ->assertSee('Counter Sale')->assertSee($this->cashier->name)->assertSee('CUSTOMER RECEIPT')
+            ->assertSee('<dt>Cash</dt><dd>10,000</dd>', false)->assertSee('M-Pesa')
+            ->assertSee('<dt>Change</dt><dd>0</dd>', false)->assertSee('Thank you!')
+            ->assertDontSee('WAITER COPY')->assertDontSee('<dt>Waiter</dt>', false)->assertDontSee('class="reprint"', false);
+        $this->assertSame(1, substr_count($original->getContent(), '<article class="ticket"'));
         $this->getJson('/api/nightshift/bootstrap?pos_context=1')->assertOk()->assertJsonFragment(['order_source' => 'CASHIER_DIRECT']);
         $this->actingAs($this->owner);
         app(\App\Services\SalesTicketService::class)->savePreferences(['paper_width' => '58mm', 'auto_print' => true, 'waiter_copy' => true, 'cashier_copy' => true, 'number_of_copies' => 2]);
         $reprint = $this->command('ticket-reprint', ['id' => $id])->assertOk()->assertJsonPath('copies', ['CUSTOMER RECEIPT']);
-        $this->get($reprint->json('print_url'))->assertOk()->assertSee('58mm')->assertSee('REPRINT')->assertSee($order->invoice_number)->assertDontSee('WAITER COPY');
+        $this->get($reprint->json('print_url'))->assertOk()->assertSee('data-paper-width="58mm"', false)
+            ->assertSee('class="reprint"', false)->assertSee('REPRINT')->assertSee($order->invoice_number)
+            ->assertSee($order->issued_at->copy()->timezone($this->owner->company->timezone)->format('d M Y H:i'))
+            ->assertSee('<dt>Change</dt><dd>0</dd>', false)->assertDontSee('<table', false)->assertDontSee('WAITER COPY');
 
         $this->expectException(QueryException::class);
         $this->expectExceptionMessage('An order source cannot be changed');

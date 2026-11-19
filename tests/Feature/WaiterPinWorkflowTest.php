@@ -263,7 +263,7 @@ class WaiterPinWorkflowTest extends TestCase
         $this->get('/api/nightshift/issue-tickets/'.$queued->id)->assertStatus(409);
         $response = $this->command('order-send', $this->payload())->assertOk();
         $order = Order::findOrFail($response->json('id'));
-        $this->get($response->json('ticket_url'))->assertOk()->assertSee($order->invoice_number)->assertSee($this->waiter->name)->assertSee($this->counter->name)->assertSee('UNPAID')->assertSee('80mm')->assertSee('data-committed-order="'.$order->id.'"', false)->assertSee($order->total)->assertSee($order->items->first()->product_name);
+        $this->get($response->json('ticket_url'))->assertOk()->assertSee($order->invoice_number)->assertSee($this->waiter->name)->assertSee($this->counter->name)->assertSee('UNPAID')->assertSee('80mm')->assertSee('data-committed-order="'.$order->id.'"', false)->assertSee('<dt>TOTAL TZS</dt><dd>3,000</dd>', false)->assertSee($order->items->first()->product_name);
     }
 
     public function test_shared_cashier_requires_the_selected_waiters_pin_and_preserves_attribution(): void

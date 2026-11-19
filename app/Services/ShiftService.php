@@ -33,6 +33,9 @@ final class ShiftService
             if ($user->id !== $actor->id) {
                 Gate::authorize('manage-users');
             }
+            $allowCounterSales = (bool) ($data['allow_counter_sales'] ?? false);
+            $this->stock->require(! $allowCounterSales || ($data['type'] === 'CASHIER' && $user->canEnableCounterSales()),
+                __('ui.Counter Sale can only be enabled for a permitted cashier shift.'));
             $location = app(UnitOperationalService::class)->resolve($data, staff: $user);
             $location = $location->newQuery()->lockForUpdate()->findOrFail($location->id);
             $this->stock->require($location->type === 'COUNTER', 'Shifts must be opened at a counter.');
@@ -70,12 +73,12 @@ final class ShiftService
                 $parent = $this->counterCashier($location->id);
                 $this->stock->require(app(CashHandoverService::class)->active($parent) === null, __('ui.Cash handover is in progress. Finish closing the cashier shift first.'));
             }
-            $shift = Shift::create(['branch_id' => $location->branch_id, 'user_id' => $user->id, 'stock_location_id' => $location->id, 'number' => $this->numbers->next('SHF'), 'type' => $data['type'], 'status' => 'OPEN', 'opening_cash' => $opening, 'opened_at' => now(), 'opened_by' => $actor->id, 'cashier_shift_id' => $parent?->id]);
+            $shift = Shift::create(['branch_id' => $location->branch_id, 'user_id' => $user->id, 'stock_location_id' => $location->id, 'number' => $this->numbers->next('SHF'), 'type' => $data['type'], 'status' => 'OPEN', 'allow_counter_sales' => $allowCounterSales, 'opening_cash' => $opening, 'opened_at' => now(), 'opened_by' => $actor->id, 'cashier_shift_id' => $parent?->id]);
             if ($handoverId !== null) {
                 app(CashHandoverService::class)->applied($handoverId, $shift);
             }
             app(ShiftStockService::class)->opening($shift);
-            $this->audit->record('SHIFT_OPENED', 'Shifts', 'Shift', $shift->id, [], ['number' => $shift->number, 'user_id' => $user->id, 'opened_by' => $actor->id, 'counter_id' => $location->id, 'opening_cash' => $shift->opening_cash, 'opening_reason' => $data['opening_reason'] ?? null, 'handover_id' => $handoverId, 'cashier_shift_id' => $parent?->id], $shift->branch_id);
+            $this->audit->record('SHIFT_OPENED', 'Shifts', 'Shift', $shift->id, [], ['number' => $shift->number, 'user_id' => $user->id, 'opened_by' => $actor->id, 'counter_id' => $location->id, 'allow_counter_sales' => $shift->allow_counter_sales, 'opening_cash' => $shift->opening_cash, 'opening_reason' => $data['opening_reason'] ?? null, 'handover_id' => $handoverId, 'cashier_shift_id' => $parent?->id], $shift->branch_id);
 
             return $shift;
         });

@@ -498,7 +498,7 @@ class NightshiftWorkflowTest extends TestCase
         $o = $this->issued();
         $this->owner->company->update(['trading_name' => 'Garden Lounge', 'receipt_header' => 'Welcome to our bar', 'receipt_footer' => 'See you again soon', 'tin' => 'TIN-123', 'vrn' => 'VRN-456', 'currency' => 'USD']);
         $this->get('/api/nightshift/receipts/'.$o->id)->assertOk()->assertSee($o->invoice_number)->assertSee('80mm')->assertSee('Serengeti Lite')
-            ->assertSee('Garden Lounge')->assertSee('Welcome to our bar')->assertSee('See you again soon')->assertSee('TIN-123')->assertSee('VRN-456')->assertSee('Total USD');
+            ->assertSee('Garden Lounge')->assertSee('Welcome to our bar')->assertSee('See you again soon')->assertSee('TIN-123')->assertSee('VRN-456')->assertSee('TOTAL USD');
     }
 
     public function test_discount_shares_remain_nonnegative_and_reconcile_across_many_lines(): void

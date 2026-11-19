@@ -49,6 +49,7 @@ final class OrderService
             abort_unless($actor->active && $actor->company->active && ! in_array($actor->role->name, ['Waiter', 'Store Keeper', 'POS Terminal'], true), 403);
             $shift = Shift::whereKey($data['cashier_shift_id'])->where('user_id', $actor->id)->where('type', 'CASHIER')->where('status', 'OPEN')->lockForUpdate()->first();
             $this->stock->require((bool) $shift, __('ui.Open your cashier shift before completing a counter sale.'));
+            $this->stock->require($shift->allow_counter_sales, __('ui.Counter Sale is disabled for this shift.'));
             abort_unless($shift->stock_location_id === (int) $data['stock_location_id']
                 && $shift->business_unit_id === (int) $data['business_unit_id']
                 && (! isset($data['branch_id']) || $shift->branch_id === (int) $data['branch_id']), 403);

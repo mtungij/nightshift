@@ -5,11 +5,13 @@ namespace App\Support;
 final class TicketAmountFormatter
 {
     /** Group digits for narrow tickets without converting stored decimals to floats. */
-    public static function format(string $value): string
+    public static function format(string $value, string $currency = 'TZS'): string
     {
         $parts = explode('.', $value, 2);
         $whole = preg_replace('/(?<=\d)(?=(?:\d{3})+(?!\d))/', ',', $parts[0]) ?? $parts[0];
 
-        return $whole.(isset($parts[1]) ? '.'.$parts[1] : '');
+        $fraction = $parts[1] ?? '';
+
+        return $whole.($fraction !== '' && ($currency !== 'TZS' || trim($fraction, '0') !== '') ? '.'.$fraction : '');
     }
 }
