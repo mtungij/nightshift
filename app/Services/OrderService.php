@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Domain\Decimal as D;
 use App\Domain\OrderCollectionMode;
+use App\Domain\OrderSource;
 use App\Domain\StaffVisibility;
 use App\Domain\TenantContext;
 use App\Models\Branch;
@@ -38,13 +39,43 @@ final class OrderService
     }
 
     /** @param array<string, mixed> $data */
-    private function createOrder(array $data, ?User $identifiedWaiter = null): Order
+    public function counterSale(array $data): Order
+    {
+        Gate::authorize('counter-sales');
+        Gate::authorize('receive-payments');
+
+        return $this->tx->run(function () use ($data) {
+            $actor = app(TenantContext::class)->user();
+            abort_unless($actor->active && $actor->company->active && ! in_array($actor->role->name, ['Waiter', 'Store Keeper', 'POS Terminal'], true), 403);
+            $shift = Shift::whereKey($data['cashier_shift_id'])->where('user_id', $actor->id)->where('type', 'CASHIER')->where('status', 'OPEN')->lockForUpdate()->first();
+            $this->stock->require((bool) $shift, __('ui.Open your cashier shift before completing a counter sale.'));
+            abort_unless($shift->stock_location_id === (int) $data['stock_location_id']
+                && $shift->business_unit_id === (int) $data['business_unit_id']
+                && (! isset($data['branch_id']) || $shift->branch_id === (int) $data['branch_id']), 403);
+
+            $order = $this->createOrder($data, cashier: $shift);
+            $order = $this->issueOrder($order->id, cashier: $shift);
+            if (D::cmp($order->balance, '0') > 0 || $data['lines'] !== []) {
+                $order = app(PaymentService::class)->receive($order->id, $data['lines']);
+            }
+            $this->audit->record('COUNTER_SALE_PAID', 'Orders', 'Order', $order->id, [], [
+                'business_unit_id' => $shift->business_unit_id, 'stock_location_id' => $shift->stock_location_id,
+                'invoice_number' => $order->invoice_number, 'cashier_id' => $actor->id, 'cashier_shift_id' => $shift->id,
+                'total' => $order->total, 'payment_methods' => array_values(array_unique(array_column($data['lines'], 'method'))),
+            ], $order->branch_id);
+
+            return $order;
+        });
+    }
+
+    /** @param array<string, mixed> $data */
+    private function createOrder(array $data, ?User $identifiedWaiter = null, ?Shift $cashier = null): Order
     {
         Gate::authorize('create-orders');
 
-        return $this->tx->run(function () use ($data, $identifiedWaiter) {
+        return $this->tx->run(function () use ($data, $identifiedWaiter, $cashier) {
             $actor = app(TenantContext::class)->user();
-            $location = app(UnitOperationalService::class)->resolve($data);
+            $location = $cashier ? $this->stock->location($cashier->stock_location_id) : app(UnitOperationalService::class)->resolve($data);
             foreach (['branch_id' => $location->branch_id, 'business_unit_id' => $location->business_unit_id] as $key => $id) {
                 $this->stock->require(! array_key_exists($key, $data) || (int) $data[$key] === (int) $id, 'Branch, Business Unit and counter must match.');
             }
@@ -52,17 +83,21 @@ final class OrderService
             $visibility = app(StaffVisibility::class);
             $visibility->assertOperationalLocation($location->id);
             $this->stock->require($location->type === 'COUNTER', 'Orders must be assigned to a counter.');
-            if ($identifiedWaiter) {
+            if ($identifiedWaiter || $cashier) {
                 $this->stock->require(Branch::findOrFail($location->branch_id)->active, 'Branch is inactive.');
             }
-            $waiter = User::where('company_id', $actor->company_id)->whereKey($data['waiter_id'])->firstOrFail();
-            if (! $identifiedWaiter && ! $visibility->broad() && ! $visibility->settlementOnly()) {
-                abort_unless($waiter->id === $actor->id, 403);
+            $waiter = null;
+            $shift = $cashier;
+            if (! $cashier) {
+                $waiter = User::where('company_id', $actor->company_id)->whereKey($data['waiter_id'])->firstOrFail();
+                if (! $identifiedWaiter && ! $visibility->broad() && ! $visibility->settlementOnly()) {
+                    abort_unless($waiter->id === $actor->id, 403);
+                }
+                $this->stock->require($waiter->active && $waiter->hasPermission('create-orders') && $waiter->canAccessBranch($location->branch_id) && $waiter->canAccessBusinessUnit($location->business_unit_id), 'Waiter is not available at this branch.');
+                $shift = Shift::where('user_id', $waiter->id)->where('branch_id', $location->branch_id)->where('stock_location_id', $location->id)->where('type', 'WAITER')->where('status', 'OPEN')->lockForUpdate()->first();
+                $this->stock->require((bool) $shift, 'The waiter needs an open shift.');
             }
-            $this->stock->require($waiter->active && $waiter->hasPermission('create-orders') && $waiter->canAccessBranch($location->branch_id) && $waiter->canAccessBusinessUnit($location->business_unit_id), 'Waiter is not available at this branch.');
-            $shift = Shift::where('user_id', $waiter->id)->where('branch_id', $location->branch_id)->where('stock_location_id', $location->id)->where('type', 'WAITER')->where('status', 'OPEN')->lockForUpdate()->first();
-            $this->stock->require((bool) $shift, 'The waiter needs an open shift.');
-            $this->stock->require($shift->business_unit_id === $location->business_unit_id, 'Shift Business Unit and counter must match.');
+            $this->stock->require($shift->branch_id === $location->branch_id && $shift->business_unit_id === $location->business_unit_id, 'Shift Business Unit and counter must match.');
             $table = isset($data['service_table_id']) ? ServiceTable::whereKey($data['service_table_id'])->firstOrFail() : null;
             $this->stock->require(! $table || $table->branch_id === $location->branch_id, 'Table and counter must belong to the same branch.');
             $items = [];
@@ -80,8 +115,8 @@ final class OrderService
             $this->stock->require(D::cmp($discount, '0') >= 0 && D::cmp($discount, $subtotal) <= 0, 'Discount cannot exceed the subtotal.');
             abort_if($actor->isPosTerminal() && D::cmp($discount, '0') !== 0, 403);
             $total = D::sub($subtotal, $discount);
-            $unitMode = BusinessUnit::where('branch_id', $location->branch_id)->findOrFail($location->business_unit_id)->order_collection_mode;
-            $o = Order::create(['collection_mode' => $unitMode, 'branch_id' => $location->branch_id, 'stock_location_id' => $location->id, 'waiter_id' => $waiter->id, 'service_table_id' => $table?->id, 'order_note' => $data['order_note'] ?? null, 'shift_id' => $shift->id, 'invoice_number' => $this->numbers->next('INV'), 'subtotal' => $subtotal, 'discount' => $discount, 'total' => $total, 'balance' => $total, 'status' => $data['status'] ?? 'WAITING_FOR_ISSUE', 'created_by' => $actor->id]);
+            $unitMode = $cashier ? OrderCollectionMode::WaiterAccount : BusinessUnit::where('branch_id', $location->branch_id)->findOrFail($location->business_unit_id)->order_collection_mode;
+            $o = Order::create(['order_source' => $cashier ? OrderSource::CashierDirect : OrderSource::Waiter, 'collection_mode' => $unitMode, 'branch_id' => $location->branch_id, 'stock_location_id' => $location->id, 'waiter_id' => $waiter?->id, 'service_table_id' => $table?->id, 'order_note' => $data['order_note'] ?? null, 'shift_id' => $shift->id, 'invoice_number' => $this->numbers->next('INV'), 'subtotal' => $subtotal, 'discount' => $discount, 'total' => $total, 'balance' => $total, 'status' => $cashier ? 'WAITING_FOR_ISSUE' : ($data['status'] ?? 'WAITING_FOR_ISSUE'), 'created_by' => $actor->id]);
             // Floor proportional shares, then distribute the remaining cents. No line
             // can receive a negative discount or more than its original gross value.
             $remaining = $discount;
@@ -100,7 +135,10 @@ final class OrderService
             foreach ($items as $line) {
                 $o->items()->create($line);
             }
-            $this->audit->record('ORDER_CREATED', 'Orders', 'Order', $o->id, [], ['terminal_user_id' => $actor->isPosTerminal() ? $actor->id : null, 'entered_by' => $actor->id, 'waiter_id' => $waiter->id, 'stock_location_id' => $location->id, 'invoice' => $o->invoice_number, 'status' => $o->status, 'total' => $total], $o->branch_id);
+            $this->audit->record('ORDER_CREATED', 'Orders', 'Order', $o->id, [], ['terminal_user_id' => $actor->isPosTerminal() ? $actor->id : null, 'entered_by' => $actor->id, 'waiter_id' => $waiter?->id, 'stock_location_id' => $location->id, 'invoice' => $o->invoice_number, 'status' => $o->status, 'total' => $total], $o->branch_id);
+            if ($cashier) {
+                return $o;
+            }
             if (! $identifiedWaiter && $unitMode === OrderCollectionMode::PaidTicket && $o->status === 'WAITING_FOR_ISSUE') {
                 return $this->issueOrder($o->id, true);
             }
@@ -170,20 +208,26 @@ final class OrderService
         });
     }
 
-    private function issueOrder(int $id, bool $direct = false): Order
+    private function issueOrder(int $id, bool $direct = false, ?Shift $cashier = null): Order
     {
-        return $this->tx->run(function () use ($id, $direct) {
+        return $this->tx->run(function () use ($id, $direct, $cashier) {
             $o = Order::lockForUpdate()->findOrFail($id);
             if (in_array($o->status, ['ISSUED', 'PARTIALLY_PAID', 'PAID'], true)) {
                 return $o;
             }
             $this->stock->require($o->status === 'WAITING_FOR_ISSUE', 'Only queued orders can be issued.');
             $this->stock->location($o->stock_location_id);
-            $waiterShift = Shift::lockForUpdate()->findOrFail($o->shift_id);
-            $this->stock->require($waiterShift->status === 'OPEN', 'The waiter shift is closed.');
-            $this->stock->require(! $direct || ($waiterShift->type === 'WAITER' && $waiterShift->user_id === $o->waiter_id && $waiterShift->branch_id === $o->branch_id && $waiterShift->stock_location_id === $o->stock_location_id), 'Waiter shift and counter must match the order.');
-            $issueShift = $direct ? $this->shifts->counterCashier($o->stock_location_id) : $this->shifts->activeCashier($o->stock_location_id);
-            $paidTicket = $o->collection_mode === OrderCollectionMode::PaidTicket;
+            $this->stock->require($o->isCounterSale() === ($cashier !== null), 'Use the counter sale checkout.');
+            $issueShift = $cashier;
+            if ($cashier) {
+                app(CounterCashierService::class)->assertOperational($o->stock_location_id);
+            } else {
+                $waiterShift = Shift::lockForUpdate()->findOrFail($o->shift_id);
+                $this->stock->require($waiterShift->status === 'OPEN', 'The waiter shift is closed.');
+                $this->stock->require(! $direct || ($waiterShift->type === 'WAITER' && $waiterShift->user_id === $o->waiter_id && $waiterShift->branch_id === $o->branch_id && $waiterShift->stock_location_id === $o->stock_location_id), 'Waiter shift and counter must match the order.');
+                $issueShift = $direct ? $this->shifts->counterCashier($o->stock_location_id) : $this->shifts->activeCashier($o->stock_location_id);
+            }
+            $paidTicket = ! $cashier && $o->collection_mode === OrderCollectionMode::PaidTicket;
             foreach ($o->items()->orderBy('product_id')->get() as $line) {
                 $this->stock->require(app(BusinessUnitService::class)->available($line->product_id, (int) $o->business_unit_id), __('ui.Product is unavailable in this Business Unit.'));
                 $this->stock->change($o->stock_location_id, $line->product_id, D::sub('0', $line->base_quantity, 6), 'ISSUE', 'Order', $o->id, $issueShift->id);
@@ -196,7 +240,7 @@ final class OrderService
             $o->update(['status' => $paid ? 'PAID' : 'ISSUED', 'issued_by' => app(TenantContext::class)->user()->id, 'issued_shift_id' => $issueShift->id, 'issued_at' => now(), 'closed_at' => $paid ? now() : null]);
             if ($paidTicket) {
                 app(TicketCollectionService::class)->start($o, $issueShift);
-            } else {
+            } elseif ($o->usesWaiterAccount()) {
                 $this->ledger->post($o, 'ISSUE', $o->total, '0', 'Order', $o->id, 'Drinks issued: '.$o->invoice_number);
             }
             $this->audit->record('DRINKS_ISSUED', 'Orders', 'Order', $o->id, ['status' => 'WAITING_FOR_ISSUE'], ['status' => $o->status, 'issue_shift' => $issueShift->id, 'direct_send' => $direct, 'total' => $o->total], $o->branch_id);

@@ -8,6 +8,7 @@ return [
     'max_rows' => 3000,
     'max_bytes' => 30 * 1024 * 1024,
     'filters' => [
+        ...array_fill_keys(['Daily Sales', 'Order Report', 'Paid Orders', 'Unpaid Orders'], ['from', 'to', 'branch_id', 'business_unit_id', 'stock_location_id', 'waiter_id', 'issued_by', 'product_id', 'category_id', 'shift_id', 'order_source']),
         'Business Unit Performance' => ['from', 'to', 'branch_id', 'business_unit_id', 'stock_location_id', 'shift_id'],
         'Waiter Outstanding' => ['branch_id', 'business_unit_id', 'stock_location_id', 'waiter_id', 'shift_id'],
         'Waiter Settlement' => ['from', 'to', 'branch_id', 'business_unit_id', 'stock_location_id', 'waiter_id', 'shift_id'],

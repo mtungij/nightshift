@@ -20,6 +20,9 @@ class MySqlSchemaCompatibilityTest extends TestCase
         $this->assertContains('ticket_collections.amount', $audit['money_columns']);
         $this->assertSame('WAITER_ACCOUNT', $schema['tables']['business_units']['columns']['order_collection_mode']['default']);
         $this->assertSame('WAITER_ACCOUNT', $schema['tables']['orders']['columns']['collection_mode']['default']);
+        $this->assertSame('WAITER', $schema['tables']['orders']['columns']['order_source']['default']);
+        $this->assertTrue($schema['tables']['orders']['columns']['waiter_id']['nullable']);
+        $this->assertSame(['company_id', 'waiter_id'], $schema['tables']['orders']['foreign_keys']['fk_orders_waiter_id']['columns']);
         $this->assertSame(['order_id'], $schema['tables']['ticket_collections']['indexes']['ticket_collections_order_id_unique']['columns']);
         $this->assertCount(20, $audit['json_columns']);
         $this->assertContains('shift_stock_snapshots.data', $audit['json_columns']);
@@ -30,7 +33,8 @@ class MySqlSchemaCompatibilityTest extends TestCase
             $this->assertContains($column, $audit['json_columns']);
         }
         $sql = implode("\n", $schema['sql']);
-        $this->assertSame(24, substr_count($sql, 'CREATE TRIGGER'));
+        $this->assertSame(25, substr_count($sql, 'CREATE TRIGGER'));
+        $this->assertStringContainsString('CREATE TRIGGER orders_source_immutable', $sql);
         $this->assertStringContainsString('CHECK (quantity >= 0)', $sql);
         $this->assertStringContainsString('`issued_shift_id` bigint unsigned null', $sql);
         $this->assertSame(0, substr_count($sql, 'add `issued_shift_id`'));

@@ -221,6 +221,6 @@ final class MyOrdersService
     /** @return array<string, mixed> */
     private function present(Order $order, StockLocation $counter): array
     {
-        return ['business_unit' => BusinessUnit::whereKey($order->business_unit_id)->value('name'), 'id' => $order->id, 'invoice' => $order->invoice_number, 'created_at' => $order->created_at?->toIso8601String(), 'table' => ServiceTable::whereKey($order->service_table_id)->value('name'), 'counter' => $counter->name, 'waiter' => $order->waiter->name, 'order_note' => $order->order_note, 'total' => $order->total, 'amount_paid' => $order->amount_paid, 'balance' => $order->balance, 'status' => $order->status];
+        return ['business_unit' => BusinessUnit::whereKey($order->business_unit_id)->value('name'), 'id' => $order->id, 'invoice' => $order->invoice_number, 'created_at' => $order->created_at?->toIso8601String(), 'table' => ServiceTable::whereKey($order->service_table_id)->value('name'), 'counter' => $counter->name, 'order_source' => $order->order_source->value, 'waiter' => $order->waiter?->name, 'order_note' => $order->order_note, 'total' => $order->total, 'amount_paid' => $order->amount_paid, 'balance' => $order->balance, 'status' => $order->status];
     }
 }

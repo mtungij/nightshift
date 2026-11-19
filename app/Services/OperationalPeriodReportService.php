@@ -58,7 +58,7 @@ final class OperationalPeriodReportService
                 if ($filters['include_details'] ?? false) {
                     $detailCount += count($salesRows);
                     app(ReportPdfService::class)->checkLimit($detailCount);
-                    $sourceReports[] = ['title' => $context['number'].' · '.$context['employee'], 'headers' => ['Invoice', 'Waiter', 'Table', 'Total', 'Paid', 'Balance', 'Status'], 'rows' => $salesRows];
+                    $sourceReports[] = ['title' => $context['number'].' · '.$context['employee'], 'headers' => ReportService::INVOICE_HEADERS, 'rows' => $salesRows];
                 }
                 foreach ($salesRows as $row) {
                     foreach (['sales' => 3, 'paid' => 4, 'outstanding' => 5] as $key => $column) {

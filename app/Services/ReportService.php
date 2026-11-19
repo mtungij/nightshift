@@ -36,6 +36,8 @@ use Illuminate\Validation\ValidationException;
 
 final class ReportService
 {
+    public const INVOICE_HEADERS = ['Invoice', 'Waiter', 'Table', 'Total', 'Paid', 'Balance', 'Status', 'Sale type'];
+
     /**
      * @param  array<string, mixed>  $filters
      * @return array<string, mixed>
@@ -332,12 +334,15 @@ final class ReportService
             $key = match ($name) {
                 'Sales by Branch' => 'branch_id','Sales by Counter' => 'stock_location_id', 'Sales by Waiter' => 'waiter_id', 'Sales by Cashier' => 'issued_by',default => 'service_table_id'
             };
-            $rows = $orders->selectRaw("{$key} as location, SUM(total) as total")->groupBy($key)->orderBy($key)->offset($offset)->limit(101)->toBase()->get();
+            $rows = $orders->when($name === 'Sales by Waiter', fn ($query) => $query->whereNotNull('waiter_id'))->selectRaw("{$key} as location, SUM(total) as total")->groupBy($key)->orderBy($key)->offset($offset)->limit(101)->toBase()->get();
             $labels = fn ($r) => match ($name) {
                 'Sales by Branch' => Branch::whereKey($r->location)->first()?->name,'Sales by Counter' => StockLocation::withoutGlobalScopes()->where('company_id', app(TenantContext::class)->companyId())->whereKey($r->location)->first()?->name, 'Sales by Waiter', 'Sales by Cashier' => User::where('company_id', app(TenantContext::class)->companyId())->whereKey($r->location)->first()?->name,default => ServiceTable::whereKey($r->location)->first()->name ?? 'Takeaway'
             };
 
             return ['headers' => ['Location', 'Sales'], 'rows' => $rows->map(fn ($r) => [$labels($r), $r->total])->all(), 'values' => $rows->map(fn ($r) => [$labels($r), $r->total])->all()];
+        }
+        if (! empty($filters['order_source'])) {
+            $orders->where('order_source', $filters['order_source']);
         }
         if ($name === 'Paid Orders') {
             $orders->where('status', 'PAID');
@@ -347,7 +352,7 @@ final class ReportService
         }
         abort_unless(in_array($name, ['Daily Sales', 'Order Report', 'Paid Orders', 'Unpaid Orders'], true), 422, 'Unknown report.');
 
-        return ['headers' => ['Invoice', 'Waiter', 'Table', 'Total', 'Paid', 'Balance', 'Status'], 'rows' => $orders->latest('issued_at')->orderByDesc('id')->offset($offset)->limit(101)->get()->map(fn ($o) => [$o->invoice_number, User::where('company_id', app(TenantContext::class)->companyId())->find($o->waiter_id)?->name, ServiceTable::whereKey($o->service_table_id)->first()->name ?? 'Takeaway', $o->total, $o->amount_paid, $o->balance, $o->status])->all()];
+        return ['headers' => self::INVOICE_HEADERS, 'rows' => $orders->latest('issued_at')->orderByDesc('id')->offset($offset)->limit(101)->get()->map(fn ($o) => [$o->invoice_number, User::where('company_id', app(TenantContext::class)->companyId())->find($o->waiter_id)?->name, ServiceTable::whereKey($o->service_table_id)->first()->name ?? 'Takeaway', $o->total, $o->amount_paid, $o->balance, $o->status, __('ui.'.($o->isCounterSale() ? 'Counter Sale' : 'Waiter Order'))])->all()];
     }
 
     /**

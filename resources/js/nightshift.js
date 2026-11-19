@@ -6,6 +6,7 @@ import { productSellingUnits } from "./product-selling-units.js";
 import { mountProductAvailability, productAvailabilityPayload } from "./product-availability.js";
 import { downloadPdf } from "./report-pdf.js";
 import { scopePicker, syncStaffScopes } from "./staff-scopes.js";
+import { counterSaleRemaining } from "./counter-sale.js";
 import { quantity } from "./quantity.js";
 import { receiptStockPreview } from "./receipt-stock.js";
 import { refreshSearchableSelect } from "./searchable-select.js";
@@ -198,6 +199,7 @@ if (root) {
     let search = "";
     let category = "All products";
     let cart = [];
+    let counterSaleSelected = false;
     let posContextLoading = false;
     const servingRequestKeys = new Map();
     let cartTable = "VIP 04";
@@ -1435,6 +1437,7 @@ if (root) {
         /><span class="product-photo-fallback" hidden>${fallback}</span>`;
     }
     function posScreen() {
+        const counterSale = counterSaleSelected && db.counter_sale_shift;
         const counter = db.locations.find((l) => l.id === db.location_id && l.type === "COUNTER");
         const posProducts = db.products.filter(
             (p) => counter && p.available_unit_ids?.includes(counter.business_unit_id),
@@ -1523,8 +1526,15 @@ if (root) {
                             ${badge(tr(":count items", { count: quantity(cart.reduce((n, i) => n + i.qty, 0)) }), "amber")}
                         </div>
                         <div class="cart-body">
+                            ${db.counter_sale_shift ? html`<div class="pos-sale-type">
+                                <span>Sale type</span>
+                                <div role="group" aria-label="Sale type">
+                                    ${btn("Waiter Order", "pos-sale-type", counterSale ? "" : "primary", "", `data-value="waiter" aria-pressed="${!counterSale}"`)}
+                                    ${btn("Counter Sale", "pos-sale-type", counterSale ? "primary" : "", "", `data-value="counter" aria-pressed="${!!counterSale}"`)}
+                                </div>
+                            </div>` : ""}
                             <div class="cart-selects">
-                                ${field(
+                                ${counterSale ? html`<p class="form-help">Walk-in Customer</p>` : field(
                                     "Table",
                                     "table",
                                     html`<select data-change="cart-table">
@@ -1546,11 +1556,11 @@ if (root) {
                                               ${posUnits.map((u) => html`<option value="${u.id}" ${u.id === db.business_unit_id ? "selected" : ""}>${esc(u.name)}</option>`).join("")}
                                           </select>`,
                                 )}${
-                                    db.operational_context?.advanced_locations_enabled
+                                    (counterSale || db.operational_context?.advanced_locations_enabled)
                                         ? field(
                                               "Counter",
                                               "counter",
-                                              contextLocked ||
+                                              counterSale || contextLocked ||
                                                   !posUnits.length ||
                                                   posCounters.length === 1
                                                   ? html`<input
@@ -1647,7 +1657,7 @@ ${esc(cartNote)}</textarea>
                                 <span>Total</span><span>${money(total)}</span>
                             </div>
                             <div class="cart-actions">
-                                ${btn(paidTicketMode() ? "Issue paid ticket" : "Send to cashier", "send-order", "primary", "arrow", cart.length ? "" : "disabled")}${db.role === "Waiter" ? btn("Save draft", "save-draft", "", "orders", cart.length ? "" : "disabled") : ""}${btn("Clear cart", "clear-cart", "small", "", cart.length ? "" : "disabled")}
+                                ${counterSale ? btn("Complete Sale", "counter-sale-payment", "primary", "wallet", cart.length ? "" : "disabled") : btn(paidTicketMode() ? "Issue paid ticket" : "Send to cashier", "send-order", "primary", "arrow", cart.length ? "" : "disabled")}${db.role === "Waiter" ? btn("Save draft", "save-draft", "", "orders", cart.length ? "" : "disabled") : ""}${btn("Clear cart", "clear-cart", "small", "", cart.length ? "" : "disabled")}
                             </div>
                             <p
                                 style="font-size:12px;color:var(--muted);margin:15px 0 0;text-align:center"
@@ -1743,7 +1753,7 @@ ${esc(cartNote)}</textarea>
                         const val = Array.isArray(o) ? o[0] : o;
                         const label = Array.isArray(o) ? o[1] : o;
                         const display =
-                            ["role", "type", "method", "unit", "status"].includes(name) ||
+                            ["role", "type", "method", "unit", "status", "order_source"].includes(name) ||
                             val === "" ||
                             /^All /.test(String(label))
                                 ? tr(label)
@@ -3006,7 +3016,7 @@ ${esc(cartNote)}</textarea>
                                                 ${esc(date(o.created_at))} ·
                                                 ${esc(o.business_unit || o.counter)}${o.table ? " · " + esc(o.table) : ""}
                                             </p>
-                                            ${view.staff.role === "Cashier" ? html`<p>${tr("Waiter")}: ${esc(o.waiter)}</p>` : ""}${
+                                            ${o.order_source === "CASHIER_DIRECT" ? html`<p>Counter Sale</p>` : view.staff.role === "Cashier" ? html`<p>${tr("Waiter")}: ${esc(o.waiter)}</p>` : ""}${
                                                 o.order_note
                                                     ? html`<div class="order-note">
                                                           <strong>${tr("Order Note")}</strong>
@@ -3361,6 +3371,10 @@ ${esc(cartNote)}</textarea>
                     `data-id="${o.id}"`,
                 );
         }
+        if (o.order_source === "CASHIER_DIRECT" && o.status === "Paid") {
+            if (permitted("return-items")) actions += btn("Return items", "return-items", "", "refresh", `data-id="${o.id}"`);
+            if (permitted("request-void")) actions += btn("Request void", "void-request", "danger", "ban", `data-id="${o.id}"`);
+        }
         modal(
             invoice(o.id),
             html`<div class="toolbar">
@@ -3369,10 +3383,12 @@ ${esc(cartNote)}</textarea>
                         ${esc(db.business_units.find((u) => u.id === o.business_unit_id)?.name || "—")}${db.business_units.find((u) => u.id === o.business_unit_id)?.advanced_locations_enabled || db.business_units.find((u) => u.id === o.business_unit_id)?.default_stock_location_id !== o.counter_id ? " · " + esc(o.counter) : ""}</span
                     >
                 </div>
-                <div class="detail-row">
+                ${o.order_source === "CASHIER_DIRECT"
+                    ? html`<div class="detail-row"><span>Sale type</span><strong>${tr("Counter Sale")}</strong></div>`
+                    : html`<div class="detail-row">
                     <span>Waiter</span><strong>${esc(waiter(o.waiter)?.name)}</strong>
                 </div>
-                <div class="detail-row"><span>Table</span><strong>${esc(o.table)}</strong></div>
+                <div class="detail-row"><span>Table</span><strong>${esc(o.table)}</strong></div>`}
                 ${
                     o.order_note
                         ? html`<div class="order-note">
@@ -3450,16 +3466,40 @@ ${esc(cartNote)}</textarea>
             "payment",
         );
     }
-    function paymentLine(amount = 0) {
+    function counterSalePaymentModal() {
+        if (!db.counter_sale_shift || !counterSaleSelected || !cart.length) return;
+        const total = cart.reduce((amount, item) => amount + item.qty * item.price, 0).toFixed(2);
+        modal(
+            "Counter Sale",
+            html`<p class="modal-description">Walk-in Customer</p>
+                <div class="payment-total"><span>Total</span><strong>${money(total)}</strong></div>
+                <div id="payment-lines">${paymentLine(total, true)}</div>
+                ${btn("Add payment method", "add-payment-line", "small", "plus")}
+                <div class="detail-row"><span>Remaining after payment</span><strong id="payment-remaining" class="text-green">${money(0)}</strong></div>`,
+            submitButton("Complete Sale"),
+            false,
+            "counter-sale",
+        );
+        const form = document.querySelector('[data-form="counter-sale"]');
+        form.saleTotal = total;
+        form.saleShift = db.counter_sale_shift;
+    }
+    function paymentLines(form) {
+        return [...form.querySelectorAll(".payment-line")].map((line) => ({
+            method: line.querySelector("select").value,
+            amount: line.querySelector("input").value,
+        })).filter((line) => Number(line.amount) > 0);
+    }
+    function paymentLine(amount = 0, counterSale = false) {
         return html`<div class="payment-line">
             <select name="method[]" aria-label="Payment method">
-                ${paymentMethods.map((m) => html`<option value="${esc(m)}">${tr(m)}</option>`).join("")}</select
+                ${paymentMethods.filter((m) => !counterSale || m !== "Credit").map((m) => html`<option value="${esc(m)}">${tr(m)}</option>`).join("")}</select
             ><input
                 type="number"
                 name="amount[]"
                 value="${amount}"
                 min="0"
-                step="1"
+                step="${counterSale ? "0.01" : "1"}"
                 aria-label="Payment amount"
                 data-input="payment-amount"
             /><button
@@ -3809,6 +3849,7 @@ ${esc(cartNote)}</textarea>
                             ],
                         )}${select("Category", "category", [["", "All categories"], ...categories.slice(1)])}${select("Product", "product", [["", "All products"], ...productOptions()])}
                     </div>
+                    ${select("Sale type", "order_source", [["", "All sales"], ["WAITER", "Waiter Sales"], ["CASHIER_DIRECT", "Counter Sales"]])}
                     <div class="report-shift-summary" data-shift-summary role="status"></div>
                 </form>
                 <p class="form-help">
@@ -3831,6 +3872,7 @@ ${esc(cartNote)}</textarea>
             cashier: "issued_by",
             product: "product_id",
             category: "category_id",
+            order_source: "order_source",
         };
         for (const control of document.querySelectorAll(
             "#report-filters input,#report-filters select",
@@ -4317,10 +4359,15 @@ ${esc(cartNote)}</textarea>
                 );
             if (action === "confirm-reject-order")
                 return perform("order-cancel", { id: Number(id) }, target);
+            if (action === "pos-sale-type") {
+                counterSaleSelected = value === "counter" && !!db.counter_sale_shift;
+                return shell();
+            }
+            if (action === "counter-sale-payment") return counterSalePaymentModal();
             if (action === "add-payment-line")
                 return document
                     .getElementById("payment-lines")
-                    .insertAdjacentHTML("beforeend", paymentLine());
+                    .insertAdjacentHTML("beforeend", paymentLine(0, !!target.closest('[data-form="counter-sale"]')));
             if (action === "remove-payment-line") {
                 if (document.querySelectorAll(".payment-line").length > 1)
                     target.closest(".payment-line").remove();
@@ -4529,8 +4576,16 @@ ${esc(cartNote)}</textarea>
         }
     });
     function updatePaymentRemaining() {
-        const form = document.querySelector('[data-form="payment"]');
+        const form = document.querySelector('[data-form="payment"], [data-form="counter-sale"]');
         if (!form) return;
+        if (form.dataset.form === "counter-sale") {
+            const remaining = counterSaleRemaining(form.saleTotal, paymentLines(form));
+            const el = form.querySelector("#payment-remaining");
+            el.textContent = money(remaining / 100);
+            el.className = remaining === 0 ? "text-green" : "text-red";
+            form.querySelector('button[type="submit"]').disabled = remaining !== 0;
+            return;
+        }
         const o = db.orders.find((o) => o.id === Number(form.querySelector('[name="id"]').value));
         const sum = [...form.querySelectorAll(".payment-line")].reduce(
             (n, line) =>
@@ -4752,14 +4807,18 @@ ${esc(cartNote)}</textarea>
                 };
             } else if (type === "payment") {
                 command = "payment";
+                payload = { id: Number(data.id), lines: paymentLines(form) };
+            } else if (type === "counter-sale") {
+                command = type;
+                const shift = form.saleShift;
                 payload = {
-                    id: Number(data.id),
-                    lines: [...form.querySelectorAll(".payment-line")]
-                        .map((line) => ({
-                            method: line.querySelector("select").value,
-                            amount: line.querySelector("input").value,
-                        }))
-                        .filter((l) => Number(l.amount) > 0),
+                    cashier_shift_id: shift.id,
+                    branch_id: shift.branch_id,
+                    business_unit_id: shift.business_unit_id,
+                    stock_location_id: shift.stock_location_id,
+                    order_note: cartNote || null,
+                    items: cartPayload().items,
+                    lines: paymentLines(form),
                 };
             } else if (type === "product") {
                 command = "product";
@@ -5239,7 +5298,7 @@ ${esc(cartNote)}</textarea>
             },
         });
         const requestKeys =
-            command === "order-send" ? servingRequestKeys : (element.requestKeys ||= new Map());
+            ["order-send", "counter-sale"].includes(command) ? servingRequestKeys : (element.requestKeys ||= new Map());
         let key = requestKeys.get(fingerprint);
         if (!key) {
             key = crypto.randomUUID();
@@ -5268,7 +5327,7 @@ ${esc(cartNote)}</textarea>
         });
         try {
             const result = await send(command, payload, element);
-            if (command === "order-send") {
+            if (["order-send", "counter-sale"].includes(command)) {
                 cart = [];
                 cartNote = "";
                 servingRequestKeys.clear();
@@ -5276,7 +5335,7 @@ ${esc(cartNote)}</textarea>
             }
             if (
                 result.auto_print &&
-                (["order-send", "ticket-reprint"].includes(command) || result.collection_mode === "PAID_TICKET") &&
+                (["order-send", "counter-sale", "ticket-reprint"].includes(command) || result.collection_mode === "PAID_TICKET") &&
                 result.print_url
             ) {
                 const frame = document.createElement("iframe");
@@ -5349,6 +5408,7 @@ ${esc(cartNote)}</textarea>
                       ? tr("No ticket copies are enabled.")
                       : command === "catalog-user"
                         ? tr(":role added successfully.", { role: tr(payload.role) })
+                        : command === "counter-sale" ? tr("Counter sale paid")
                         : command.startsWith("staff-admin-") ? "Admin access updated."
                         : "Saved. Stock, cash and ledger records are up to date.",
             );
@@ -5465,6 +5525,7 @@ ${esc(cartNote)}</textarea>
             category_id: categoryRecord?.id || "",
             product_id: fields.product,
             issued_by: fields.cashier || "",
+            order_source: fields.order_source || "",
             shift_id: fields.shift_id || "",
         };
         const params = new URLSearchParams(Object.entries(filters).filter(([k, v]) => v));

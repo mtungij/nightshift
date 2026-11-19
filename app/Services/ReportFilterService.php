@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Domain\BusinessUnitContext;
+use App\Domain\OrderSource;
 use App\Domain\StaffVisibility;
 use App\Domain\TenantContext;
 use App\Models\Branch;
@@ -13,6 +14,7 @@ use App\Models\Shift;
 use App\Models\StockLocation;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 final class ReportFilterService
@@ -24,7 +26,7 @@ final class ReportFilterService
             abort_unless((int) $request->input('company_id') === app(TenantContext::class)->companyId(), 403);
         }
         $ids = array_fill_keys(['branch_id', 'business_unit_id', 'stock_location_id', 'waiter_id', 'issued_by', 'category_id', 'product_id', 'shift_id', 'custodian_id'], ['nullable', 'integer', 'min:1']);
-        $filters = $request->validate([...$ids, 'page' => ['nullable', 'integer', 'min:1', 'max:100000'], 'from' => ['nullable', 'date_format:Y-m-d'], 'to' => ['nullable', 'date_format:Y-m-d'], 'search' => ['nullable', 'string', 'max:100'], 'all_branches' => ['nullable', 'boolean'], 'period' => ['nullable', 'in:Today,Yesterday,This week']]);
+        $filters = $request->validate([...$ids, 'order_source' => ['nullable', Rule::enum(OrderSource::class)], 'page' => ['nullable', 'integer', 'min:1', 'max:100000'], 'from' => ['nullable', 'date_format:Y-m-d'], 'to' => ['nullable', 'date_format:Y-m-d'], 'search' => ['nullable', 'string', 'max:100'], 'all_branches' => ['nullable', 'boolean'], 'period' => ['nullable', 'in:Today,Yesterday,This week']]);
         foreach (['status', 'method', 'payment_method', 'transaction_type', 'action', 'module', 'search'] as $unsupported) {
             if ($request->filled($unsupported)) {
                 throw ValidationException::withMessages([$unsupported => __('ui.This filter is not available for this report.')]);
@@ -32,7 +34,7 @@ final class ReportFilterService
         }
         if ($report !== '') {
             $supported = config('report_pdf.filters.'.$report, config('report_pdf.default_filters'));
-            foreach (array_keys($ids) as $field) {
+            foreach ([...array_keys($ids), 'order_source'] as $field) {
                 if (! empty($filters[$field]) && ! in_array($field, $supported, true)) {
                     throw ValidationException::withMessages([$field => __('ui.This filter is not available for this report.')]);
                 }

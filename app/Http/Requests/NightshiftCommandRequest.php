@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Services\CompanyAdminService;
+use App\Services\PaymentService;
 use App\Services\ProductImageService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -46,10 +47,19 @@ final class NightshiftCommandRequest extends FormRequest
             'ticket-reprint' => ['id' => $id],
             'staff-pin' => ['id' => $id, 'pin' => ['nullable', 'string', 'regex:/^[0-9]{4}$/D']],
             'waiter-payment' => ['waiter_id' => $id, 'stock_location_id' => $id, 'amount' => $amount, 'method' => ['required', Rule::in(['Cash', 'M-Pesa', 'Airtel Money', 'Mixx by Yas', 'Card', 'Bank'])]],
+            'counter-sale' => [
+                'company_id' => ['prohibited'], 'id' => ['prohibited'], 'waiter_id' => ['prohibited'], 'pin' => ['prohibited'],
+                'cashier_shift_id' => $id, 'business_unit_id' => $id, 'stock_location_id' => $id,
+                'branch_id' => ['sometimes', 'integer', 'min:1'], 'order_note' => ['nullable', 'string', 'max:500'],
+                'items' => $items, 'items.*' => ['array:product_unit_id,quantity'], 'items.*.product_unit_id' => $id, 'items.*.quantity' => $qty,
+                'lines' => ['present', 'array', 'max:100'], 'lines.*' => ['array:method,amount,reference'],
+                'lines.*.method' => ['required', Rule::in(PaymentService::RECEIVED_METHODS)],
+                'lines.*.amount' => $amount, 'lines.*.reference' => ['nullable', 'string', 'max:255'],
+            ],
             'order-send' => ['branch_id' => ['sometimes', 'integer', 'min:1'], 'business_unit_id' => ['sometimes', 'integer', 'min:1'], 'id' => ['nullable', 'integer', 'min:1'], 'pin' => ['required', 'string', 'regex:/^[0-9]{4}$/D'], 'waiter_id' => $id, 'stock_location_id' => ['required_without_all:id,business_unit_id', 'integer', 'min:1'], 'service_table_id' => ['nullable', 'integer', 'min:1'], 'order_note' => ['nullable', 'string', 'max:500'], 'discount' => ['required_without:id', $decimal], 'items' => ['required_without:id', 'array', 'min:1', 'max:100'], 'items.*' => ['array:product_unit_id,quantity'], 'items.*.product_unit_id' => $id, 'items.*.quantity' => $qty],
             'order-create' => ['branch_id' => ['sometimes', 'integer', 'min:1'], 'business_unit_id' => ['required_without:stock_location_id', 'integer', 'min:1'], 'stock_location_id' => ['required_without:business_unit_id', 'integer', 'min:1'], 'waiter_id' => $id, 'service_table_id' => ['nullable', 'integer', 'min:1'], 'status' => ['required', Rule::in(['DRAFT', 'WAITING_FOR_ISSUE'])], 'order_note' => ['nullable', 'string', 'max:500'], 'discount' => ['required', $decimal], 'items' => $items, 'items.*' => ['array:product_unit_id,quantity'], 'items.*.product_unit_id' => $id, 'items.*.quantity' => $qty],
             'order-issue','order-submit','order-cancel','transfer-send','transfer-receive' => ['id' => $id],
-            'payment' => ['id' => $id, 'lines' => $items, 'lines.*' => ['array:method,amount,reference'], 'lines.*.method' => ['required', Rule::in(['Cash', 'M-Pesa', 'Airtel Money', 'Mixx by Yas', 'Card', 'Bank', 'Credit'])], 'lines.*.amount' => $amount, 'lines.*.reference' => ['nullable', 'string', 'max:255']],
+            'payment' => ['id' => $id, 'lines' => $items, 'lines.*' => ['array:method,amount,reference'], 'lines.*.method' => ['required', Rule::in([...PaymentService::RECEIVED_METHODS, 'Credit'])], 'lines.*.amount' => $amount, 'lines.*.reference' => ['nullable', 'string', 'max:255']],
             'shift-open' => ['user_id' => ['nullable', 'integer', 'min:1'], 'business_unit_id' => ['required_without:stock_location_id', 'integer', 'min:1'], 'stock_location_id' => ['required_without:business_unit_id', 'integer', 'min:1'], 'type' => ['required', Rule::in(['CASHIER', 'WAITER'])], 'opening_cash' => ['nullable', $decimal], 'opening_reason' => ['nullable', 'string', 'max:2000'], 'handover_id' => ['nullable', 'integer', 'min:1']],
             'shift-close' => ['id' => $id, 'actual_cash' => ['nullable', $decimal], 'notes' => ['nullable', 'string', 'max:2000'], 'override_reason' => ['nullable', 'string', 'min:8', 'max:2000']],
             'grn' => ['business_unit_id' => ['required_without:stock_location_id', 'integer', 'min:1'], 'stock_location_id' => ['required_without:business_unit_id', 'integer', 'min:1'], 'supplier_id' => $id, 'supplier_invoice' => ['nullable', 'string', 'max:255'], 'received_on' => ['required', 'date_format:Y-m-d'], 'items' => $items, 'items.*' => ['array:product_unit_id,quantity,unit_cost'], 'items.*.product_unit_id' => $id, 'items.*.quantity' => $qty, 'items.*.unit_cost' => $amount],

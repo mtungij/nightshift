@@ -6,7 +6,7 @@ $treasury = require __DIR__.'/treasury.php';
 return [
     'demo_bulk_prices' => ['BR-001' => ['bucket' => '16000', 'crate' => '62000']],
     'demo_password' => env('NIGHTSHIFT_DEMO_PASSWORD', 'Nightshift!2026'),
-    'permissions' => ['manage-business-units', 'all-business-units', ...$treasury['permissions'], ...$whatsapp['permissions'], 'view-staff-operations', 'view-dashboard', 'create-orders', 'view-orders', 'issue-drinks', 'receive-payments', 'view-waiter-balances', 'manage-inventory', 'receive-stock', 'transfer-stock', 'adjust-stock', 'approve-adjustments', 'request-void', 'approve-void', 'open-shifts', 'close-shifts', 'override-shifts', 'view-reports', 'manage-users', 'manage-products', 'manage-branches', 'manage-counters', 'view-audit', 'all-branches', 'manage-company', 'return-items'],
+    'permissions' => ['manage-business-units', 'all-business-units', ...$treasury['permissions'], ...$whatsapp['permissions'], 'view-staff-operations', 'view-dashboard', 'create-orders', 'view-orders', 'issue-drinks', 'receive-payments', 'counter-sales', 'view-waiter-balances', 'manage-inventory', 'receive-stock', 'transfer-stock', 'adjust-stock', 'approve-adjustments', 'request-void', 'approve-void', 'open-shifts', 'close-shifts', 'override-shifts', 'view-reports', 'manage-users', 'manage-products', 'manage-branches', 'manage-counters', 'view-audit', 'all-branches', 'manage-company', 'return-items'],
     'roles' => [
         'Super Admin' => ['*'], 'Company Admin / Owner' => ['*'],
         'Accountant' => $treasury['grants']['Accountant'],

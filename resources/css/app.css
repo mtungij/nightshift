@@ -551,3 +551,20 @@ select:focus[data-flux-control] {
 .receipt-stock-preview [data-receipt-projected] {
     color: var(--amber);
 }
+
+.pos-sale-type {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 14px;
+    font-size: 13px;
+}
+.pos-sale-type [role="group"] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+}
+.pos-sale-type .button {
+    justify-content: center;
+    min-height: 44px;
+    padding-inline: 8px;
+}

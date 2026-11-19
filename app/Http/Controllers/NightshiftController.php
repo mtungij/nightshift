@@ -66,6 +66,9 @@ final class NightshiftController extends Controller
         if ($command === 'ticket-reprint') {
             return response()->json(app(SalesTicketService::class)->response(app(SalesTicketService::class)->prepare($data['id'], $key, true)));
         }
+        if ($command === 'counter-sale') {
+            Gate::authorize('counter-sales');
+        }
         $fingerprint = $data;
         if (($data['image'] ?? null) instanceof UploadedFile) {
             $fingerprint['image'] = hash_file('sha256', $data['image']->getRealPath());
@@ -81,6 +84,7 @@ final class NightshiftController extends Controller
                 'staff-admin-status' => app(CompanyAdminService::class)->setStatus($data['id'], $data['active']),
                 'staff-admin-role' => app(CompanyAdminService::class)->changeRole($data),
                 'staff-pin' => app(StaffPinService::class)->set($data['id'], $data['pin'] ?? null),
+                'counter-sale' => app(OrderService::class)->counterSale($data),
                 'waiter-payment' => app(PaymentService::class)->receiveWaiter($data['waiter_id'], $data['stock_location_id'], $data['amount'], $data['method']),
                 'order-create' => app(OrderService::class)->create($data),'order-issue' => app(OrderService::class)->issue($data['id']),'order-submit' => app(OrderService::class)->submit($data['id']),'order-cancel' => app(OrderService::class)->cancel($data['id']),
                 'payment' => app(PaymentService::class)->receive($data['id'], $data['lines']), 'shift-open' => app(ShiftService::class)->open($data),'shift-close' => app(ShiftService::class)->close($data['id'], $data),
@@ -90,6 +94,9 @@ final class NightshiftController extends Controller
                 'product' => app(CatalogService::class)->product($data),'notifications-read' => $this->readNotifications(),default => app(CatalogService::class)->save(substr($command, 8), $data)
             };
 
+            if ($command === 'counter-sale') {
+                return ['id' => $result->id, 'status' => $result->status, 'order_source' => $result->order_source->value, 'ticket_url' => route('nightshift.issue-ticket', $result->id, false)];
+            }
             if ($result instanceof Order && in_array($command, ['order-create', 'order-submit'], true)
                 && $result->collection_mode === OrderCollectionMode::PaidTicket && $result->issued_at !== null) {
                 return ['id' => $result->id, 'status' => $result->status, 'collection_mode' => $result->collection_mode->value];
@@ -98,7 +105,7 @@ final class NightshiftController extends Controller
             return is_array($result) ? $result : ['id' => $result->id, 'status' => $result->status ?? null];
         });
 
-        if (($result['collection_mode'] ?? null) === OrderCollectionMode::PaidTicket->value) {
+        if ($command === 'counter-sale' || ($result['collection_mode'] ?? null) === OrderCollectionMode::PaidTicket->value) {
             $this->prepareInitialTicket($result, $key);
         }
 
@@ -193,6 +200,10 @@ final class NightshiftController extends Controller
     public function receipt(int $id): View
     {
         $o = app(OrderService::class)->accessible($id);
+
+        if ($o->isCounterSale()) {
+            return $this->issueTicket($id);
+        }
 
         return view('receipt', ['order' => $o->load('items'), 'company' => auth()->user()->company, 'branch' => Branch::findOrFail($o->branch_id), 'waiter' => User::where('company_id', $o->company_id)->findOrFail($o->waiter_id), 'cashier' => User::where('company_id', $o->company_id)->find($o->issued_by), 'table' => ServiceTable::find($o->service_table_id), 'payments' => PaymentAllocation::where('order_id', $o->id)->get()->map(fn ($a) => Payment::findOrFail($a->payment_id))]);
     }

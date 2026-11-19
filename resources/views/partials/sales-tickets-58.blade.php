@@ -6,11 +6,15 @@
         <div class="copy-label">{{ \App\Support\UiText::get($copy) }}</div>
         @if($reprint)<div class="reprint">{{ \App\Support\UiText::get('REPRINT') }}</div>@endif
         <div class="line"></div>
-        @foreach(['Invoice' => 'invoice', 'Date/time' => 'issued_at', 'Waiter' => 'waiter', 'Table' => 'table', 'Counter' => 'counter'] as $label => $field)
+        @php($counterSale = $ticket['counter_sale'] ?? false)
+        @foreach(['Invoice' => 'invoice', 'Date/time' => 'issued_at', ...($counterSale ? ['Cashier' => 'cashier'] : ['Waiter' => 'waiter', 'Table' => 'table']), 'Counter' => 'counter'] as $label => $field)
             @if($field !== 'counter' || ($ticket['show_location'] ?? true))
             <div class="row meta-row"><span>{{ \App\Support\UiText::get($label) }}</span><strong>{{ $ticket[$field] }}</strong></div>
             @endif
         @endforeach
+        @if($counterSale)
+            <div class="row meta-row"><span>{{ \App\Support\UiText::get('Sale type') }}</span><strong>{{ \App\Support\UiText::get('Counter Sale') }}</strong></div>
+        @endif
         @if(filled($ticket['business_unit'] ?? null))
             <div class="row meta-row"><span>{{ \App\Support\UiText::get('Business Unit') }}</span><strong>{{ $ticket['business_unit'] }}</strong></div>
         @endif
@@ -32,11 +36,16 @@
             @endforeach
         </div>
         <div class="line"></div>
-        @if($copy === 'WAITER COPY')
+        @if($copy === 'WAITER COPY' || $counterSale)
             <div class="row"><span>{{ \App\Support\UiText::get('Subtotal') }}</span><span class="amount">{{ \App\Support\TicketAmountFormatter::format($ticket['subtotal']) }}</span></div>
             <div class="row"><span>{{ \App\Support\UiText::get('Discount') }}</span><span class="amount">{{ \App\Support\TicketAmountFormatter::format($ticket['discount']) }}</span></div>
         @endif
         <div class="row total"><span>{{ \App\Support\UiText::get('TOTAL') }} {{ $currency }}</span><span class="amount">{{ \App\Support\TicketAmountFormatter::format($ticket['total']) }}</span></div>
+        @if($counterSale)
+            @foreach($ticket['payments'] as $payment)
+                <div class="row"><span>{{ \App\Support\UiText::get($payment['method']) }}</span><strong class="amount">{{ \App\Support\TicketAmountFormatter::format($payment['amount']) }}</strong></div>
+            @endforeach
+        @endif
         <div class="row status"><span>{{ \App\Support\UiText::get('Status') }}</span><strong>@if($copy === 'CASHIER COPY' && $ticket['status'] !== 'PAID'){{ \App\Support\UiText::get('ISSUED') }} / @endif{{ \App\Support\UiText::get($ticket['status']) }}</strong></div>
         @if($copy === 'WAITER COPY')
             <div class="row outstanding"><span>{{ \App\Support\UiText::get('Outstanding Balance') }}</span><strong class="amount">{{ $currency }} {{ \App\Support\TicketAmountFormatter::format($ticket['outstanding']) }}</strong></div>

@@ -59,7 +59,7 @@ final class ReportPdfService
         if (request()->filled('company_id')) {
             abort_unless((int) request('company_id') === $actor->company_id, 403);
         }
-        foreach (['branch_id', 'business_unit_id', 'stock_location_id', 'product_id', 'category_id', 'shift_id', 'waiter_id', 'issued_by', 'custodian_id', 'user_id', 'status', 'method', 'payment_method', 'transaction_type', 'action', 'module', 'search', 'from', 'to'] as $key) {
+        foreach (['branch_id', 'business_unit_id', 'stock_location_id', 'product_id', 'category_id', 'shift_id', 'waiter_id', 'issued_by', 'custodian_id', 'user_id', 'status', 'method', 'payment_method', 'transaction_type', 'action', 'module', 'search', 'from', 'to', 'order_source'] as $key) {
             if (! request()->filled($key)) {
                 continue;
             }
@@ -90,6 +90,9 @@ final class ReportPdfService
                     $users = app(StaffVisibility::class)->unitUsers($users);
                 }
                 $value = $users->findOrFail((int) $value)->name;
+            } elseif ($key === 'order_source') {
+                $label = 'Sale type';
+                $value = UiText::get($value === 'CASHIER_DIRECT' ? 'Counter Sales' : 'Waiter Sales');
             } else {
                 $label = ['from' => 'From', 'to' => 'To', 'search' => 'Search', 'action' => 'Action', 'module' => 'Module', 'status' => 'Status', 'transaction_type' => 'Transaction type'][$key] ?? ucfirst(str_replace('_', ' ', $key));
             }

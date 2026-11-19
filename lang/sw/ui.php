@@ -1,6 +1,18 @@
 <?php
 
 return [
+    'Counter Sale' => 'Mauzo ya Kaunta',
+    'Counter Sales' => 'Mauzo ya Kaunta',
+    'Waiter Sales' => 'Mauzo ya Wahudumu',
+    'Waiter Order' => 'Oda ya Mhudumu',
+    'Sale type' => 'Aina ya mauzo',
+    'All sales' => 'Mauzo yote',
+    'Complete Sale' => 'Kamilisha Mauzo',
+    'Walk-in Customer' => 'Mteja wa Kaunta',
+    'CUSTOMER RECEIPT' => 'RISITI YA MTEJA',
+    'Open your cashier shift before completing a counter sale.' => 'Fungua zamu yako ya keshia kabla ya kukamilisha mauzo ya kaunta.',
+    'Pay the full counter sale total.' => 'Lipa jumla kamili ya mauzo ya kaunta.',
+    'Counter sale paid' => 'Mauzo ya kaunta yamelipwa',
     'receipt.current_stock' => 'Stock iliyopo',
     'After receipt' => 'Stock baada ya kupokea',
     'Search product…' => 'Tafuta bidhaa…',

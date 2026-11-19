@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Domain\Decimal as D;
-use App\Domain\OrderCollectionMode;
 use App\Domain\TenantContext;
 use App\Models\Order;
 use App\Models\OrderItem;
@@ -47,7 +46,7 @@ final class ReturnService
                 $value = D::add($value, $amount);
                 $lines[] = [$line, $qty, $amount, D::mul($qty, $line->conversion_quantity, 6)];
             }
-            $this->stock->require(D::cmp($value, $o->balance) <= 0, 'Paid value cannot be returned without a refund workflow.');
+            $this->stock->require($o->isCounterSale() || D::cmp($value, $o->balance) <= 0, 'Paid value cannot be returned without a refund workflow.');
             $return = OrderReturn::create(['branch_id' => $o->branch_id, 'order_id' => $o->id, 'shift_id' => $cashier->id, 'number' => $this->numbers->next('RET'), 'reason' => $data['reason'], 'total' => $value, 'created_by' => app(TenantContext::class)->user()->id]);
             foreach ($lines as [$line,$qty,$amount,$base]) {
                 ReturnItem::create(['branch_id' => $o->branch_id, 'return_id' => $return->id, 'order_item_id' => $line->id, 'quantity' => $qty, 'base_quantity' => $base, 'value' => $amount]);
@@ -55,6 +54,10 @@ final class ReturnService
                 $line->update(['returned_quantity' => D::add($line->returned_quantity, $qty, 6), 'returned_value' => D::add($line->returned_value, $amount)]);
             }
             $old = ['total' => $o->total, 'balance' => $o->balance];
+            if ($o->isCounterSale() && D::cmp($value, '0') > 0) {
+                app(PaymentService::class)->refund($o, $cashier->id, $value, 'Return '.$return->number);
+                $o->amount_paid = D::sub($o->amount_paid, $value);
+            }
             $o->return_total = D::add($o->return_total, $value);
             $o->total = D::sub($o->total, $value);
             $o->balance = D::sub($o->total, $o->amount_paid);
@@ -67,7 +70,7 @@ final class ReturnService
                 $o->closed_at = now();
             }
             $o->save();
-            if ($o->collection_mode === OrderCollectionMode::WaiterAccount) {
+            if ($o->usesWaiterAccount()) {
                 $this->ledger->post($o, 'RETURN', '0', $value, 'OrderReturn', $return->id, 'Return processed: '.$return->number, null, $return->id);
             }
             $this->audit->record('RETURN_PROCESSED', 'Orders', 'OrderReturn', $return->id, $old, ['order' => $o->id, 'total' => $o->total, 'returned' => $value], $o->branch_id);

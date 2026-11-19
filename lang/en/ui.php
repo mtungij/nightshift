@@ -1,6 +1,18 @@
 <?php
 
 return [
+    'Counter Sale' => 'Counter Sale',
+    'Counter Sales' => 'Counter Sales',
+    'Waiter Sales' => 'Waiter Sales',
+    'Waiter Order' => 'Waiter Order',
+    'Sale type' => 'Sale type',
+    'All sales' => 'All sales',
+    'Complete Sale' => 'Complete Sale',
+    'Walk-in Customer' => 'Walk-in Customer',
+    'CUSTOMER RECEIPT' => 'CUSTOMER RECEIPT',
+    'Open your cashier shift before completing a counter sale.' => 'Open your cashier shift before completing a counter sale.',
+    'Pay the full counter sale total.' => 'Pay the full counter sale total.',
+    'Counter sale paid' => 'Counter sale paid',
     'receipt.current_stock' => 'Current stock',
     'After receipt' => 'After receipt',
     'Search product…' => 'Search product…',

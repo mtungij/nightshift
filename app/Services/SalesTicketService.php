@@ -10,6 +10,7 @@ use App\Models\Branch;
 use App\Models\BusinessUnit;
 use App\Models\Company;
 use App\Models\Order;
+use App\Models\Payment;
 use App\Models\SalesTicketBatch;
 use App\Models\ServiceTable;
 use App\Models\StockLocation;
@@ -54,6 +55,10 @@ class SalesTicketService
      */
     public function orderCopies(Order $order, array $settings): array
     {
+        if ($order->isCounterSale()) {
+            return ['CUSTOMER RECEIPT'];
+        }
+
         return $order->collection_mode === OrderCollectionMode::PaidTicket ? ['WAITER COPY', 'CASHIER COPY'] : $this->copies($settings);
     }
 
@@ -94,26 +99,29 @@ class SalesTicketService
     {
         Gate::authorize('view', $order);
         $company = app(TenantContext::class)->user()->company;
-        $issue = WaiterLedgerEntry::where('order_id', $order->id)->where('entry_type', 'ISSUE')->first();
-        $issuedTotal = $order->collection_mode === OrderCollectionMode::PaidTicket
+        $direct = $order->isCounterSale();
+        $issue = $direct ? null : WaiterLedgerEntry::where('order_id', $order->id)->where('entry_type', 'ISSUE')->first();
+        $issuedTotal = $direct || $order->collection_mode === OrderCollectionMode::PaidTicket
             ? D::sub($order->subtotal, $order->discount)
             : ($issue->debit ?? $order->total);
         $enteredBy = User::where('company_id', $order->company_id)->find($order->created_by);
 
-        return ['show_location' => app(UnitOperationalService::class)->showLocation($order->company_id, $order->business_unit_id, $order->stock_location_id), 'business_unit' => BusinessUnit::withoutGlobalScopes()->where('company_id', $order->company_id)->whereKey($order->business_unit_id)->value('name') ?? '—', 'order_id' => $order->id, 'business' => $company->trading_name ?: $company->name, 'branch' => Branch::findOrFail($order->branch_id)->name, 'invoice' => $order->invoice_number, 'order_note' => $order->order_note,
+        return ['counter_sale' => $direct, 'show_location' => $direct || app(UnitOperationalService::class)->showLocation($order->company_id, $order->business_unit_id, $order->stock_location_id), 'business_unit' => BusinessUnit::withoutGlobalScopes()->where('company_id', $order->company_id)->whereKey($order->business_unit_id)->value('name') ?? '—', 'order_id' => $order->id, 'business' => $company->trading_name ?: $company->name, 'branch' => Branch::findOrFail($order->branch_id)->name, 'invoice' => $order->invoice_number, 'order_note' => $order->order_note,
             'issued_at' => $order->issued_at?->copy()->timezone($company->timezone ?: 'Africa/Dar_es_Salaam')->format('d M Y H:i'),
             'entered_via' => $enteredBy?->isPosTerminal() ? $enteredBy->name : null,
-            'waiter' => User::where('company_id', $order->company_id)->findOrFail($order->waiter_id)->name,
+            'waiter' => $direct ? null : User::where('company_id', $order->company_id)->findOrFail($order->waiter_id)->name,
+            'cashier' => $direct ? User::where('company_id', $order->company_id)->find($order->issued_by)?->name : null,
+            'payments' => $direct ? Payment::where('order_id', $order->id)->where('amount', '>', 0)->orderBy('id')->get(['method', 'amount'])->toArray() : [],
             'table' => ServiceTable::find($order->service_table_id)->name ?? '—', 'counter' => StockLocation::withoutGlobalScopes()->where('company_id', $order->company_id)->findOrFail($order->stock_location_id)->name,
             'items' => $order->items->map(fn ($item) => $item->only(['product_name', 'quantity', 'unit_name', 'unit_price', 'total']))->all(),
             'subtotal' => $order->subtotal, 'discount' => $order->discount, 'total' => $issuedTotal, 'currency' => $company->currency,
             'outstanding' => $this->outstanding($order),
-            'status' => $order->collection_mode === OrderCollectionMode::PaidTicket ? 'PAID' : (bccomp($issuedTotal, '0', 2) > 0 ? 'UNPAID' : 'SETTLED')];
+            'status' => $direct || $order->collection_mode === OrderCollectionMode::PaidTicket ? 'PAID' : (bccomp($issuedTotal, '0', 2) > 0 ? 'UNPAID' : 'SETTLED')];
     }
 
     private function outstanding(Order $order): string
     {
-        if ($order->collection_mode === OrderCollectionMode::PaidTicket) {
+        if ($order->isCounterSale() || $order->collection_mode === OrderCollectionMode::PaidTicket) {
             return '0.00';
         }
         $issueId = WaiterLedgerEntry::where('order_id', $order->id)->where('entry_type', 'ISSUE')->value('id');

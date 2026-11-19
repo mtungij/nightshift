@@ -43,6 +43,7 @@ final class AuditTrailService
         'USER_COUNTERS_ASSIGNED' => 'Staff Counters Updated', 'USER_BRANCHES_ASSIGNED' => 'Staff Branches Updated',
         'USER_STATUS_CHANGED' => 'Staff Status Updated', 'STAFF_PIN_RESET' => 'Staff PIN Reset',
         'PAYMENT_RECEIVED' => 'Payment Received', 'DRINKS_ISSUED' => 'Order Issued', 'ORDER_CREATED' => 'Order Created', 'ORDER_UPDATED' => 'Order Updated',
+        'COUNTER_SALE_PAID' => 'Counter sale paid',
         'CASH_HANDOVER_PENDING' => 'Cash Handover Created', 'CASH_HANDOVER_RECEIVED' => 'Cash Handover Received',
         'CASH_HANDOVER_DISPUTED' => 'Cash Handover Disputed', 'CASH_HANDOVER_APPROVED' => 'Cash Handover Approved',
         'CASH_HANDOVER_CANCELLED' => 'Cash Handover Cancelled', 'TREASURY_EXPENSE' => 'Treasury Expense Recorded',

@@ -129,13 +129,18 @@ final class StaffVisibility
             $query = $this->atCounter($query);
         }
 
-        return $query->whereHas('waiter.branches', fn ($q) => $q->whereIn('branches.id', StockLocation::whereIn('id', $this->counters())->select('branch_id')))->where(function ($q) use ($actor) {
-            $q->where('created_by', $actor->id)->orWhere('issued_by', $actor->id)
-                ->orWhere(fn ($q) => $q->where('collection_mode', OrderCollectionMode::PaidTicket->value)
-                    ->whereIn('issued_shift_id', Shift::where('user_id', $actor->id)->where('type', 'CASHIER')->select('id')))
-                ->orWhereIn('status', ['DRAFT', 'WAITING_FOR_ISSUE', 'ISSUED', 'PARTIALLY_PAID', 'VOID_REQUESTED'])
-                ->orWhereIn('id', Payment::where('received_by', $actor->id)->select('order_id'))
-                ->orWhereIn('id', PaymentAllocation::whereIn('payment_id', Payment::where('received_by', $actor->id)->select('id'))->select('order_id'));
+        return $query->where(function ($q) use ($actor) {
+            $q->where(function ($q) use ($actor) {
+                $q->whereHas('waiter.branches', fn ($q) => $q->whereIn('branches.id', StockLocation::whereIn('id', $this->counters())->select('branch_id')))->where(function ($q) use ($actor) {
+                    $q->where('created_by', $actor->id)->orWhere('issued_by', $actor->id)
+                        ->orWhere(fn ($q) => $q->where('collection_mode', OrderCollectionMode::PaidTicket->value)
+                            ->whereIn('issued_shift_id', Shift::where('user_id', $actor->id)->where('type', 'CASHIER')->select('id')))
+                        ->orWhereIn('status', ['DRAFT', 'WAITING_FOR_ISSUE', 'ISSUED', 'PARTIALLY_PAID', 'VOID_REQUESTED'])
+                        ->orWhereIn('id', Payment::where('received_by', $actor->id)->select('order_id'))
+                        ->orWhereIn('id', PaymentAllocation::whereIn('payment_id', Payment::where('received_by', $actor->id)->select('id'))->select('order_id'));
+                });
+            })->orWhere(fn ($q) => $q->where('order_source', OrderSource::CashierDirect->value)
+                ->where('created_by', $actor->id)->whereIn('stock_location_id', $this->counters()));
         });
     }
 
@@ -265,6 +270,10 @@ final class StaffVisibility
         }
         if (! $this->settlementOnly($user)) {
             return $order->waiter_id === $user->id;
+        }
+
+        if ($order->isCounterSale()) {
+            return $order->created_by === $user->id && in_array($order->stock_location_id, $this->counters($user), true);
         }
 
         return in_array($order->stock_location_id, $this->counters($user), true)

@@ -107,7 +107,7 @@ final class OperationalAlerts
     /** @param array<string, mixed> $options */
     private function waiter(AuditLog $audit, Order $order, array $options): void
     {
-        if (! $options['waiter_outstanding']) {
+        if ($order->isCounterSale() || ! $options['waiter_outstanding']) {
             return;
         }
         $report = app(ReportService::class)->generate('Waiter Outstanding', ['branch_id' => $order->branch_id, 'waiter_id' => $order->waiter_id, 'business_unit_id' => $order->business_unit_id]);
