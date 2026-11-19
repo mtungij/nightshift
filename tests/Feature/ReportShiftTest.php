@@ -64,11 +64,11 @@ class ReportShiftTest extends TestCase
         $this->sale('OTHER-CASHIER', $this->makeShift(), '2026-11-10 02:30:00');
         $this->sale('LEGACY', null, '2026-11-10 02:30:00');
         $data = $this->getJson($this->url())->assertOk()->json();
-        $this->assertSame(['AFTER-MIDNIGHT', 'BEFORE-MIDNIGHT'], array_column($data['rows'], 0));
-        $this->assertSame(2000.0, array_sum(array_column($data['rows'], 3)));
+        $this->assertSame(['AFTER-MIDNIGHT', 'BEFORE-MIDNIGHT'], array_column($data['rows'], 11));
+        $this->assertSame(2000.0, array_sum(array_column($data['rows'], 4)));
         $this->assertSame('Closed', $data['shift_context']['status']);
         $all = $this->getJson($this->url('Daily Sales', ['shift_id' => '', 'from' => '2026-11-09', 'to' => '2026-11-10']))->assertOk()->json();
-        $this->assertContains('LEGACY', array_column($all['rows'], 0));
+        $this->assertContains('LEGACY', array_column($all['rows'], 11));
     }
 
     public function test_closed_report_is_stable_after_later_mutable_settlement(): void

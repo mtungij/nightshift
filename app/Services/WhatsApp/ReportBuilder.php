@@ -13,7 +13,6 @@ use App\Services\CashHandoverService;
 use App\Services\DashboardService;
 use App\Services\OperationalPeriodReportService;
 use App\Services\ReportPdfService;
-use App\Services\ReportService;
 use App\Services\ReportShiftService;
 use App\Support\QuantityFormatter;
 use Carbon\CarbonImmutable;
@@ -40,16 +39,9 @@ final class ReportBuilder
     /** @param array<string, mixed> $filters
      * @return list<list<mixed>>
      */
-    private function rows(string $report, array $filters): array
+    private function rows(string $report, array $filters, string $resultKey = 'rows'): array
     {
-        $rows = [];
-        for ($page = 1; ; $page++) {
-            $result = app(ReportService::class)->generate($report, [...$filters, 'page' => $page]);
-            array_push($rows, ...$result['rows']);
-            if (! $result['has_more']) {
-                return $rows;
-            }
-        }
+        return app(OperationalPeriodReportService::class)->rows($report, $filters, $resultKey);
     }
 
     /** @param list<int> $branches
@@ -73,7 +65,10 @@ final class ReportBuilder
                 $data['payment_methods'][$method] = D::add($data['payment_methods'][$method] ?? '0', (string) $amount);
             }
             $filters = ['from' => $date, 'to' => $date, 'timezone' => $company->timezone, 'branch_id' => $branchId];
-            foreach ($this->rows('Sales by Product', $filters) as $row) {
+            foreach ($this->rows('Sales by Product', $filters, 'selling_unit_counts') as $row) {
+                if ($row[1] === null) {
+                    continue;
+                }
                 $key = (string) $row[0];
                 $data['units'] = D::add($data['units'], (string) $row[1], 6);
                 $data['products'][$key] = D::add($data['products'][$key] ?? '0', (string) $row[1], 6);
@@ -136,7 +131,7 @@ final class ReportBuilder
         $lang = (string) ($log->payload['language'] ?? 'sw');
         $t = fn ($en, $sw) => $this->label($en, $sw, $lang);
         $metrics = ['sales' => '0', 'collected' => '0', 'outstanding' => '0', 'payment_methods' => []];
-        foreach ($this->rows('Daily Sales', ['shift_id' => $shift->id]) as $row) {
+        foreach ($this->rows('Order Report', ['shift_id' => $shift->id]) as $row) {
             $metrics['sales'] = D::add($metrics['sales'], (string) $row[3]);
         }
         foreach ($this->rows('Payment Method Report', ['shift_id' => $shift->id]) as $row) {

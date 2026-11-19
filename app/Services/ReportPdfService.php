@@ -30,6 +30,7 @@ final class ReportPdfService
     {
         return DB::transaction(function () use ($page) {
             $result = $page(1);
+            $first = $result;
             $rows = $result['rows'];
             $number = 1;
             while ($result['has_more'] ?? false) {
@@ -39,7 +40,7 @@ final class ReportPdfService
             }
             $this->checkLimit(count($rows));
 
-            return [...$result, 'rows' => $rows, 'page' => 1, 'has_more' => false];
+            return [...$first, 'rows' => $rows, 'page' => 1, 'has_more' => false];
         });
     }
 

@@ -1,6 +1,17 @@
 <?php
 
 return [
+    'Quantity sold' => 'Kiasi kilichouzwa',
+    'Total Sales' => 'Jumla ya Mauzo',
+    'Cost of Goods Sold' => 'Gharama ya Bidhaa Zilizouzwa',
+    'Gross Profit' => 'Faida Ghafi',
+    'Gross Margin' => 'Asilimia ya Faida Ghafi',
+    'Margin %' => 'Faida Ghafi %',
+    'Waiter Sale' => 'Mauzo ya Mhudumu',
+    'Product unavailable' => 'Bidhaa haipatikani',
+    'Unavailable' => 'Haipatikani',
+    'Back to report' => 'Rudi kwenye ripoti',
+    'No payments recorded' => 'Hakuna malipo yaliyorekodiwa',
     'Qty × Unit' => 'Kiasi × Kipimo',
     'Payment Method' => 'Njia ya Malipo',
     'Amount Paid' => 'Kiasi Kilicholipwa',

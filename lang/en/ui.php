@@ -1,6 +1,17 @@
 <?php
 
 return [
+    'Quantity sold' => 'Quantity sold',
+    'Total Sales' => 'Total Sales',
+    'Cost of Goods Sold' => 'Cost of Goods Sold',
+    'Gross Profit' => 'Gross Profit',
+    'Gross Margin' => 'Gross Margin',
+    'Margin %' => 'Margin %',
+    'Waiter Sale' => 'Waiter Sale',
+    'Product unavailable' => 'Product unavailable',
+    'Unavailable' => 'Unavailable',
+    'Back to report' => 'Back to report',
+    'No payments recorded' => 'No payments recorded',
     'Qty × Unit' => 'Qty × Unit',
     'Payment Method' => 'Payment Method',
     'Amount Paid' => 'Amount Paid',

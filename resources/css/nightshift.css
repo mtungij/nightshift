@@ -4385,3 +4385,156 @@ body > .language-switch {
         transition: none;
     }
 }
+
+.modal.profitability-report {
+    width: min(1200px, 100%);
+}
+
+.profitability-report .report-kpis {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin: 0 0 16px;
+}
+
+.report-kpis .kpi-value {
+    overflow-wrap: anywhere;
+}
+
+.report-kpis .kpi-footer:has(span:empty) {
+    display: none;
+}
+
+.nightshift .profitability-table .data-table {
+    table-layout: fixed;
+    white-space: normal;
+}
+
+.profitability-table .data-table :is(th, td) {
+    padding: 10px 7px;
+    overflow-wrap: anywhere;
+}
+
+.profitability-table th:first-child {
+    width: 15%;
+}
+
+.profitability-table th:last-child {
+    width: 10%;
+}
+
+.report-invoice-link {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    min-height: 32px;
+    padding: 0;
+    text-align: left;
+    text-decoration: underline;
+    text-underline-offset: .2em;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+
+.report-invoice-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(145px, 100%), 1fr));
+    gap: 12px;
+    margin: 14px 0;
+}
+
+.report-invoice-meta dt {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.report-invoice-meta dd {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+}
+
+.report-invoice-payments {
+    margin: 8px 0 16px;
+    padding-inline-start: 18px;
+}
+
+@media (max-width: 1000px) {
+    .profitability-report .report-kpis {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .profitability-table {
+        overflow: visible;
+    }
+
+    .profitability-table :is(table, tbody) {
+        display: block;
+    }
+
+    .profitability-table thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+    }
+
+    .profitability-table .data-table tr {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-bottom: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+    }
+
+    .profitability-table .data-table td {
+        padding: 5px;
+        border: 0;
+    }
+
+    .profitability-table td:first-child,
+    .profitability-table td[colspan] {
+        grid-column: 1 / -1;
+    }
+
+    .profitability-table td[data-label]:not(:first-child)::before {
+        content: attr(data-label);
+        display: block;
+        font-size: 11px;
+        color: var(--muted);
+    }
+
+    .report-invoice-link {
+        min-height: 44px;
+    }
+}
+
+.report-filter-panel {
+    margin-bottom: 10px;
+}
+
+.report-filter-panel > summary {
+    padding: 10px 0;
+    color: var(--text);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+#report-scope-label {
+    margin-inline-start: 8px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+    overflow-wrap: anywhere;
+}
+
+@media (min-width: 1001px) {
+    .profitability-table:has(.report-invoice-link) th:nth-child(9) {
+        width: 10%;
+    }
+
+    .report-filter-panel .form-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}

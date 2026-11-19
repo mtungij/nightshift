@@ -42,7 +42,7 @@ final class ReportService
      * @param  array<string, mixed>  $filters
      * @return array<string, mixed>
      */
-    public function generate(string $name, array $filters = []): array
+    public function generate(string $name, array $filters = [], bool $withSummary = true, bool $withOptions = false): array
     {
         app(BusinessUnitContext::class)->select(! empty($filters['business_unit_id']) ? (int) $filters['business_unit_id'] : null);
         if (! empty($filters['business_unit_id']) && ! empty($filters['branch_id'])) {
@@ -50,19 +50,23 @@ final class ReportService
         }
         $selectedShift = app(ReportShiftService::class)->resolve($filters, $name);
         $page = max(1, (int) ($filters['page'] ?? 1));
-        $result = $this->build($name, $filters, ($page - 1) * 100);
+        $result = $this->build($name, $filters, ($page - 1) * 100, $withSummary, withOptions: $withOptions);
         foreach ($result['headers'] as $column => $header) {
             if (in_array($header, ['Quantity', 'Base quantity', 'Balance after', 'Units sold'], true)) {
                 foreach ($result['rows'] as &$row) {
-                    $row[$column] = QuantityFormatter::format($row[$column]);
+                    if ($row[$column] !== null) {
+                        $row[$column] = QuantityFormatter::format($row[$column]);
+                    }
                 }
                 unset($row);
             }
         }
         $result['has_more'] = count($result['rows']) > 100;
         $result['rows'] = array_slice($result['rows'], 0, 100);
-        if (isset($result['values'])) {
-            $result['values'] = array_slice($result['values'], 0, 100);
+        foreach (['values', 'invoice_ids', 'selling_unit_counts'] as $key) {
+            if (isset($result[$key])) {
+                $result[$key] = array_slice($result[$key], 0, 100);
+            }
         }
 
         if ($selectedShift) {
@@ -72,10 +76,15 @@ final class ReportService
         return [...$result, 'page' => $page, 'per_page' => 100];
     }
 
+    public function salesInvoice(int $id, array $filters): array
+    {
+        return $this->build('Daily Sales', $filters, 0, false, $id);
+    }
+
     /** @param array<string, mixed> $filters
      * @return array<string, mixed>
      */
-    private function build(string $name, array $filters, int $offset): array
+    private function build(string $name, array $filters, int $offset, bool $withSummary, ?int $invoice = null, bool $withOptions = false): array
     {
         $name = $name === 'Salaries/Wages' ? 'Salaries and Wages' : $name;
         if (in_array($name, config('treasury.reports'), true)) {
@@ -103,6 +112,9 @@ final class ReportService
         $orders = $visibility->orders(Order::query())->when(! $selectedShift, fn ($q) => $q->whereBetween('issued_at', [$from, $to]))->whereNotIn('status', ['VOIDED', 'CANCELLED', 'DRAFT', 'WAITING_FOR_ISSUE']);
         if ($selectedShift) {
             app(ReportShiftService::class)->orders($orders, $selectedShift);
+        }
+        if (in_array($name, config('report_pdf.sales_reports'), true) || $name === 'Business Unit Performance') {
+            $orders->where('orders.is_demo', false);
         }
         if ($visibility->settlementOnly()) {
             $actorId = app(TenantContext::class)->user()->id;
@@ -143,10 +155,31 @@ final class ReportService
                 return [$unit->name, (string) (clone $q)->sum('total'), D::add((string) $cash->sum('amount'), (string) $ticketCash->sum('amount')), (string) (clone $q)->sum('balance'), $q->count(), (string) $moves->sum('quantity'), (clone $shifts)->where('type', 'CASHIER')->count(), (clone $shifts)->where('type', 'WAITER')->count()];
             })->all()];
         }
-        foreach (['waiter_id', 'stock_location_id', 'issued_by'] as $key) {
+        foreach (['waiter_id', 'stock_location_id'] as $key) {
             if (! empty($filters[$key])) {
                 $orders->where($key, $filters[$key]);
             }
+        }
+        if (! empty($filters['order_source'])) {
+            $orders->where('order_source', $filters['order_source']);
+        }
+        $optionOrders = $withOptions && in_array($name, SalesProfitabilityService::REPORTS, true) ? clone $orders : null;
+        if (! empty($filters['issued_by'])) {
+            $orders->where('issued_by', $filters['issued_by']);
+        }
+        if (in_array($name, SalesProfitabilityService::REPORTS, true)) {
+            $sales = app(SalesProfitabilityService::class);
+
+            if ($invoice !== null) {
+                return $sales->invoice($orders->whereKey($invoice), $selectedShift, $filters);
+            }
+
+            $result = $sales->report($name, $orders, $filters, $selectedShift, $offset, $withSummary);
+            if ($optionOrders) {
+                $result['filter_options'] = $sales->filterOptions($optionOrders, $filters);
+            }
+
+            return $result;
         }
         if (! empty($filters['product_id']) || ! empty($filters['category_id'])) {
             $matching = OrderItem::query();
@@ -158,7 +191,7 @@ final class ReportService
             }
             $orders->whereIn('id', $matching->select('order_id'));
         }
-        if (in_array($name, ['Sales by Product', 'Sales by Category', 'Best Selling Products', 'Slow Moving Products', 'Profit Report'], true)) {
+        if (in_array($name, ['Sales by Category', 'Best Selling Products', 'Slow Moving Products', 'Profit Report'], true)) {
             $items = OrderItem::query()->whereIn('order_id', (clone $orders)->select('orders.id'));
             if (! empty($filters['product_id'])) {
                 $items->where('product_id', $filters['product_id']);
@@ -341,16 +374,13 @@ final class ReportService
 
             return ['headers' => ['Location', 'Sales'], 'rows' => $rows->map(fn ($r) => [$labels($r), $r->total])->all(), 'values' => $rows->map(fn ($r) => [$labels($r), $r->total])->all()];
         }
-        if (! empty($filters['order_source'])) {
-            $orders->where('order_source', $filters['order_source']);
-        }
         if ($name === 'Paid Orders') {
             $orders->where('status', 'PAID');
         }
         if ($name === 'Unpaid Orders') {
             $orders->whereIn('status', ['ISSUED', 'PARTIALLY_PAID']);
         }
-        abort_unless(in_array($name, ['Daily Sales', 'Order Report', 'Paid Orders', 'Unpaid Orders'], true), 422, 'Unknown report.');
+        abort_unless(in_array($name, ['Order Report', 'Paid Orders', 'Unpaid Orders'], true), 422, 'Unknown report.');
 
         return ['headers' => self::INVOICE_HEADERS, 'rows' => $orders->latest('issued_at')->orderByDesc('id')->offset($offset)->limit(101)->get()->map(fn ($o) => [$o->invoice_number, User::where('company_id', app(TenantContext::class)->companyId())->find($o->waiter_id)?->name, ServiceTable::whereKey($o->service_table_id)->first()->name ?? 'Takeaway', $o->total, $o->amount_paid, $o->balance, $o->status, __('ui.'.($o->isCounterSale() ? 'Counter Sale' : 'Waiter Order'))])->all()];
     }

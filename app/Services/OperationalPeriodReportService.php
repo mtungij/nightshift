@@ -54,7 +54,7 @@ final class OperationalPeriodReportService
 
                     continue;
                 }
-                $salesRows = $this->rows('Daily Sales', $scope);
+                $salesRows = $this->rows('Order Report', $scope);
                 if ($filters['include_details'] ?? false) {
                     $detailCount += count($salesRows);
                     app(ReportPdfService::class)->checkLimit($detailCount);
@@ -73,8 +73,8 @@ final class OperationalPeriodReportService
                     $unitTotals[$context['branch'].' / '.$context['business_unit']] = D::add($unitTotals[$context['branch'].' / '.$context['business_unit']] ?? '0', (string) $row[3]);
                     $branchTotals[$context['branch']] = D::add($branchTotals[$context['branch']] ?? '0', (string) $row[3]);
                 }
-                foreach ($this->rows('Sales by Product', $scope) as $row) {
-                    $metrics['units'] = D::add($metrics['units'], (string) $row[1], 6);
+                foreach ($this->rows('Sales by Product', $scope, 'selling_unit_counts') as $row) {
+                    $metrics['units'] = D::add($metrics['units'], $row[1] ?? '0', 6);
                 }
                 foreach ($this->rows('Payment Method Report', $scope) as $row) {
                     $methods[$row[0]] = D::add($methods[$row[0]] ?? '0', (string) $row[1]);
@@ -129,12 +129,12 @@ final class OperationalPeriodReportService
     /** @param array<string,mixed> $filters
      * @return list<list<mixed>>
      */
-    public function rows(string $name, array $filters): array
+    public function rows(string $name, array $filters, string $resultKey = 'rows'): array
     {
         $rows = [];
         for ($page = 1; ; $page++) {
-            $result = app(ReportService::class)->generate($name, [...$filters, 'page' => $page]);
-            array_push($rows, ...$result['rows']);
+            $result = app(ReportService::class)->generate($name, [...$filters, 'page' => $page], withSummary: false);
+            array_push($rows, ...$result[$resultKey]);
             if (! $result['has_more']) {
                 return $rows;
             }

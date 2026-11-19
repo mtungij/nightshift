@@ -180,10 +180,10 @@ class CounterSaleTest extends TestCase
         $waiter = Order::where('order_source', OrderSource::Waiter->value)->whereNotNull('issued_at')->firstOrFail()->invoice_number;
         $url = '/api/nightshift/reports/Daily%20Sales';
         $rows = $this->getJson($url)->assertOk()->json('rows');
-        $this->assertContains($invoice, array_column($rows, 0));
-        $this->assertContains($waiter, array_column($rows, 0));
-        $this->getJson($url.'?order_source=CASHIER_DIRECT')->assertOk()->assertJsonCount(1, 'rows')->assertJsonPath('rows.0.0', $invoice)->assertJsonPath('rows.0.7', 'Counter Sale');
-        $this->assertNotContains($invoice, array_column($this->getJson($url.'?order_source=WAITER')->assertOk()->json('rows'), 0));
+        $this->assertContains($invoice, array_column($rows, 11));
+        $this->assertContains($waiter, array_column($rows, 11));
+        $this->getJson($url.'?order_source=CASHIER_DIRECT')->assertOk()->assertJsonCount(1, 'rows')->assertJsonPath('rows.0.11', $invoice)->assertJsonPath('rows.0.10', 'Counter Sale');
+        $this->assertNotContains($invoice, array_column($this->getJson($url.'?order_source=WAITER')->assertOk()->json('rows'), 11));
         $this->assertContains('M-Pesa', array_column(app(ReportService::class)->generate('Payment Method Report')['rows'], 0));
     }
 

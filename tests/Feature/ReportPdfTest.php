@@ -14,6 +14,8 @@ use App\Models\User;
 use App\Services\AuditService;
 use App\Services\BusinessUnitService;
 use App\Services\TreasuryService;
+use App\Support\QuantityFormatter;
+use App\Support\TicketAmountFormatter;
 use Database\Seeders\NightshiftDemoSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -75,23 +77,39 @@ class ReportPdfTest extends TestCase
         return $rows;
     }
 
+    private function formattedRows(array $screen): array
+    {
+        return array_map(fn ($row) => array_map(function ($header, $value) {
+            if ($value === null) {
+                return in_array($header, ['Cost', 'Gross Profit', 'Margin %'], true) ? 'Unavailable' : '—';
+            }
+            if (in_array($header, ['Unit Price', 'Sales', 'Cost', 'Gross Profit'], true)) {
+                return 'TSh '.TicketAmountFormatter::format($value);
+            }
+
+            return $header === 'Margin %' ? QuantityFormatter::format($value).'%' : (string) $value;
+        }, $screen['headers'], $row), $screen['rows']);
+    }
+
     public function test_screen_csv_and_pdf_share_exact_rows_and_filters(): void
     {
         $branch = Branch::firstOrFail();
-        $url = '/api/nightshift/reports/Daily%20Sales';
-        $query = $this->filterQuery(['branch_id' => $branch->id]);
-        $screen = $this->getJson($url.'?'.$query)->assertOk()->json();
-        $csv = $this->get($url.'/export?'.$query)->assertOk()->streamedContent();
-        $this->get($url.'/pdf?'.$query)->assertOk()->assertHeader('Content-Type', 'application/pdf')->assertHeader('Cache-Control', 'no-store, private');
-        $this->assertSame($screen['rows'], $this->rows());
-        foreach ($screen['rows'] as $row) {
-            foreach (array_slice($row, 3, 3) as $amount) {
-                $this->assertStringContainsString((string) $amount, $csv);
-            }
+        foreach (['Daily Sales', 'Sales by Product'] as $report) {
+            $url = '/api/nightshift/reports/'.rawurlencode($report);
+            $query = $this->filterQuery(['branch_id' => $branch->id]);
+            $screen = $this->getJson($url.'?'.$query)->assertOk()->json();
+            $csv = $this->get($url.'/export?'.$query)->assertOk()->streamedContent();
+            $this->get($url.'/pdf?'.$query)->assertOk()->assertHeader('Content-Type', 'application/pdf')->assertHeader('Cache-Control', 'no-store, private');
+            $this->assertNotEmpty($screen['rows']);
+            $this->assertSame($this->formattedRows($screen), $this->rows());
+            $csvRows = array_map(fn ($line) => str_getcsv($line, ',', '"', ''), explode("\n", trim($csv)));
+            array_shift($csvRows);
+            $this->assertSame(array_map(fn ($row) => array_map(fn ($value) => (string) $value, $row), $screen['rows']), $csvRows);
+            $this->assertStringContainsString($branch->name, $this->renderer->html);
+            $this->assertStringContainsString($this->owner->name, $this->renderer->html);
+            $this->assertStringContainsString(now()->toDateString(), $this->renderer->html);
+            $this->assertStringContainsString('TSh '.TicketAmountFormatter::format($screen['summary']['Gross Profit']), $this->renderer->html);
         }
-        $this->assertStringContainsString($branch->name, $this->renderer->html);
-        $this->assertStringContainsString($this->owner->name, $this->renderer->html);
-        $this->assertStringContainsString(now()->toDateString(), $this->renderer->html);
     }
 
     public function test_supported_counter_unit_staff_product_and_category_filters_match_screen_and_pdf(): void
@@ -102,7 +120,7 @@ class ReportPdfTest extends TestCase
         $query = $this->filterQuery($filters);
         $screen = $this->getJson('/api/nightshift/reports/Daily%20Sales?'.$query)->assertOk()->json();
         $this->get('/api/nightshift/reports/Daily%20Sales/pdf?'.$query)->assertOk();
-        $this->assertSame($screen['rows'], $this->rows());
+        $this->assertSame($this->formattedRows($screen), $this->rows());
         $this->assertNotEmpty($screen['rows']);
     }
 

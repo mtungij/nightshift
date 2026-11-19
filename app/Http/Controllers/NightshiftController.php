@@ -162,7 +162,15 @@ final class NightshiftController extends Controller
     {
         $this->authorizeReport($request, $name);
 
-        return response()->json($reports->generate($name, app(ReportFilterService::class)->validate($request, $name)));
+        return response()->json($reports->generate($name, app(ReportFilterService::class)->validate($request, $name), withOptions: $request->boolean('filter_options')));
+    }
+
+    public function salesInvoice(Request $request, int $id, ReportService $reports): JsonResponse
+    {
+        $this->authorizeReport($request, 'Daily Sales');
+        $filters = app(ReportFilterService::class)->validate($request, 'Daily Sales');
+
+        return response()->json($reports->salesInvoice($id, $filters));
     }
 
     public function pdfReport(Request $request, string $name, ReportService $reports, ReportPdfService $pdf): Response
@@ -172,7 +180,7 @@ final class NightshiftController extends Controller
         if (! in_array($name, ['Cash Custody Balance', 'Waiter Outstanding'], true)) {
             $filters += ['from' => now()->toDateString(), 'to' => now()->toDateString()];
         }
-        $data = $pdf->all(fn (int $page) => $reports->generate($name, [...$filters, 'page' => $page]));
+        $data = $pdf->all(fn (int $page) => $reports->generate($name, [...$filters, 'page' => $page], withSummary: $page === 1));
 
         return $pdf->download($name, $filters, [$data]);
     }
@@ -181,11 +189,11 @@ final class NightshiftController extends Controller
     {
         $this->authorizeReport($request, $name);
         $filters = app(ReportFilterService::class)->validate($request, $name);
-        $first = $reports->generate($name, [...$filters, 'page' => 1]);
+        $first = $reports->generate($name, [...$filters, 'page' => 1], withSummary: false);
 
         return response()->streamDownload(function () use ($name, $reports, $filters) {
             DB::transaction(function () use ($name, $reports, $filters) {
-                $first = $reports->generate($name, [...$filters, 'page' => 1]);
+                $first = $reports->generate($name, [...$filters, 'page' => 1], withSummary: false);
                 $out = fopen('php://output', 'w');
                 if ($out === false) {
                     throw new \RuntimeException('Cannot open export output.');
@@ -195,6 +203,13 @@ final class NightshiftController extends Controller
                 $result = $first;
                 do {
                     foreach ($result['rows'] as $row) {
+                        if (! empty($result['profitability'])) {
+                            foreach ($result['headers'] as $column => $header) {
+                                if ($row[$column] === null && in_array($header, ['Cost', 'Gross Profit', 'Margin %'], true)) {
+                                    $row[$column] = UiText::get('Unavailable');
+                                }
+                            }
+                        }
                         $safe = array_map(function ($value) {
                             $text = (string) ($value ?? '');
 
@@ -205,7 +220,7 @@ final class NightshiftController extends Controller
                     if (! $result['has_more']) {
                         break;
                     }
-                    $result = $reports->generate($name, [...$filters, 'page' => $result['page'] + 1]);
+                    $result = $reports->generate($name, [...$filters, 'page' => $result['page'] + 1], withSummary: false);
                 } while (true);
                 fclose($out);
             });

@@ -36,7 +36,7 @@ final class DashboardService
         Gate::authorize('view-dashboard');
         $visibility = app(StaffVisibility::class);
         $actor = app(TenantContext::class)->user();
-        $orders = $visibility->orders(Order::whereBetween('issued_at', [$from, $to])->whereNotIn('status', ['VOIDED', 'CANCELLED']));
+        $orders = $visibility->orders(Order::where('is_demo', false)->whereBetween('issued_at', [$from, $to])->whereNotIn('status', ['VOIDED', 'CANCELLED', 'DRAFT', 'WAITING_FOR_ISSUE']));
         if ($visibility->settlementOnly()) {
             $orders->where(fn ($q) => $q->where('created_by', $actor->id)->orWhere('issued_by', $actor->id));
         }
@@ -64,7 +64,7 @@ final class DashboardService
             $ledger->where('branch_id', $branch);
         }
         $totals = $ledger->selectRaw('COALESCE(SUM(debit),0) as debits, COALESCE(SUM(credit),0) as credits')->toBase()->first();
-        $open = $visibility->orders(Order::whereNotIn('status', ['PAID', 'VOIDED', 'CANCELLED', 'RETURNED']));
+        $open = $visibility->orders(Order::where('is_demo', false)->whereNotIn('status', ['PAID', 'VOIDED', 'CANCELLED', 'RETURNED']));
         if ($branch) {
             $open->where('branch_id', $branch);
         }

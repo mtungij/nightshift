@@ -159,7 +159,7 @@ class WhatsAppSchedulesTest extends TestCase
         $screen = app(ReportService::class)->generate('Daily Sales', ['shift_id' => $this->cashierShift->id]);
         $this->assertEquals(9000, $data['metrics']['sales']);
         $this->assertCount(2, $screen['rows']);
-        $this->assertSame(0, D::cmp($data['metrics']['sales'], (string) array_sum(array_column($screen['rows'], 3))));
+        $this->assertSame(0, D::cmp($data['metrics']['sales'], (string) array_sum(array_column($screen['rows'], 4))));
         $this->assertSame(2, $data['metrics']['open_shifts']);
         foreach ($snapshot as $table => $json) {
             $this->assertSame($json, DB::table($table)->orderBy('id')->get()->toJson());

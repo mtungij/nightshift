@@ -10,7 +10,7 @@ import { staffAccountStatus, staffActions } from "./staff-management.js";
 import { counterSaleRemaining } from "./counter-sale.js";
 import { quantity } from "./quantity.js";
 import { receiptStockPreview } from "./receipt-stock.js";
-import { refreshSearchableSelect } from "./searchable-select.js";
+import { makeSearchableSelect, refreshSearchableSelect } from "./searchable-select.js";
 import { t as tr, html } from "./localization.js";
 
 const root = document.getElementById("app");
@@ -2382,8 +2382,8 @@ ${esc(cartNote)}</textarea>
                 ${footer()}`
         );
     }
-    function simpleTable(headers, rows, staffTable = false) {
-        return html`<div class="table-scroll${staffTable ? " staff-table" : ""}">
+    function simpleTable(headers, rows, staffTable = false, reportTable = false) {
+        return html`<div class="table-scroll${staffTable ? " staff-table" : ""}${reportTable ? " profitability-table" : ""}">
             <table class="data-table">
                 <thead>
                     <tr>
@@ -2396,13 +2396,13 @@ ${esc(cartNote)}</textarea>
                             .map(
                                 (row) =>
                                     html`<tr>
-                                        ${row.map((cell, index) => html`<td ${staffTable ? `data-label="${esc(tr(headers[index]))}"` : ""}>${cell ?? "—"}</td>`).join("")}
+                                        ${row.map((cell, index) => html`<td ${staffTable || reportTable ? `data-label="${esc(tr(headers[index]))}"` : ""}>${cell ?? "—"}</td>`).join("")}
                                     </tr>`,
                             )
                             .join("") ||
                         html`<tr>
                             <td colspan="${headers.length}">
-                                <div class="empty-state">No records to display.</div>
+                                <div class="empty-state">${reportTable ? tr("No records found") : "No records to display."}</div>
                             </td>
                         </tr>`
                     }
@@ -3732,8 +3732,104 @@ ${esc(cartNote)}</textarea>
     }
 
     let reportName = "Daily Sales";
-    function reportRows() {
-        return activeReport;
+    const isProfitabilityReport = (name) => ["Daily Sales", "Sales by Product"].includes(name);
+    const reportMoneyColumns = ["Unit Price", "Line total", "Sales", "Cost", "Gross Profit"];
+    const reportFinancialColumns = ["Cost", "Gross Profit", "Margin %"];
+
+    function reportMoney(value) {
+        const [whole, fraction] = String(value).split(".");
+        const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        const decimals = fraction && (db.currency !== "TZS" || /[1-9]/.test(fraction)) ? "." + fraction : "";
+        return `${esc(currencyLabel())} ${esc(grouped + decimals)}`;
+    }
+
+    function reportCell(header, value) {
+        if (value == null) return reportFinancialColumns.includes(header) ? tr("Unavailable") : "—";
+        if (reportMoneyColumns.includes(header)) return reportMoney(value);
+        if (header === "Margin %") return `${esc(String(value).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, ""))}%`;
+        return esc(value);
+    }
+
+    function profitabilityTable(data) {
+        return simpleTable(data.headers, data.rows.map((row, index) => row.map((value, column) => {
+            const header = data.headers[column];
+            if (header === "Invoice" && data.invoice_ids?.[index]) {
+                return html`<button type="button" class="report-invoice-link" data-action="sales-invoice"
+                    data-id="${Number(data.invoice_ids[index])}">${esc(value)}</button>`;
+            }
+            return reportCell(header, value);
+        })), false, true);
+    }
+
+    function profitabilitySummary(summary) {
+        const cards = [
+            ["Total Sales", "Sales", "chart"],
+            ["Cost of Goods Sold", "Cost", "box"],
+            ["Gross Profit", "Gross Profit", "wallet"],
+            ["Gross Margin", "Margin %", "chart"],
+        ];
+        return html`<div class="kpi-grid report-kpis">
+            ${cards.map(([label, field, ico]) => kpi(label, reportCell(field, summary[field]), ico, "", "", "")).join("")}
+        </div>`;
+    }
+
+    function applySalesFilterOptions(form, options) {
+        for (const [name, records] of Object.entries(options)) {
+            const select = form.elements.namedItem(name);
+            const selected = select.value;
+            const label = select.selectedOptions[0]?.text;
+            select.replaceChildren(select.options[0], ...records.map(({ id, name }) => new Option(name, id)));
+            if (selected && !records.some(({ id }) => String(id) === selected)) {
+                select.add(new Option(label || selected, selected));
+            }
+            select.value = selected;
+            refreshSearchableSelect(select);
+        }
+    }
+
+    let reportInvoiceTrigger;
+    async function openSalesInvoice(id, trigger) {
+        const sequence = reportRequestSequence;
+        const form = document.getElementById("report-filters");
+        const details = document.getElementById("report-invoice-detail");
+        if (!details || !form) return;
+        trigger.disabled = true;
+        try {
+            const invoice = await api(`reports/sales-invoice/${Number(id)}?${activeReportFilters}`);
+            if (sequence !== reportRequestSequence || !details.isConnected) return;
+            reportInvoiceTrigger = trigger;
+            document.getElementById("report-content").hidden = true;
+            document.getElementById("report-summary").hidden = true;
+            form.closest(".report-filter-panel").hidden = true;
+            details.hidden = false;
+            details.innerHTML = html`
+                ${btn("Back to report", "close-sales-invoice", "small")}
+                <h3>${tr("Invoice")} ${esc(invoice.invoice)}</h3>
+                <dl class="report-invoice-meta">
+                    ${Object.entries(invoice.details).map(([label, value]) =>
+                        html`<div><dt>${tr(label)}</dt><dd>${esc(value || "—")}</dd></div>`).join("")}
+                </dl>
+                <h4>${tr("Payments")}</h4>
+                ${invoice.payments.length ? html`<ul class="report-invoice-payments">
+                    ${invoice.payments.map(([method, amount]) => html`<li>${esc(method)} · ${reportMoney(amount)}</li>`).join("")}
+                </ul>` : html`<p>${tr("No payments recorded")}</p>`}
+                ${profitabilityTable(invoice)}
+            `;
+            details.querySelector("button").focus();
+        } finally {
+            trigger.disabled = false;
+        }
+    }
+
+    function closeSalesInvoice() {
+        const details = document.getElementById("report-invoice-detail");
+        details.hidden = true;
+        details.innerHTML = "";
+        document.querySelector(".report-filter-panel").hidden = false;
+        document.getElementById("report-summary").hidden = false;
+        document.getElementById("report-content").hidden = false;
+        reportInvoiceTrigger?.focus();
+        reportInvoiceTrigger = null;
     }
 
     function reportFilters() {
@@ -3742,42 +3838,31 @@ ${esc(cartNote)}</textarea>
     }
     function reportContents() {
         const data = activeReport;
-        return (
-            (data.values
-                ? data.values
-                      .slice(0, 8)
-                      .map(
-                          ([name, value]) =>
-                              html`<div class="branch-bar-row">
-                                  <div>
-                                      <span>${esc(name)}</span><strong>${money(value)}</strong>
-                                  </div>
-                                  <div class="branch-bar">
-                                      <span
-                                          style="width:${(Number(value) / Math.max(1, ...data.values.map((v) => Number(v[1])))) * 100}%"
-                                      ></span>
-                                  </div>
-                              </div>`,
-                      )
-                      .join("")
-                : "") +
-            simpleTable(
-                data.headers.map(tr),
-                data.rows.map((row) => row.map(esc)),
-            ) +
+        const content = data.profitability
+            ? profitabilityTable(data)
+            : (data.values || []).slice(0, 8).map(([name, value]) =>
+                html`<div class="branch-bar-row">
+                    <div><span>${esc(name)}</span><strong>${money(value)}</strong></div>
+                    <div class="branch-bar"><span
+                        style="width:${(Number(value) / Math.max(1, ...data.values.map((v) => Number(v[1])))) * 100}%"
+                    ></span></div>
+                </div>`
+            ).join("") + simpleTable(data.headers.map(tr), data.rows.map((row) => row.map(esc)));
+        return content +
             html`<div class="table-footer">
-                <span>Page ${data.page || 1} · ${data.rows.length} rows</span>
+                <span>${tr("Page")} ${data.page || 1} · ${tr("Rows")} ${data.rows.length}</span>
                 <div>
                     ${data.page > 1 ? btn("Previous", "report-page", "small", "", `data-value="${data.page - 1}"`) : ""}${data.has_more ? btn("Next", "report-page", "small", "", `data-value="${data.page + 1}"`) : ""}
                 </div>
-            </div>`
-        );
+            </div>`;
     }
 
     function openReport(name, restore = false) {
         if (!restore && history.state?.nightshiftReport !== name)
             history.pushState({ nightshiftReport: name }, "", "#reports");
         reportName = name;
+        const profitability = isProfitabilityReport(name);
+        const saleType = select("Sale type", "order_source", [["", "All sales"], ["WAITER", "Waiter Sales"], ["CASHIER_DIRECT", "Counter Sales"]]);
         modal(
             esc(name),
             html`${
@@ -3814,6 +3899,9 @@ ${esc(cartNote)}</textarea>
                           </style>`
                         : ""
                 }
+                ${profitability ? html`<div id="report-summary"></div>
+                <details class="report-filter-panel">
+                    <summary>${tr("Filters")} <span id="report-scope-label"></span></summary>` : ""}
                 <form id="report-filters">
                     <div class="form-grid">
                         ${select("Branch", "branch", [["", "All branches"], ...db.branches.map((b) => [b.id, b.name])], db.branch_id || "")}${select("Business Unit", "business_unit", [...(db.business_units.length > 1 ? [["", "All Business Units"]] : []), ...db.business_units.map((u) => [u.id, u.name])], db.business_unit_id || "")}${select("Counter", "counter", [["", "All counters"], ...(db.report_counters || db.locations.filter((l) => l.type === "COUNTER")).map((l) => [l.id, l.name])])}${select("Shift", "shift_id", [["", "All Shifts"]])}
@@ -3832,20 +3920,23 @@ ${esc(cartNote)}</textarea>
                             "cashier",
                             [
                                 ["", "All cashiers"],
-                                ...db.team
+                                ...(profitability ? [] : db.team
                                     .filter((u) => u.role === "Cashier")
-                                    .map((u) => [u.id, u.name]),
+                                    .map((u) => [u.id, u.name])),
                             ],
-                        )}${select("Category", "category", [["", "All categories"], ...categories.slice(1)])}${select("Product", "product", [["", "All products"], ...productOptions()])}
+                        )}${select("Category", "category", [["", "All categories"], ...categories.slice(1)])}${select("Product", "product", [["", "All products"], ...(profitability ? [] : productOptions())])}
+                        ${profitability ? saleType : ""}
                     </div>
-                    ${select("Sale type", "order_source", [["", "All sales"], ["WAITER", "Waiter Sales"], ["CASHIER_DIRECT", "Counter Sales"]])}
+                    ${profitability ? "" : saleType}
                     <div class="report-shift-summary" data-shift-summary role="status"></div>
                 </form>
+                ${profitability ? "</details>" : ""}
                 <p class="form-help">
                     ${tr("Exports include all pages matching the applied filters.")}
                 </p>
                 ${["Cash Custody Balance", "Waiter Outstanding"].includes(name) ? html`<p class="form-help">${tr(name === "Cash Custody Balance" ? "Current balance includes the full custody history." : "Current balance includes the full ledger history.")}</p>` : ""}
-                <div id="report-content"></div>`,
+                <div id="report-content"></div>
+                ${profitability ? '<div id="report-invoice-detail" hidden></div>' : ""}`,
             `${btn("Download PDF", "pdf-report", "", "download")}${btn("Excel export", "export-report", "primary", "download")}`,
             true,
         );
@@ -3875,13 +3966,17 @@ ${esc(cartNote)}</textarea>
         const saved = JSON.parse(sessionStorage.getItem("nightshift-report:" + name) || "{}");
         for (const [key, value] of Object.entries(saved))
             if (form.elements.namedItem(key)) {
-                if (key === "shift_id" && value)
-                    form.elements.shift_id.add(new Option(value, value));
+                if (value && (key === "shift_id" || (profitability && ["product", "cashier"].includes(key))))
+                    form.elements.namedItem(key).add(new Option(saved[`__${key}Label`] || value, value));
                 form.elements.namedItem(key).value = value;
             }
         if (form.elements.shift_id.disabled) {
             form.elements.shift_id.closest(".form-field").hidden = true;
             form.querySelector(".report-shift-search").hidden = true;
+        }
+        if (profitability) {
+            form.closest(".modal").classList.add("profitability-report");
+            makeSearchableSelect(form.elements.product, "Search product…");
         }
         mountReportShifts(form, name, {
             units: db.business_units,
@@ -4510,6 +4605,8 @@ ${esc(cartNote)}</textarea>
                 );
             if (action === "report") return openReport(value);
             if (action === "report-page") return loadReport(Number(value));
+            if (action === "sales-invoice") return await openSalesInvoice(id, target);
+            if (action === "close-sales-invoice") return closeSalesInvoice();
             if (action === "pdf-report")
                 return downloadPdf(
                     "/api/nightshift/reports/" +
@@ -5077,6 +5174,10 @@ ${esc(cartNote)}</textarea>
     });
     document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
+            if (document.querySelector("#report-invoice-detail:not([hidden])")) {
+                closeSalesInvoice();
+                return;
+            }
             if (root.querySelector('#profile-button[aria-expanded="true"]')) {
                 setProfile(false, true);
                 return;
@@ -5100,9 +5201,9 @@ ${esc(cartNote)}</textarea>
         if (e.key === "Tab" && document.querySelector(".modal")) {
             const elements = [
                 ...document.querySelectorAll(
-                    '.modal button:not(:disabled),.modal input:not([type="hidden"]):not(:disabled),.modal select:not(.searchable-select-native):not(:disabled),.modal textarea:not(:disabled)',
+                    '.modal button:not(:disabled),.modal input:not([type="hidden"]):not(:disabled),.modal select:not(.searchable-select-native):not(:disabled),.modal textarea:not(:disabled),.modal summary',
                 ),
-            ];
+            ].filter((element) => element.getClientRects().length);
             const first = elements[0];
             const last = elements[elements.length - 1];
             if (e.shiftKey && document.activeElement === first) {
@@ -5548,6 +5649,9 @@ ${esc(cartNote)}</textarea>
             [...form.elements].filter((e) => e.name).map((e) => [e.name, e.value]),
         );
         saved.__page = page;
+        for (const name of ["product", "cashier"]) {
+            saved[`__${name}Label`] = form.elements.namedItem(name).selectedOptions[0]?.text || "";
+        }
         sessionStorage.setItem("nightshift-report:" + reportName, JSON.stringify(saved));
         const branch = db.branches.find((b) => b.id === Number(fields.branch)),
             counter = (db.report_counters || db.locations).find(
@@ -5570,8 +5674,21 @@ ${esc(cartNote)}</textarea>
         };
         const params = new URLSearchParams(Object.entries(filters).filter(([k, v]) => v));
         const requestedName = reportName;
-        const result = await api("reports/" + encodeURIComponent(requestedName) + "?" + params);
-        if (requestedName !== reportName || sequence !== reportRequestSequence) return;
+        const requestParams = new URLSearchParams(params);
+        if (isProfitabilityReport(requestedName)) requestParams.set("filter_options", "1");
+        const result = await api("reports/" + encodeURIComponent(requestedName) + "?" + requestParams);
+        if (requestedName !== reportName || sequence !== reportRequestSequence || !form.isConnected) return;
+        if (result.filter_options) {
+            applySalesFilterOptions(form, result.filter_options);
+            document.getElementById("report-summary").innerHTML = profitabilitySummary(result.summary);
+            const range = filters.from === filters.to ? filters.from : [filters.from, filters.to].filter(Boolean).join(" – ");
+            const scope = [result.shift_context?.number || range];
+            for (const name of ["branch", "business_unit", "counter", "waiter", "cashier", "category", "product", "order_source"]) {
+                const select = form.elements.namedItem(name);
+                if (fields[name] && select.selectedOptions[0]) scope.push(select.selectedOptions[0].text);
+            }
+            document.getElementById("report-scope-label").textContent = scope.filter(Boolean).join(" · ");
+        }
         activeReport = result;
         activeReportFilters = params;
         const content = document.getElementById("report-content");

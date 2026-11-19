@@ -568,10 +568,10 @@ class NightshiftWorkflowTest extends TestCase
         $this->actingAs($this->owner);
         $first = $this->getJson('/api/nightshift/reports/Daily%20Sales')->assertOk()->assertJsonCount(100, 'rows')->assertJsonPath('has_more', true);
         $second = $this->getJson('/api/nightshift/reports/Daily%20Sales?page=2')->assertOk()->assertJsonCount(1, 'rows')->assertJsonPath('has_more', false);
-        $this->assertNotContains($second->json('rows.0.0'), array_column($first->json('rows'), 0));
+        $this->assertNotContains($second->json('rows.0.11'), array_column($first->json('rows'), 11));
         $csv = $this->get('/api/nightshift/reports/Daily%20Sales/export')->assertOk()->streamedContent();
         $this->assertCount(102, explode("\n", trim($csv)));
-        $this->assertStringContainsString($second->json('rows.0.0'), $csv);
+        $this->assertStringContainsString($second->json('rows.0.11'), $csv);
     }
 
     public function test_small_value_repeated_returns_never_create_negative_credit(): void

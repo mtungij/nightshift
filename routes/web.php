@@ -94,6 +94,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/report-shifts', [ReportShiftController::class, 'index']);
         Route::get('/bootstrap', [NightshiftController::class, 'snapshot']);
         Route::post('/commands/{command}', [NightshiftController::class, 'command']);
+        Route::get('/reports/sales-invoice/{id}', [NightshiftController::class, 'salesInvoice'])->whereNumber('id');
         Route::get('/reports/{name}/pdf', [NightshiftController::class, 'pdfReport'])->where('name', '.*');
         Route::get('/reports/{name}/export', [NightshiftController::class, 'exportReport'])->where('name', '.*');
         Route::get('/reports/{name}', [NightshiftController::class, 'report'])->where('name', '.*');
