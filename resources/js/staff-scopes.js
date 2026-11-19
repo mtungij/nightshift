@@ -10,6 +10,7 @@ export function scopePicker(name, label, options, kind) {
 export function syncStaffScopes(form, changed) {
     if (!form) return;
     const role =
+        form.elements.role_id?.selectedOptions[0]?.dataset.roleName ||
         form.elements.role?.value ||
         form.dataset.scopeRole ||
         (form.dataset.form === "add-waiter" ? "Waiter" : "");

@@ -6,6 +6,7 @@ import { productSellingUnits } from "./product-selling-units.js";
 import { mountProductAvailability, productAvailabilityPayload } from "./product-availability.js";
 import { downloadPdf } from "./report-pdf.js";
 import { scopePicker, syncStaffScopes } from "./staff-scopes.js";
+import { staffAccountStatus, staffActions } from "./staff-management.js";
 import { counterSaleRemaining } from "./counter-sale.js";
 import { quantity } from "./quantity.js";
 import { receiptStockPreview } from "./receipt-stock.js";
@@ -193,7 +194,7 @@ if (root) {
     let screen = shiftStockId ? "shift-stock" : initialRoute;
     if (["cashiers", "users"].includes(screen)) screen = "staff";
     let staffRole = location.hash === "#cashiers" ? "Cashier" : "";
-    let staffStatus = "";
+    let staffStatus = "Active";
     let staffLabel = staffRole ? "Cashiers" : "All staff";
     let tab = "";
     let search = "";
@@ -2378,8 +2379,8 @@ ${esc(cartNote)}</textarea>
                 ${footer()}`
         );
     }
-    function simpleTable(headers, rows) {
-        return html`<div class="table-scroll">
+    function simpleTable(headers, rows, staffTable = false) {
+        return html`<div class="table-scroll${staffTable ? " staff-table" : ""}">
             <table class="data-table">
                 <thead>
                     <tr>
@@ -2392,7 +2393,7 @@ ${esc(cartNote)}</textarea>
                             .map(
                                 (row) =>
                                     html`<tr>
-                                        ${row.map((cell) => html`<td>${cell ?? "—"}</td>`).join("")}
+                                        ${row.map((cell, index) => html`<td ${staffTable ? `data-label="${esc(tr(headers[index]))}"` : ""}>${cell ?? "—"}</td>`).join("")}
                                     </tr>`,
                             )
                             .join("") ||
@@ -2717,7 +2718,7 @@ ${esc(cartNote)}</textarea>
         const users = db.team.filter(
             (u) =>
                 (!staffRole || u.role === staffRole) &&
-                (!staffStatus || u.active === (staffStatus === "Active")),
+                (!staffStatus || staffStatus === staffAccountStatus(u)),
         );
         return (
             heading(
@@ -2741,6 +2742,7 @@ ${esc(cartNote)}</textarea>
                                     ["", "All statuses"],
                                     ["Active", "Active"],
                                     ["Inactive", "Inactive"],
+                                    ["Archived", "Archived"],
                                 ]
                                     .map(
                                         ([value, label]) =>
@@ -2764,8 +2766,7 @@ ${esc(cartNote)}</textarea>
                             "Email",
                             "Phone",
                             "Status",
-                            "Operational PIN",
-                            ...(db.can_manage_company_admins ? ["Actions"] : []),
+                            "Actions",
                         ],
                         users.map((u, i) => [
                             html`<div class="table-avatar">
@@ -2776,25 +2777,10 @@ ${esc(cartNote)}</textarea>
                             esc(u.branch),
                             esc(u.email),
                             esc(u.phone),
-                            badge(u.active ? "Active" : "Inactive", u.active ? "" : "gray"),
-                            ["Company Admin / Owner", "Super Admin"].includes(db.role)
-                                ? btn(
-                                      u.pin_configured ? "Reset PIN" : "Set PIN",
-                                      "staff-pin",
-                                      "small",
-                                      "lock",
-                                      `data-id="${u.id}"`,
-                                  )
-                                : "—",
-                            ...(db.can_manage_company_admins
-                                ? [u.role === companyAdminRole
-                                      ? btn("Edit role", "staff-admin-role", "small", "", `data-id="${u.id}"`) +
-                                        btn(u.active ? "Deactivate" : "Reactivate", "staff-admin-status", "small", "", `data-id="${u.id}"`)
-                                      : roles.includes(u.role)
-                                        ? btn("Promote to admin", "staff-admin-role", "small", "", `data-id="${u.id}"`)
-                                        : "—"]
-                                : []),
+                            badge(staffAccountStatus(u), u.active ? "" : "gray"),
+                            staffActions(u, db.can_manage_company_admins, [companyAdminRole, "Super Admin"].includes(db.role), btn),
                         ]),
+                        true,
                     )}
                 </section>` +
             footer()
@@ -3996,26 +3982,67 @@ ${esc(cartNote)}</textarea>
                 })),
             kind,
         );
-    async function editCompanyAdmin(action, id) {
+    async function editStaff(action, id) {
         const staff = db.team.find((user) => user.id === id);
-        if (!staff || !db.can_manage_company_admins) return;
+        if (!staff) return;
         const identity = html`<p class="modal-description">${esc(staff.name)} · ${esc(tr(staff.role))}</p>`;
         const target = html`<input type="hidden" name="id" value="${id}">`;
-        if (action === "staff-admin-status") {
-            const label = staff.active ? "Deactivate" : "Reactivate";
+        if (action === "staff-status") {
+            const label = staff.active ? "Deactivate" : "Activate";
             return modal(label, identity + target + html`<input type="hidden" name="active" value="${staff.active ? "0" : "1"}">`, submitButton(label), false, action);
         }
-        const demotion = staff.role === companyAdminRole;
-        if (demotion) db.staffAssignmentOptions = await api("staff-assignment-options");
-        modal(
-            demotion ? "Edit role" : "Promote to admin",
-            identity + target + select("Role", "role", demotion ? roles : [companyAdminRole]) +
-                (demotion ? select("Branch", "branch", db.branches.map((b) => [b.id, b.name])) + staffUnitFields() + staffCounterFields("cashier") : ""),
-            submitButton("Save"),
-            false,
-            action,
+        if (action === "staff-delete") {
+            const { archive } = await api(`staff/${id}?deletion=1`);
+            const message = archive
+                ? "This staff member has historical records and cannot be permanently deleted. The account will be archived instead."
+                : "Permanently delete this staff account? If historical records are found, the account will be archived instead.";
+            return modal(
+                archive ? "Archive staff" : "Delete staff",
+                identity + html`<p class="modal-description">${tr(message)}</p>` + target + html`<input type="hidden" name="archive_only" value="${archive ? "1" : "0"}">`,
+                html`<button class="button danger" type="submit">${tr(archive ? "Archive" : "Delete")}</button>`,
+                false, action,
+            );
+        }
+        const [details, options] = await Promise.all([api(`staff/${id}`), api("staff-assignment-options")]);
+        db.staffAssignmentOptions = options;
+        const role = field("Role", "role_id", html`<select name="role_id">
+            ${details.roles.map((option) => html`<option value="${option.id}" data-role-name="${esc(option.name)}" ${option.id === details.role_id ? "selected" : ""}>${esc(tr(option.name))}</option>`).join("")}
+        </select>`);
+        modal("Edit staff", target + html`
+            <div class="staff-edit">
+                <section><h3>Personal information</h3><div class="form-grid">
+                    ${input("First name", "first_name", "text", details.first_name, false)}
+                    ${input("Last name", "last_name", "text", details.last_name, false)}
+                    ${input("Display name", "name", "text", details.name)}
+                    ${input("Username", "username", "text", details.username, !!details.username)}
+                    ${input("Email", "email", "email", details.email)}
+                    ${input("Phone", "phone", "tel", details.phone, false)}
+                </div></section>
+                <section>${role}</section>
+                <section>
+                    ${scopePicker("branch_ids[]", "Branch access", details.branches.map((branch) => ({ ...branch, branch_id: branch.id })), "branches")}
+                    ${staffUnitFields()}
+                    ${staffCounterFields("cashier")}
+                    ${staffCounterFields("terminal")}
+                </section>
+            </div>`,
+            submitButton("Save changes"), false, action,
         );
-        if (demotion) syncStaffScopes(document.querySelector('[data-form="staff-admin-role"]'));
+        const form = document.querySelector('[data-form="staff-edit"]');
+        form.originalRoleId = details.role_id;
+        const selections = {
+            "branch_ids[]": details.branch_ids,
+            business_unit_ids: details.business_unit_ids,
+            cashier_counter_ids: details.counter_ids,
+            terminal_counter: [details.terminal_stock_location_id],
+        };
+        for (const [name, ids] of Object.entries(selections))
+            for (const control of form.querySelectorAll(`[name="${name}"]`))
+                control.checked = ids.includes(Number(control.value));
+        syncStaffScopes(form);
+        form.addEventListener("change", (event) => {
+            if (event.target.closest(".scope-picker")) form.scopesChanged = true;
+        });
     }
     async function newBasicForm(type) {
         if (["add-user", "add-waiter"].includes(type)) {
@@ -4520,8 +4547,9 @@ ${esc(cartNote)}</textarea>
             if (action === "receipt")
                 return window.open(`/api/nightshift/receipts/${id}`, "_blank", "noopener");
             if (action === "read-notifications") return perform("notifications-read", {}, target);
-            if (["staff-admin-status", "staff-admin-role"].includes(action))
-                return await editCompanyAdmin(action, Number(id));
+            if (action === "staff-pin") return staffPinModal(Number(id));
+            if (["staff-edit", "staff-status", "staff-delete"].includes(action))
+                return await editStaff(action, Number(id));
             if (action === "reprint-tickets")
                 return perform("ticket-reprint", { id: Number(id) }, target);
             if (action === "save-print-settings")
@@ -4943,16 +4971,22 @@ ${esc(cartNote)}</textarea>
                         ? { max_active_cashiers: Number(data.max_active_cashiers) }
                         : {}),
                 };
-            } else if (type === "staff-admin-status") {
+            } else if (type === "staff-status") {
                 command = type;
                 payload = { id: Number(data.id), active: data.active === "1" };
-            } else if (type === "staff-admin-role") {
+            } else if (type === "staff-delete") {
                 command = type;
-                payload = { id: Number(data.id), role: data.role };
-                if (data.branch) {
-                    payload.branch_id = Number(data.branch);
-                    payload.business_unit_ids = new FormData(form).getAll("business_unit_ids").map(Number);
-                    payload.counter_ids = new FormData(form).getAll("cashier_counter_ids").map(Number);
+                payload = { id: Number(data.id), archive_only: data.archive_only === "1" };
+            } else if (type === "staff-edit") {
+                command = type;
+                payload = { id: Number(data.id), role_id: Number(data.role_id), name: data.name, first_name: data.first_name,
+                    last_name: data.last_name, username: data.username, email: data.email, phone: data.phone };
+                if (form.scopesChanged || form.originalRoleId !== payload.role_id) {
+                    const selections = new FormData(form);
+                    payload.branch_ids = selections.getAll("branch_ids[]").map(Number);
+                    payload.business_unit_ids = selections.getAll("business_unit_ids").map(Number);
+                    payload.counter_ids = selections.getAll("cashier_counter_ids").map(Number);
+                    if (data.terminal_counter) payload.terminal_stock_location_id = Number(data.terminal_counter);
                 }
             } else if (type === "add-user" || type === "add-waiter") {
                 const unitSelection = [
@@ -5346,13 +5380,13 @@ ${esc(cartNote)}</textarea>
                 frame.id = "issue-ticket-frame";
                 document.body.append(frame);
             }
-            if (payload.id === db.user.id && command === "staff-admin-status" && !payload.active) {
-                document.querySelector('#workspace-profile form[action="/logout"]').requestSubmit();
-                return result;
-            }
-            if (payload.id === db.user.id && command === "staff-admin-role") {
-                location.href = "/dashboard";
-                return result;
+            if (command === "staff-edit" && result.role_changed) {
+                if (payload.id === db.user.id) {
+                    location.href = "/dashboard";
+                    return result;
+                }
+                staffRole = "";
+                staffLabel = "All staff";
             }
             if (command === "catalog-user") {
                 staffRole = payload.role;
@@ -5360,7 +5394,7 @@ ${esc(cartNote)}</textarea>
                     { Waiter: "Waiters", Cashier: "Cashiers", Supervisor: "Supervisors" }[
                         payload.role
                     ] || payload.role;
-                staffStatus = "";
+                staffStatus = "Active";
                 screen = "staff";
                 tab = "";
                 search = "";
@@ -5409,7 +5443,9 @@ ${esc(cartNote)}</textarea>
                       : command === "catalog-user"
                         ? tr(":role added successfully.", { role: tr(payload.role) })
                         : command === "counter-sale" ? tr("Counter sale paid")
-                        : command.startsWith("staff-admin-") ? "Admin access updated."
+                        : command === "staff-edit" ? tr("Staff updated successfully")
+                        : command === "staff-delete" ? tr(result.archived ? "Staff archived successfully" : "Staff deleted successfully")
+                        : command === "staff-status" ? tr(payload.active ? "Staff activated successfully" : "Staff deactivated successfully")
                         : "Saved. Stock, cash and ledger records are up to date.",
             );
             return result;

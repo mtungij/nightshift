@@ -87,6 +87,7 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/', [MyOrdersController::class, 'index'])->block(10, 10);
             Route::get('/{id}', [MyOrdersController::class, 'show'])->whereNumber('id')->block(10, 10);
         });
+        Route::get('/staff/{id}', [NightshiftController::class, 'staff'])->whereNumber('id');
         Route::get('/staff-assignment-options', [BusinessUnitController::class, 'assignmentOptions']);
         Route::get('/product-configuration/{id?}', [ProductConfigurationController::class, 'show'])->whereNumber('id');
         Route::get('/location-products', [ProductConfigurationController::class, 'locationProducts']);

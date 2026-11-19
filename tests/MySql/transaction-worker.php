@@ -11,6 +11,7 @@ use App\Services\OrderService;
 use App\Services\PaymentService;
 use App\Services\SalesTicketService;
 use App\Services\ShiftService;
+use App\Services\StaffManagementService;
 use App\Services\StockService;
 use App\Services\StockTransferService;
 use App\Services\TransactionService;
@@ -72,6 +73,9 @@ try {
             (new SendWhatsAppMessageJob($request['company_id'], $request['delivery_id']))->handle(app(CompanyContext::class));
 
             return ['id' => $request['delivery_id']];
+        }
+        if ($request['action'] === 'staff-edit') {
+            return app(StaffManagementService::class)->update($request['payload']);
         }
         if ($request['action'] === 'unit-command') {
             return app(TransactionService::class)->run(function () use ($request) {

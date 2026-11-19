@@ -28,6 +28,7 @@ use App\Services\ReturnService;
 use App\Services\SalesTicketService;
 use App\Services\ShiftService;
 use App\Services\ShiftStockService;
+use App\Services\StaffManagementService;
 use App\Services\StaffPinService;
 use App\Services\StockTransferService;
 use App\Services\TransactionService;
@@ -52,6 +53,11 @@ final class NightshiftController extends Controller
         return response()->json($workspace->snapshot($this->filters($request)));
     }
 
+    public function staff(Request $request, int $id, StaffManagementService $staff): JsonResponse
+    {
+        return response()->json($staff->details($id, $request->boolean('deletion')))->header('Cache-Control', 'private, no-store');
+    }
+
     public function command(NightshiftCommandRequest $request, string $command, TransactionService $tx): JsonResponse
     {
         $data = $request->validated();
@@ -69,6 +75,9 @@ final class NightshiftController extends Controller
         if ($command === 'counter-sale') {
             Gate::authorize('counter-sales');
         }
+        if (in_array($command, ['staff-edit', 'staff-status', 'staff-delete'], true)) {
+            Gate::authorize('manage-users');
+        }
         $fingerprint = $data;
         if (($data['image'] ?? null) instanceof UploadedFile) {
             $fingerprint['image'] = hash_file('sha256', $data['image']->getRealPath());
@@ -82,7 +91,9 @@ final class NightshiftController extends Controller
                 'shift-stock-approve' => app(ShiftStockService::class)->approve($data['id'], $data['basis'], $data['revision'], $data['note']),
                 'print-settings' => app(SalesTicketService::class)->savePreferences($data),
                 'staff-admin-status' => app(CompanyAdminService::class)->setStatus($data['id'], $data['active']),
-                'staff-admin-role' => app(CompanyAdminService::class)->changeRole($data),
+                'staff-edit' => app(StaffManagementService::class)->update($data),
+                'staff-status' => app(StaffManagementService::class)->status($data['id'], $data['active']),
+                'staff-delete' => app(StaffManagementService::class)->delete($data['id'], $data['archive_only'] ?? false),
                 'staff-pin' => app(StaffPinService::class)->set($data['id'], $data['pin'] ?? null),
                 'counter-sale' => app(OrderService::class)->counterSale($data),
                 'waiter-payment' => app(PaymentService::class)->receiveWaiter($data['waiter_id'], $data['stock_location_id'], $data['amount'], $data['method']),

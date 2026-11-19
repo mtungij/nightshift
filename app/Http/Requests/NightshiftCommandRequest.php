@@ -23,8 +23,9 @@ final class NightshiftCommandRequest extends FormRequest
                 $this->merge($payload);
             }
         }
-        if ($this->has('username')) {
-            $this->merge(['username' => mb_strtolower(trim((string) $this->input('username')))]);
+        if (is_string($this->input('username'))) {
+            $username = mb_strtolower(trim((string) $this->input('username')));
+            $this->merge(['username' => $username === '' ? null : $username]);
         }
     }
 
@@ -79,9 +80,19 @@ final class NightshiftCommandRequest extends FormRequest
             'catalog-supplier' => ['name' => $text, 'contact' => $text, 'category' => ['nullable', 'string', 'max:255']],
             'catalog-reservation' => ['service_table_id' => $id, 'guest' => $text, 'phone' => $text, 'size' => ['required', 'integer', 'min:1', 'max:100'], 'date' => ['required', 'date_format:Y-m-d'], 'arrival' => ['required', 'date_format:H:i']],
             'staff-admin-status' => ['company_id' => ['prohibited'], 'id' => $id, 'active' => ['required', 'boolean']],
-            'staff-admin-role' => ['company_id' => ['prohibited'], 'id' => $id, 'role' => ['required', Rule::in([...array_diff(config('business.staff_roles'), ['POS Terminal']), CompanyAdminService::ROLE])],
-                'branch_id' => ['sometimes', 'integer', 'min:1'], 'business_unit_ids' => ['sometimes', 'array', 'max:100'], 'business_unit_ids.*' => ['integer', 'min:1', 'distinct'],
-                'counter_ids' => ['sometimes', 'array', 'max:100'], 'counter_ids.*' => ['integer', 'min:1', 'distinct']],
+            'staff-edit' => [
+                'company_id' => ['prohibited'], 'pin' => ['prohibited'], 'password' => ['prohibited'], 'active' => ['prohibited'],
+                'id' => $id, 'role_id' => $id, 'name' => $text, 'email' => ['required', 'email', 'max:255'],
+                'first_name' => ['sometimes', 'nullable', 'string', 'max:100'], 'last_name' => ['sometimes', 'nullable', 'string', 'max:100'],
+                'phone' => ['sometimes', 'nullable', 'string', 'max:40'],
+                'username' => ['sometimes', 'nullable', 'string', 'max:100', 'regex:/^[a-z0-9][a-z0-9._-]*$/iD'],
+                'branch_ids' => ['sometimes', 'array', 'max:100'], 'branch_ids.*' => [...$id, 'distinct'],
+                'business_unit_ids' => ['sometimes', 'array', 'max:100'], 'business_unit_ids.*' => [...$id, 'distinct'],
+                'counter_ids' => ['sometimes', 'array', 'max:100'], 'counter_ids.*' => [...$id, 'distinct'],
+                'terminal_stock_location_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            ],
+            'staff-status' => ['company_id' => ['prohibited'], 'id' => $id, 'active' => ['required', 'boolean']],
+            'staff-delete' => ['company_id' => ['prohibited'], 'id' => $id, 'archive_only' => ['sometimes', 'boolean']],
             'catalog-user' => ['company_id' => ['prohibited'], 'counter_ids' => ['sometimes', 'array', 'min:1', 'max:100'], 'counter_ids.*' => ['integer', 'min:1', 'distinct'], 'business_unit_ids' => [Rule::requiredIf($this->input('role') !== CompanyAdminService::ROLE), 'array', 'max:100'], 'business_unit_ids.*' => ['integer', 'min:1', 'distinct'], 'stock_location_id' => [Rule::requiredIf(fn () => $this->input('role') === 'POS Terminal' && empty($this->input('business_unit_ids'))), 'nullable', 'integer', 'min:1'], 'name' => $text, 'email' => ['required', 'email', 'max:255'], 'username' => ['sometimes', 'required', 'string', 'max:100', 'regex:/^[a-z0-9][a-z0-9._-]*$/iD', Rule::unique('users', 'username')], 'pin' => ['required', 'string', 'regex:/^[0-9]{4}$/D'], 'role' => ['required', Rule::in([...config('business.staff_roles'), CompanyAdminService::ROLE])], 'branch_id' => $id, 'phone' => ['nullable', 'string', 'max:40'], 'active' => ['sometimes', 'boolean']],
             'catalog-company' => ['name' => $text, 'email' => ['nullable', 'email', 'max:255'], 'phone' => ['nullable', 'string', 'max:255']],
             'notifications-read' => [],

@@ -153,6 +153,36 @@ class ConcurrencyTest extends TestCase
         }
     }
 
+    public function test_simultaneous_staff_edits_cannot_demote_both_last_admins(): void
+    {
+        $adminRole = $this->owner->role_id;
+        $managerRole = Role::where('name', 'Manager')->firstOrFail()->id;
+        $branch = $this->counter->branch_id;
+        $unit = $this->counter->business_unit_id;
+        $secondId = $this->postJson('/api/nightshift/commands/catalog-user', [
+            'idempotency_key' => (string) Str::uuid(), 'name' => 'Second Admin', 'username' => 'another-admin',
+            'email' => 'another-admin@nightshift.test', 'pin' => '2357', 'role' => 'Company Admin / Owner',
+            'branch_id' => $branch, 'business_unit_ids' => [$unit],
+        ])->assertOk()->json('id');
+        $second = User::findOrFail($secondId);
+        DB::table('shifts')->where('user_id', $this->owner->id)->update(['status' => 'CLOSED', 'closed_at' => now()]);
+        $requests = array_map(fn (User $admin) => ['action' => 'staff-edit', 'user_id' => $admin->id, 'payload' => [
+            'id' => $admin->id, 'role_id' => $managerRole, 'name' => $admin->name, 'email' => $admin->email,
+            'branch_ids' => [$branch], 'business_unit_ids' => [$unit],
+        ]], [$this->owner, $second]);
+
+        $results = $this->race($requests);
+        $codes = array_column($results, 'code');
+        sort($codes);
+        $this->assertSame([200, 422], $codes);
+        foreach ($results as $result) {
+            if ($result['code'] === 422) {
+                $this->assertSame(['At least one active Company Admin / Owner must remain.'], $result['errors']['transaction']);
+            }
+        }
+        $this->assertSame(1, User::where('company_id', $this->owner->company_id)->where('role_id', $adminRole)->where('active', true)->count());
+    }
+
     public function test_simultaneous_cashiers_issue_the_same_invoice_exactly_once(): void
     {
         $order = $this->order();

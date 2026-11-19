@@ -41,6 +41,17 @@ class CompanyAdminManagementTest extends TestCase
         return $this->postJson("/api/nightshift/commands/$name", ['idempotency_key' => (string) Str::uuid(), ...$data]);
     }
 
+    private function editRole(User $staff, string $role, array $scope = []): TestResponse
+    {
+        return $this->command('staff-edit', [
+            'id' => $staff->id, 'role_id' => Role::where('name', $role)->firstOrFail()->id,
+            'name' => $staff->name, 'email' => $staff->email, 'username' => $staff->username,
+            'branch_ids' => $staff->branches()->withoutGlobalScopes()->pluck('branches.id')->all(),
+            'business_unit_ids' => $staff->businessUnits()->withoutGlobalScopes()->pluck('business_units.id')->all(),
+            ...$scope,
+        ]);
+    }
+
     private function payload(string $username, int $branch): array
     {
         return ['name' => $username, 'email' => "$username@hotel.test", 'username' => $username, 'pin' => '2468',
@@ -99,13 +110,13 @@ class CompanyAdminManagementTest extends TestCase
         $this->command('catalog-user', [...$this->payload('other-company', $branch->id), 'company_id' => $foreign->company_id])->assertUnprocessable();
         $this->command('catalog-user', [...$this->payload('other-unit', $branch->id), 'business_unit_ids' => [$foreignUnit->id]])->assertUnprocessable();
         $this->command('staff-admin-status', ['id' => $foreign->id, 'active' => false])->assertNotFound();
-        $this->command('staff-admin-role', ['id' => $foreign->id, 'role' => 'Manager'])->assertNotFound();
+        $this->editRole($foreign, 'Manager')->assertNotFound();
 
         $manager = User::where('email', 'manager@nightshift.test')->firstOrFail();
         $this->actingAs($manager);
         $this->getJson('/api/nightshift/bootstrap')->assertOk()->assertJsonPath('can_manage_company_admins', false);
         $this->command('catalog-user', $this->payload('manager-created', $branch->id))->assertForbidden();
-        $this->command('staff-admin-role', ['id' => $manager->id, 'role' => CompanyAdminService::ROLE])->assertForbidden();
+        $this->editRole($manager, CompanyAdminService::ROLE)->assertNotFound();
         $this->command('staff-admin-status', ['id' => $owner->id, 'active' => false])->assertForbidden();
         $this->assertTrue((bool) $foreign->fresh()->active);
     }
@@ -116,7 +127,7 @@ class CompanyAdminManagementTest extends TestCase
         $this->actingAs($owner);
         $message = 'At least one active Company Admin / Owner must remain.';
         $this->command('staff-admin-status', ['id' => $owner->id, 'active' => false])->assertUnprocessable()->assertJsonPath('errors.transaction.0', $message);
-        $this->command('staff-admin-role', ['id' => $owner->id, 'role' => 'Manager'])->assertUnprocessable()->assertJsonPath('errors.transaction.0', $message);
+        $this->editRole($owner, 'Manager')->assertUnprocessable()->assertJsonPath('errors.transaction.0', $message);
         $this->postJson('/api/business-units/staff', ['id' => $owner->id, 'active' => false, 'unit_ids' => [], 'idempotency_key' => (string) Str::uuid()])
             ->assertUnprocessable()->assertJsonPath('errors.transaction.0', $message);
         $owner->forceFill(['password' => 'known-test-password'])->save();
@@ -178,34 +189,33 @@ class CompanyAdminManagementTest extends TestCase
         $counter = StockLocation::where('business_unit_id', $restaurant->id)->firstOrFail();
         $staff = User::where('email', 'manager@nightshift.test')->firstOrFail();
 
-        $this->command('staff-admin-role', ['id' => $staff->id, 'role' => CompanyAdminService::ROLE])->assertUnprocessable()
-            ->assertJsonPath('errors.transaction.0', 'Set a login PIN for this employee before promoting them.');
+        $this->editRole($staff, CompanyAdminService::ROLE)->assertUnprocessable()
+            ->assertJsonPath('errors.transaction.0', 'Set a login PIN for this employee before changing their role.');
         $this->command('staff-pin', ['id' => $staff->id, 'pin' => '1357'])->assertOk();
-        $this->command('staff-admin-role', ['id' => $staff->id, 'role' => CompanyAdminService::ROLE])->assertOk();
+        $this->editRole($staff, CompanyAdminService::ROLE)->assertOk();
         $this->assertTrue($staff->fresh()->hasPermission('all-business-units'));
         $this->assertTrue(Hash::check('1357', $staff->fresh()->operational_pin));
         $this->actingAs($staff->fresh());
-        $this->command('staff-admin-role', ['id' => $staff->id, 'role' => 'Manager', 'branch_id' => $branch->id, 'business_unit_ids' => [$bar->id]])->assertOk();
+        $this->editRole($staff, 'Manager', ['branch_ids' => [$branch->id], 'business_unit_ids' => [$bar->id]])->assertOk();
         $staff->refresh();
         $this->assertSame('Manager', $staff->role->name);
         $this->assertTrue($staff->canAccessBusinessUnit($bar->id));
         $this->assertFalse($staff->canAccessBusinessUnit($restaurant->id));
         $this->assertFalse($staff->canAccessCounter($counter->id));
-        $this->assertDatabaseHas('audit_logs', ['user_id' => $owner->id, 'reference_id' => $staff->id, 'action' => 'COMPANY_ADMIN_PROMOTED']);
-        $this->assertDatabaseHas('audit_logs', ['user_id' => $staff->id, 'reference_id' => $staff->id, 'action' => 'COMPANY_ADMIN_DEMOTED']);
+        $this->assertDatabaseHas('audit_logs', ['user_id' => $owner->id, 'reference_id' => $staff->id, 'action' => 'STAFF_ROLE_CHANGED']);
+        $this->assertDatabaseHas('audit_logs', ['user_id' => $staff->id, 'reference_id' => $staff->id, 'action' => 'STAFF_ROLE_CHANGED']);
 
         $this->actingAs($owner);
-        $promotion = ['id' => $staff->id, 'role' => CompanyAdminService::ROLE];
-        $this->command('staff-admin-role', $promotion)->assertOk();
-        $cashier = ['id' => $staff->id, 'role' => 'Cashier', 'branch_id' => $branch->id, 'business_unit_ids' => [$bar->id]];
+        $this->editRole($staff, CompanyAdminService::ROLE)->assertOk();
+        $cashier = ['branch_ids' => [$branch->id], 'business_unit_ids' => [$bar->id]];
         $main = StockLocation::where('name', 'Main Counter')->firstOrFail();
         $vip = StockLocation::where('name', 'VIP Counter')->firstOrFail();
-        $this->command('staff-admin-role', $cashier)->assertUnprocessable();
-        $this->command('staff-admin-role', $cashier + ['counter_ids' => [$counter->id]])->assertUnprocessable();
-        $this->command('staff-admin-role', $cashier + ['counter_ids' => [$main->id]])->assertOk();
+        $this->editRole($staff, 'Cashier', $cashier)->assertUnprocessable();
+        $this->editRole($staff, 'Cashier', $cashier + ['counter_ids' => [$counter->id]])->assertNotFound();
+        $this->editRole($staff, 'Cashier', $cashier + ['counter_ids' => [$main->id]])->assertOk();
         $this->assertTrue($staff->fresh()->canAccessCounter($main->id));
         $this->assertFalse($staff->fresh()->canAccessCounter($vip->id));
-        $this->command('staff-admin-role', $promotion)->assertOk();
+        $this->editRole($staff, CompanyAdminService::ROLE)->assertOk();
         $this->assertTrue($staff->fresh()->canAccessCounter($vip->id));
     }
 }

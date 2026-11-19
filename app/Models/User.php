@@ -42,6 +42,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property int|null $terminal_stock_location_id
  * @property int|null $role_id
  * @property bool $active
+ * @property \Illuminate\Support\Carbon|null $archived_at
  * @property string|null $theme_preference
  * @property string|null $language_preference
  * @property string|null $operational_pin
@@ -179,6 +180,7 @@ class User extends Authenticatable implements PasskeyUser
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'pin_locked_until' => 'datetime',
+            'archived_at' => 'datetime',
         ];
     }
 

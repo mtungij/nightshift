@@ -120,9 +120,9 @@ final class BusinessUnitService
     }
 
     /** @param list<int> $ids */
-    public function branches(User $user, array $ids): void
+    public function branches(User $user, array $ids, bool $staffEditor = false): void
     {
-        Gate::authorize('manage-business-units');
+        Gate::authorize($staffEditor ? 'manage-users' : 'manage-business-units');
         $this->assertManagedUser($user);
         app(StockService::class)->require(Branch::whereIn('id', $ids)->count() === count($ids) && $ids !== [], __('ui.Choose authorized Business Units.'));
         $company = app(TenantContext::class)->companyId();
@@ -141,9 +141,9 @@ final class BusinessUnitService
         app(AuditService::class)->record('USER_BRANCHES_ASSIGNED', 'Business Units', 'User', $user->id, ['branch_ids' => $before], ['branch_ids' => $ids]);
     }
 
-    public function status(User $user, bool $active): void
+    public function status(User $user, bool $active, bool $staffEditor = false): void
     {
-        Gate::authorize('manage-business-units');
+        Gate::authorize($staffEditor ? 'manage-users' : 'manage-business-units');
         if ($user->role?->name === CompanyAdminService::ROLE) {
             app(TransactionService::class)->run(function () use ($user, $active) {
                 $current = User::where('company_id', app(TenantContext::class)->companyId())->lockForUpdate()->findOrFail($user->id);
@@ -159,6 +159,7 @@ final class BusinessUnitService
     {
         $this->assertManagedUser($user);
         app(StockService::class)->require(in_array($user->role->name, [...config('business.staff_roles'), CompanyAdminService::ROLE], true), __('ui.Choose authorized Business Units.'));
+        app(StockService::class)->require(! $active || $user->archived_at === null, __('ui.Archived staff cannot be activated.'));
         if ($active && $user->isPosTerminal()) {
             $location = app(StockService::class)->location((int) $user->terminal_stock_location_id);
             app(StockService::class)->require((bool) Branch::whereKey($location->branch_id)->firstOrFail()->active, 'Branch is inactive.');
@@ -178,7 +179,7 @@ final class BusinessUnitService
         app(AuditService::class)->record($action, 'Business Units', 'User', $user->id, ['active' => $before], ['active' => $active]);
     }
 
-    public function assertIdleStaff(User $user): void
+    public function assertIdleStaff(User $user, string $message = 'Resolve shifts, handovers and treasury cash before deactivating staff.'): void
     {
         abort_unless($user->company_id === app(TenantContext::class)->companyId(), 403);
         $company = app(TenantContext::class)->companyId();
@@ -187,10 +188,10 @@ final class BusinessUnitService
             $q->selectRaw('1')->from('cash_handover_events as e')->whereColumn('e.handover_id', 'cash_handovers.id')->whereIn('e.status', ['PENDING', 'DISPUTED', 'RECEIVED', 'APPROVED'])->where(fn ($q) => $q->whereIn('e.status', ['PENDING', 'DISPUTED'])->orWhere('cash_handovers.destination', 'NEXT_CASHIER'))->whereRaw('e.id = (SELECT MAX(e2.id) FROM cash_handover_events e2 WHERE e2.handover_id = e.handover_id)');
         })->exists();
         $cash = DB::table('treasury_entries')->where('company_id', $company)->where('custodian_id', $user->id)->selectRaw("COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE -amount END),0) AS cash")->first()->cash;
-        app(StockService::class)->require(! $open && ! $pending && D::cmp((string) $cash, '0') === 0, __('ui.Resolve shifts, handovers and treasury cash before deactivating staff.'));
+        app(StockService::class)->require(! $open && ! $pending && D::cmp((string) $cash, '0') === 0, __('ui.'.$message));
     }
 
-    private function assertManagedUser(User $user): void
+    public function assertManagedUser(User $user): void
     {
         $actor = app(TenantContext::class)->user();
         abort_unless($user->company_id === $actor->company_id, 403);
